@@ -15,7 +15,7 @@ docker compose up --build
 # Or, for local Python dev with auto-reload
 cd backend
 pip install -r requirements.txt
-export FREEAI_DATABASE_URL="postgresql+asyncpg://freeai:freeai@localhost:5432/freeai"
+export FREEAI_DATABASE_URL="postgresql+asyncpg://freeai:freeai@localhost:5433/freeai"
 export FREEAI_MASTER_KEY=devkey
 export FREEAI_ADMIN_TOKEN=adm_devtoken
 python run.py    # uvicorn with --reload
