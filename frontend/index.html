@@ -1,0 +1,459 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>FreeAI // Orchestrator Control</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,600;9..144,900&family=JetBrains+Mono:wght@300;400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+
+<div class="grain"></div>
+<div class="scanlines"></div>
+
+<header class="masthead">
+  <div class="masthead__brand">
+    <div class="brand-mark">
+      <span class="brand-mark__bracket">[</span>
+      <span class="brand-mark__core">FREE.AI</span>
+      <span class="brand-mark__bracket">]</span>
+    </div>
+    <div class="brand-meta">
+      <span class="brand-meta__line">ORCHESTRATOR&nbsp;CONTROL</span>
+      <span class="brand-meta__line">v0.2.0&nbsp;//&nbsp;<span id="systemDate"></span></span>
+    </div>
+  </div>
+
+  <div class="masthead__title">
+    <h1>
+      <span class="display-line">Orchestrating</span>
+      <span class="display-line italic">free intelligence</span>
+      <span class="display-line">across providers.</span>
+    </h1>
+  </div>
+
+  <div class="masthead__status">
+    <div class="status-block">
+      <div class="status-block__label">UPLINK</div>
+      <div class="status-block__value" id="uplinkStatus">
+        <span class="dot dot--pulse"></span> CONNECTING
+      </div>
+    </div>
+    <div class="status-block">
+      <div class="status-block__label">PROVIDERS&nbsp;ONLINE</div>
+      <div class="status-block__value" id="providersOnline">— / —</div>
+    </div>
+    <div class="status-block">
+      <div class="status-block__label">STRATEGY</div>
+      <div class="status-block__value" id="strategyValue">auto</div>
+    </div>
+  </div>
+</header>
+
+<nav class="ribbon">
+  <div class="ribbon__item ribbon__item--active" data-tab="providers">
+    <span class="ribbon__index">01</span>
+    <span class="ribbon__label">Providers</span>
+  </div>
+  <div class="ribbon__item" data-tab="strategy">
+    <span class="ribbon__index">02</span>
+    <span class="ribbon__label">Strategy</span>
+  </div>
+  <div class="ribbon__item" data-tab="playground">
+    <span class="ribbon__index">03</span>
+    <span class="ribbon__label">Playground</span>
+  </div>
+  <div class="ribbon__item" data-tab="clients">
+    <span class="ribbon__index">04</span>
+    <span class="ribbon__label">Clients</span>
+  </div>
+  <div class="ribbon__item" data-tab="analytics">
+    <span class="ribbon__index">05</span>
+    <span class="ribbon__label">Analytics</span>
+  </div>
+  <div class="ribbon__item" data-tab="api">
+    <span class="ribbon__index">06</span>
+    <span class="ribbon__label">API&nbsp;Docs</span>
+  </div>
+  <div class="ribbon__rule"></div>
+  <button class="ribbon__lock" id="lockButton" title="admin token">
+    <span id="lockIcon">⛒</span>
+  </button>
+</nav>
+
+<!-- ───────── ADMIN AUTH MODAL ───────── -->
+<div class="modal" id="adminModal" hidden>
+  <div class="modal__backdrop"></div>
+  <div class="modal__card">
+    <div class="modal__corner modal__corner--tl">┌</div>
+    <div class="modal__corner modal__corner--tr">┐</div>
+    <div class="modal__corner modal__corner--bl">└</div>
+    <div class="modal__corner modal__corner--br">┘</div>
+    <h3>ADMIN&nbsp;TOKEN&nbsp;REQUIRED</h3>
+    <p>This control panel manages provider keys, strategy and clients. Paste the admin token printed in the server's logs (or set <code>FREEAI_ADMIN_TOKEN</code>).</p>
+    <input type="password" id="adminTokenInput" placeholder="adm_..." />
+    <div class="modal__actions">
+      <button class="primary-button" id="adminTokenSave">UNLOCK</button>
+    </div>
+    <p class="modal__hint">Stored in your browser's localStorage. Click the lock icon top-right to clear it.</p>
+  </div>
+</div>
+
+<main class="stage">
+
+  <!-- ───────── PROVIDERS ───────── -->
+  <section class="panel panel--active" data-panel="providers">
+    <div class="panel__head">
+      <div class="panel__head-left">
+        <div class="ascii-arrow">└──▶</div>
+        <h2 class="panel__title">PROVIDER&nbsp;ROSTER</h2>
+      </div>
+      <div class="panel__head-right">
+        <button class="ghost-button" id="refreshProviders">
+          <span>REFRESH</span>
+          <span class="ghost-button__char">↻</span>
+        </button>
+      </div>
+    </div>
+    <p class="panel__lede">
+      Six free-tier endpoints stand by. Drop in API keys, weight your favorites, and FreeAI routes
+      every prompt to whoever has the right capability and the most headroom left in their daily quota.
+    </p>
+
+    <div class="provider-grid" id="providerGrid"></div>
+  </section>
+
+  <!-- ───────── STRATEGY ───────── -->
+  <section class="panel" data-panel="strategy">
+    <div class="panel__head">
+      <div class="panel__head-left">
+        <div class="ascii-arrow">└──▶</div>
+        <h2 class="panel__title">ROUTING&nbsp;STRATEGY</h2>
+      </div>
+    </div>
+    <p class="panel__lede">
+      The orchestrator picks a provider for every request. <em>Auto</em> reads each prompt and decides;
+      the others lock to a single criterion. You can define your own strategies — tags are matched
+      against each provider's capability list.
+    </p>
+
+    <div class="strategy-toolbar">
+      <p>Click a strategy to make it the default. Hover custom ones to edit or delete.</p>
+      <button class="ghost-button" id="strategyCreate">
+        <span>NEW&nbsp;STRATEGY</span>
+        <span class="ghost-button__char">+</span>
+      </button>
+    </div>
+
+    <div class="strategy-grid" id="strategyGrid"></div>
+
+    <div class="toggle-row">
+      <div class="toggle-row__copy">
+        <h3>FALLBACK&nbsp;CHAIN</h3>
+        <p>If the chosen provider trips a rate limit or errors, automatically walk down the ranking until one succeeds.</p>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="fallbackToggle" />
+        <span class="switch__track">
+          <span class="switch__thumb"></span>
+          <span class="switch__on">ON</span>
+          <span class="switch__off">OFF</span>
+        </span>
+      </label>
+    </div>
+  </section>
+
+  <!-- ───────── PLAYGROUND ───────── -->
+  <section class="panel" data-panel="playground">
+    <div class="panel__head">
+      <div class="panel__head-left">
+        <div class="ascii-arrow">└──▶</div>
+        <h2 class="panel__title">LIVE&nbsp;PLAYGROUND</h2>
+      </div>
+    </div>
+    <p class="panel__lede">
+      Send a prompt to the orchestrator and watch which provider it picks, how long it took, and the
+      full fallback trail.
+    </p>
+
+    <div class="playground">
+      <div class="playground__form">
+        <label class="field">
+          <span class="field__label">SYSTEM&nbsp;PROMPT&nbsp;<em>(optional)</em></span>
+          <textarea id="pgSystem" rows="2" placeholder="You are a precise assistant..."></textarea>
+        </label>
+
+        <label class="field">
+          <span class="field__label">USER&nbsp;PROMPT</span>
+          <textarea id="pgPrompt" rows="6" placeholder="Write a haiku about distributed systems."></textarea>
+        </label>
+
+        <div class="playground__controls">
+          <label class="field field--inline">
+            <span class="field__label">STRATEGY</span>
+            <select id="pgStrategy"></select>
+          </label>
+          <label class="field field--inline">
+            <span class="field__label">FORCE&nbsp;PROVIDER</span>
+            <select id="pgProvider">
+              <option value="">— auto —</option>
+            </select>
+          </label>
+          <label class="field field--inline">
+            <span class="field__label">TEMP</span>
+            <input type="number" id="pgTemp" min="0" max="2" step="0.1" value="0.7" />
+          </label>
+          <label class="field field--inline field--check">
+            <span class="field__label">STREAM</span>
+            <label class="switch switch--small">
+              <input type="checkbox" id="pgStream" checked />
+              <span class="switch__track">
+                <span class="switch__thumb"></span>
+                <span class="switch__on">ON</span>
+                <span class="switch__off">OFF</span>
+              </span>
+            </label>
+          </label>
+          <button class="primary-button" id="pgSend">
+            <span>TRANSMIT</span>
+            <span class="primary-button__char">▸</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="playground__output" id="pgOutput">
+        <div class="output-empty">
+          <pre>
+   ┌──────────────────────────┐
+   │   awaiting transmission  │
+   └──────────────────────────┘
+          </pre>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───────── ANALYTICS ───────── -->
+  <section class="panel" data-panel="analytics">
+    <div class="panel__head">
+      <div class="panel__head-left">
+        <div class="ascii-arrow">└──▶</div>
+        <h2 class="panel__title">ANALYTICS</h2>
+      </div>
+      <div class="panel__head-right">
+        <select id="analyticsWindow" class="ghost-button">
+          <option value="3600">last hour</option>
+          <option value="21600">last 6h</option>
+          <option value="86400" selected>last 24h</option>
+          <option value="604800">last 7d</option>
+        </select>
+        <button class="ghost-button" id="analyticsRefresh">
+          <span>REFRESH</span>
+          <span class="ghost-button__char">↻</span>
+        </button>
+      </div>
+    </div>
+    <p class="panel__lede">
+      Telemetry from every dispatched completion. These numbers come from the <code>usage_events</code>
+      table — they persist across restarts and scale with your data.
+    </p>
+
+    <div class="kpi-grid" id="kpiGrid"></div>
+
+    <div class="chart-row">
+      <div class="chart-card chart-card--wide">
+        <h3 class="chart-card__title">CALLS&nbsp;OVER&nbsp;TIME</h3>
+        <div class="chart-card__body" id="chartTimeSeries"></div>
+      </div>
+    </div>
+
+    <div class="chart-row">
+      <div class="chart-card">
+        <h3 class="chart-card__title">BY&nbsp;PROVIDER</h3>
+        <div class="chart-card__body" id="chartByProvider"></div>
+      </div>
+      <div class="chart-card">
+        <h3 class="chart-card__title">BY&nbsp;OUTCOME</h3>
+        <div class="chart-card__body" id="chartByOutcome"></div>
+      </div>
+      <div class="chart-card">
+        <h3 class="chart-card__title">BY&nbsp;STRATEGY</h3>
+        <div class="chart-card__body" id="chartByStrategy"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───────── CLIENTS ───────── -->
+  <section class="panel" data-panel="clients">
+    <div class="panel__head">
+      <div class="panel__head-left">
+        <div class="ascii-arrow">└──▶</div>
+        <h2 class="panel__title">CLIENT&nbsp;KEYS</h2>
+      </div>
+    </div>
+    <p class="panel__lede">
+      Issue API keys for the apps that will call FreeAI. Each client has its own per-minute
+      rate limit. Without at least one client, the server stays in <em>bootstrap</em> mode and
+      anyone can hit <code>/v1/chat/completions</code>.
+    </p>
+
+    <div class="client-create">
+      <label class="field field--inline">
+        <span class="field__label">CLIENT&nbsp;NAME</span>
+        <input type="text" id="clientName" placeholder="my-cli, web-app, ..." />
+      </label>
+      <label class="field field--inline">
+        <span class="field__label">RPM&nbsp;LIMIT</span>
+        <input type="number" id="clientRpm" min="1" value="60" />
+      </label>
+      <button class="primary-button" id="clientCreate">
+        <span>ISSUE&nbsp;KEY</span>
+        <span class="primary-button__char">▸</span>
+      </button>
+    </div>
+
+    <div class="client-flash" id="clientFlash" hidden></div>
+
+    <div class="client-list" id="clientList"></div>
+  </section>
+
+  <!-- ───────── API ───────── -->
+  <section class="panel" data-panel="api">
+    <div class="panel__head">
+      <div class="panel__head-left">
+        <div class="ascii-arrow">└──▶</div>
+        <h2 class="panel__title">API&nbsp;REFERENCE</h2>
+      </div>
+    </div>
+    <p class="panel__lede">
+      OpenAI-compatible. Point any client at <code>http://localhost:8000/v1/chat/completions</code> and
+      it works.
+    </p>
+
+    <div class="api-cards">
+      <article class="api-card">
+        <header><span class="api-card__verb">POST</span><span class="api-card__path">/v1/chat/completions</span></header>
+        <pre>{
+  "messages": [
+    {"role": "user", "content": "Hello!"}
+  ],
+  "strategy": "auto",
+  "fallback": true
+}</pre>
+        <p>Drop-in OpenAI-style endpoint. Set <code>strategy</code> to bias the orchestrator.</p>
+      </article>
+      <article class="api-card">
+        <header><span class="api-card__verb">GET</span><span class="api-card__path">/api/providers</span></header>
+        <pre>[
+  { "name": "groq", "healthy": true,
+    "requests_today": 42, "rpd_limit": 14400 },
+  ...
+]</pre>
+        <p>Live status of every provider — request counts, headroom, last error, last latency.</p>
+      </article>
+      <article class="api-card">
+        <header><span class="api-card__verb">PATCH</span><span class="api-card__path">/api/providers/{name}</span></header>
+        <pre>{
+  "api_key": "sk-...",
+  "enabled": true,
+  "weight": 1.5
+}</pre>
+        <p>Configure any provider — what the UI panels above call under the hood.</p>
+      </article>
+      <article class="api-card">
+        <header><span class="api-card__verb">POST</span><span class="api-card__path">/api/playground</span></header>
+        <pre>{
+  "prompt": "Why is the sky blue?",
+  "strategy": "reasoning"
+}</pre>
+        <p>Single-prompt convenience endpoint, used by the playground panel.</p>
+      </article>
+    </div>
+  </section>
+</main>
+
+<footer class="signoff">
+  <div class="signoff__line">
+    <span class="signoff__bracket">[</span>
+    <span>END&nbsp;OF&nbsp;TRANSMISSION</span>
+    <span class="signoff__bracket">]</span>
+  </div>
+  <div class="signoff__meta">
+    <span>FreeAI&nbsp;//&nbsp;orchestrator&nbsp;//&nbsp;running&nbsp;at&nbsp;<code id="apiBase">http://localhost:8000</code></span>
+  </div>
+</footer>
+
+<!-- Provider card template -->
+<template id="providerCardTemplate">
+  <article class="provider-card">
+    <div class="provider-card__corner provider-card__corner--tl">┌</div>
+    <div class="provider-card__corner provider-card__corner--tr">┐</div>
+    <div class="provider-card__corner provider-card__corner--bl">└</div>
+    <div class="provider-card__corner provider-card__corner--br">┘</div>
+
+    <header class="provider-card__head">
+      <div class="provider-card__name"></div>
+      <div class="provider-card__status">
+        <span class="dot"></span>
+        <span class="provider-card__status-label"></span>
+      </div>
+    </header>
+
+    <div class="provider-card__tags"></div>
+
+    <div class="provider-card__rows">
+      <div class="provider-row">
+        <span class="provider-row__label">API&nbsp;KEY</span>
+        <div class="provider-row__field">
+          <input type="password" class="key-input" placeholder="paste a key…" />
+          <button class="mini-btn save-key">SAVE</button>
+        </div>
+      </div>
+      <div class="provider-row">
+        <span class="provider-row__label">DEFAULT&nbsp;MODEL</span>
+        <div class="provider-row__field">
+          <input type="text" class="model-input" placeholder="model id" />
+        </div>
+      </div>
+      <div class="provider-row provider-row--meters">
+        <div class="meter">
+          <div class="meter__label">RPM</div>
+          <div class="meter__bar"><div class="meter__fill"></div></div>
+          <div class="meter__value rpm-value">0/—</div>
+        </div>
+        <div class="meter">
+          <div class="meter__label">DAILY</div>
+          <div class="meter__bar"><div class="meter__fill"></div></div>
+          <div class="meter__value rpd-value">0/—</div>
+        </div>
+      </div>
+      <div class="provider-row provider-row--latency">
+        <span class="provider-row__label">LAST&nbsp;LATENCY</span>
+        <span class="latency-value">—</span>
+      </div>
+      <div class="provider-row provider-row--error" hidden>
+        <span class="provider-row__label">LAST&nbsp;ERROR</span>
+        <span class="error-value"></span>
+      </div>
+    </div>
+
+    <footer class="provider-card__foot">
+      <label class="switch switch--small">
+        <input type="checkbox" class="enable-toggle" />
+        <span class="switch__track">
+          <span class="switch__thumb"></span>
+          <span class="switch__on">ON</span>
+          <span class="switch__off">OFF</span>
+        </span>
+      </label>
+      <button class="ghost-button ghost-button--small reset-btn">RESET</button>
+    </footer>
+  </article>
+</template>
+
+<script src="./app.js"></script>
+</body>
+</html>

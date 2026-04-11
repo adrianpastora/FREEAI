@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+backend/data/config.json
+backend/data/.master_key
+.DS_Store
+.vscode/
+.idea/
