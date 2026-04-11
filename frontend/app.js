@@ -110,9 +110,33 @@ function openFirstRunSetup(providerNames) {
   err.textContent = "";
   document.getElementById("setupAdminToken").value = "";
   document.getElementById("setupAdminToken2").value = "";
+  // restore the form view (in case this modal had been left on reveal)
+  document.getElementById("setupForm").hidden = false;
+  document.getElementById("setupTokenReveal").hidden = true;
+  // reset any toggle back to masked
+  document.querySelectorAll(".setup-toggle").forEach((btn) => {
+    const input = document.getElementById(btn.dataset.target);
+    if (input) input.type = "password";
+    btn.textContent = "MOSTRAR";
+  });
   showSetupModal();
   setTimeout(() => document.getElementById("setupAdminToken").focus(), 50);
 }
+
+// Toggle password/text for the setup token fields.
+document.querySelectorAll(".setup-toggle").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const input = document.getElementById(btn.dataset.target);
+    if (!input) return;
+    if (input.type === "password") {
+      input.type = "text";
+      btn.textContent = "OCULTAR";
+    } else {
+      input.type = "password";
+      btn.textContent = "MOSTRAR";
+    }
+  });
+});
 
 document.getElementById("setupGenToken").addEventListener("click", () => {
   const a = new Uint8Array(22);
@@ -122,8 +146,16 @@ document.getElementById("setupGenToken").addEventListener("click", () => {
     s += (`0${b.toString(16)}`).slice(-2);
   });
   const tok = `adm_${s}`;
-  document.getElementById("setupAdminToken").value = tok;
-  document.getElementById("setupAdminToken2").value = tok;
+  const t1 = document.getElementById("setupAdminToken");
+  const t2 = document.getElementById("setupAdminToken2");
+  t1.value = tok;
+  t2.value = tok;
+  // Auto-reveal both fields so the user can see what was just generated.
+  t1.type = "text";
+  t2.type = "text";
+  document.querySelectorAll(".setup-toggle").forEach((btn) => {
+    btn.textContent = "OCULTAR";
+  });
 });
 
 document.getElementById("setupSubmit").addEventListener("click", async () => {
@@ -178,15 +210,45 @@ document.getElementById("setupSubmit").addEventListener("click", async () => {
       err.hidden = false;
       return;
     }
-    const body = await res.json().catch(() => ({}));
+    await res.json().catch(() => ({}));
     setAdminToken(t1);
-    hideSetupModal();
-    if (body.detail) window.alert(body.detail);
-    await boot();
+    // Show the reveal-once screen instead of closing the modal.
+    // The token is hashed in the DB, so this is the user's only chance
+    // to copy it in cleartext.
+    document.getElementById("setupForm").hidden = true;
+    const revealInput = document.getElementById("setupRevealedToken");
+    revealInput.value = t1;
+    document.getElementById("setupTokenReveal").hidden = false;
+    document.getElementById("setupCopyHint").hidden = true;
   } catch (e) {
     err.textContent = String(e.message || e);
     err.hidden = false;
   }
+});
+
+// Reveal-once: copy token to clipboard.
+document.getElementById("setupCopyToken").addEventListener("click", async () => {
+  const input = document.getElementById("setupRevealedToken");
+  const hint = document.getElementById("setupCopyHint");
+  try {
+    await navigator.clipboard.writeText(input.value);
+  } catch {
+    // Fallback for browsers without clipboard API (or insecure context).
+    input.select();
+    try { document.execCommand("copy"); } catch {}
+  }
+  hint.textContent = "Copiado al portapapeles.";
+  hint.hidden = false;
+});
+
+// Reveal-once: user confirms they've saved the token — close modal and boot.
+document.getElementById("setupRevealContinue").addEventListener("click", async () => {
+  hideSetupModal();
+  // Clear the revealed token from the DOM so it isn't left sitting in memory.
+  document.getElementById("setupRevealedToken").value = "";
+  document.getElementById("setupAdminToken").value = "";
+  document.getElementById("setupAdminToken2").value = "";
+  await boot();
 });
 
 // ─────────────── tab switcher ───────────────

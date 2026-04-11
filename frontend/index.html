@@ -111,33 +111,60 @@
     <div class="modal__corner modal__corner--bl">└</div>
     <div class="modal__corner modal__corner--br">┘</div>
     <h3>CONFIGURACIÓN&nbsp;INICIAL</h3>
-    <p class="setup-intro">
-      Es la <strong>primera vez</strong> que se accede a este FreeAI. Define un
-      <strong>token de administrador</strong> (mín. 12 caracteres) y, si quieres,
-      las claves de los proveedores. El token se guarda en la base de datos como
-      <strong>hash</strong> (bcrypt); las claves de API se guardan
-      <strong>cifradas</strong> con el mismo sistema que cuando las añades desde
-      el panel de proveedores.
-    </p>
-    <label class="field">
-      <span class="field__label">TOKEN&nbsp;DE&nbsp;ADMINISTRADOR</span>
-      <div class="setup-token-row">
-        <input type="password" id="setupAdminToken" placeholder="mínimo 12 caracteres" autocomplete="new-password" />
-        <button type="button" class="ghost-button ghost-button--small" id="setupGenToken">GENERAR</button>
+    <div id="setupForm">
+      <p class="setup-intro">
+        Es la <strong>primera vez</strong> que se accede a este FreeAI. Define un
+        <strong>token de administrador</strong> (mín. 12 caracteres) y, si quieres,
+        las claves de los proveedores. El token se guarda en la base de datos como
+        <strong>hash</strong> (bcrypt); las claves de API se guardan
+        <strong>cifradas</strong> con el mismo sistema que cuando las añades desde
+        el panel de proveedores.
+      </p>
+      <label class="field">
+        <span class="field__label">TOKEN&nbsp;DE&nbsp;ADMINISTRADOR</span>
+        <div class="setup-token-row">
+          <input type="password" id="setupAdminToken" placeholder="mínimo 12 caracteres" autocomplete="new-password" />
+          <button type="button" class="ghost-button ghost-button--small setup-toggle" data-target="setupAdminToken" aria-label="Mostrar u ocultar token">MOSTRAR</button>
+          <button type="button" class="ghost-button ghost-button--small" id="setupGenToken">GENERAR</button>
+        </div>
+      </label>
+      <label class="field">
+        <span class="field__label">CONFIRMAR&nbsp;TOKEN</span>
+        <div class="setup-token-row">
+          <input type="password" id="setupAdminToken2" placeholder="repite el token" autocomplete="new-password" />
+          <button type="button" class="ghost-button ghost-button--small setup-toggle" data-target="setupAdminToken2" aria-label="Mostrar u ocultar token">MOSTRAR</button>
+        </div>
+      </label>
+      <div class="setup-provider-block">
+        <p class="setup-provider-lede">Claves de proveedor <em>(opcional; puedes dejarlas para después)</em></p>
+        <div id="setupProviderFields" class="setup-provider-fields"></div>
       </div>
-    </label>
-    <label class="field">
-      <span class="field__label">CONFIRMAR&nbsp;TOKEN</span>
-      <input type="password" id="setupAdminToken2" placeholder="repite el token" autocomplete="new-password" />
-    </label>
-    <div class="setup-provider-block">
-      <p class="setup-provider-lede">Claves de proveedor <em>(opcional; puedes dejarlas para después)</em></p>
-      <div id="setupProviderFields" class="setup-provider-fields"></div>
+      <div class="modal__actions">
+        <button class="primary-button" id="setupSubmit">GUARDAR&nbsp;Y&nbsp;CONTINUAR</button>
+      </div>
+      <p class="modal__hint" id="setupError" hidden></p>
     </div>
-    <div class="modal__actions">
-      <button class="primary-button" id="setupSubmit">GUARDAR&nbsp;Y&nbsp;CONTINUAR</button>
+
+    <!-- reveal-once: se muestra tras guardar con éxito -->
+    <div id="setupTokenReveal" hidden>
+      <p class="setup-intro setup-reveal-warning">
+        <strong>GUARDA&nbsp;ESTE&nbsp;TOKEN&nbsp;AHORA.</strong> Se almacena en
+        la base de datos como hash bcrypt, por lo que <strong>no podremos
+        volver a mostrártelo</strong>. Si lo pierdes, tendrás que resetear la
+        configuración inicial.
+      </p>
+      <label class="field">
+        <span class="field__label">TU&nbsp;TOKEN&nbsp;DE&nbsp;ADMINISTRADOR</span>
+        <div class="setup-token-row">
+          <input type="text" id="setupRevealedToken" readonly />
+          <button type="button" class="ghost-button ghost-button--small" id="setupCopyToken">COPIAR</button>
+        </div>
+      </label>
+      <p class="modal__hint" id="setupCopyHint" hidden>Copiado al portapapeles.</p>
+      <div class="modal__actions">
+        <button class="primary-button" id="setupRevealContinue">YA&nbsp;LO&nbsp;HE&nbsp;GUARDADO</button>
+      </div>
     </div>
-    <p class="modal__hint" id="setupError" hidden></p>
   </div>
 </div>
 

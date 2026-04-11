@@ -965,6 +965,24 @@ body::before {
   color: var(--rose) !important;
   margin-top: 14px !important;
 }
+.setup-reveal-warning {
+  border: var(--line);
+  padding: 14px 16px;
+  background: var(--amber-soft);
+}
+.setup-reveal-warning strong {
+  color: var(--char);
+}
+#setupRevealedToken {
+  font-family: var(--mono);
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  user-select: all;
+}
+#setupCopyHint {
+  color: var(--char-3) !important;
+  margin-top: 8px !important;
+}
 
 /* ─────────────── CLIENTS PANEL ─────────────── */
 
