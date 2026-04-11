@@ -16,7 +16,7 @@ Two containers:
 - `freeai` — built from [backend/Dockerfile](../backend/Dockerfile), runs
   `uvicorn --workers 2`, healthchecks against `/api/health`
 
-Exposed ports: `5432` (postgres, localhost only) and `8000` (freeai).
+Exposed ports: `5433→5432` (postgres on host, avoids clashing with another DB on `5432`) and `8000` (freeai).
 
 **First run**: the admin token is generated and printed to stdout. Either
 grab it from `docker compose logs freeai | grep admin_token` or — better —
@@ -50,7 +50,7 @@ createdb -O freeai freeai
 cd backend
 pip install -r requirements.txt
 
-export FREEAI_DATABASE_URL="postgresql+asyncpg://freeai:freeai@localhost:5432/freeai"
+export FREEAI_DATABASE_URL="postgresql+asyncpg://freeai:freeai@localhost:5433/freeai"
 export FREEAI_MASTER_KEY="$(python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
 export FREEAI_ADMIN_TOKEN="adm_$(openssl rand -hex 20)"
 
@@ -89,7 +89,7 @@ Full list. All prefixed with `FREEAI_` except provider keys. Parsed by
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `FREEAI_DATABASE_URL` | `postgresql+asyncpg://freeai:freeai@localhost:5432/freeai` | async SQLAlchemy URL. **Must use the `asyncpg` driver.** |
+| `FREEAI_DATABASE_URL` | `postgresql+asyncpg://freeai:freeai@localhost:5433/freeai` | async SQLAlchemy URL. **Must use the `asyncpg` driver.** (Compose maps host `5433`.) |
 | `FREEAI_DB_ECHO` | `false` | Log every SQL statement (dev only — very noisy) |
 | `FREEAI_DB_POOL_SIZE` | `10` | Engine pool size per worker |
 | `FREEAI_DB_MAX_OVERFLOW` | `20` | Overflow slots |

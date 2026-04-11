@@ -362,7 +362,7 @@ backup playbook.
 docker compose exec postgres psql -U freeai -d freeai
 
 # local
-psql "postgresql://freeai:freeai@localhost:5432/freeai"
+psql "postgresql://freeai:freeai@localhost:5433/freeai"
 ```
 
 Useful queries:
