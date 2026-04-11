@@ -28,10 +28,13 @@ reliability of a paid API with the cost of a free one.
 docker compose up --build
 ```
 
-Opens on [http://localhost:8000](http://localhost:8000). On first run the
-admin token is printed to stdout — copy it into the lock icon on the top-right
-of the panel. Paste in an API key for any one provider (Groq is the easiest to
-get), create a client from the *Clients* tab, and you have a working endpoint:
+Opens on [http://localhost:8000](http://localhost:8000). On first run, if you
+did not set `FREEAI_ADMIN_TOKEN` (or `data/admin_token`), the UI shows a
+**setup** dialog: choose an admin token and optionally paste provider API keys
+(everything is stored in Postgres — token as a hash, keys encrypted). Otherwise
+use the lock icon with your preconfigured token. Add keys in the panel if you
+skipped them at setup, create a client from the *Clients* tab, and you have a
+working endpoint:
 
 ```bash
 curl -X POST http://localhost:8000/v1/chat/completions \

@@ -11,6 +11,7 @@ container — useful in CI where you already have a Postgres service.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import os
 import sys
 from pathlib import Path
@@ -75,21 +76,46 @@ async def sessionmaker(engine):
     return async_sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)
 
 
-@pytest_asyncio.fixture(autouse=True)
-async def clean_db(request):
-    """Truncate every table between tests — but only when the test actually
-    uses a DB-backed fixture. Pure tests (e.g. crypto, regex) skip this."""
+def _truncate_all_tables(url: str) -> None:
+    """Run in a worker thread so asyncio.run() is never nested in pytest-asyncio's loop."""
+
+    async def _go() -> None:
+        from sqlalchemy import text
+        from sqlalchemy.exc import ProgrammingError
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+        eng = create_async_engine(url, pool_pre_ping=True)
+        try:
+            async with eng.begin() as conn:
+                await conn.execute(
+                    text(
+                        "TRUNCATE rate_events, provider_stats, providers, app_config, clients, "
+                        "client_rate_events, strategies, usage_events RESTART IDENTITY CASCADE"
+                    )
+                )
+        except ProgrammingError as e:
+            msg = str(e.orig) if getattr(e, "orig", None) else str(e)
+            if "does not exist" not in msg:
+                raise
+        finally:
+            await eng.dispose()
+
+    asyncio.run(_go())
+
+
+@pytest.fixture(autouse=True)
+def clean_db(request):
+    """Truncate between DB-backed tests without async fixture nesting (Py3.14-safe)."""
     db_fixtures = {"session", "seeded_session", "sessionmaker", "engine", "database_url"}
     if not (set(request.fixturenames) & db_fixtures):
         yield
         return
-    sessionmaker = request.getfixturevalue("sessionmaker")
-    from sqlalchemy import text
-    async with sessionmaker() as session:
-        await session.execute(
-            text("TRUNCATE rate_events, provider_stats, providers, app_config, clients RESTART IDENTITY CASCADE")
-        )
-        await session.commit()
+    url = os.environ.get("FREEAI_DATABASE_URL")
+    if not url:
+        yield
+        return
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        pool.submit(_truncate_all_tables, url).result(timeout=120)
     yield
 
 

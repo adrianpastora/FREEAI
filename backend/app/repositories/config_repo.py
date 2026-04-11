@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -182,4 +182,19 @@ class ConfigRepository:
     async def set_fallback(self, enabled: bool) -> None:
         await self.session.execute(
             update(AppConfigRow).where(AppConfigRow.id == 1).values(enable_fallback=enabled)
+        )
+
+    async def count_providers_with_stored_keys(self) -> int:
+        r = await self.session.execute(
+            select(func.count())
+            .select_from(ProviderConfigRow)
+            .where(ProviderConfigRow.api_key_encrypted.isnot(None))
+        )
+        return int(r.scalar_one())
+
+    async def set_admin_token_hash(self, token_hash: str) -> None:
+        await self.session.execute(
+            update(AppConfigRow)
+            .where(AppConfigRow.id == 1)
+            .values(admin_token_hash=token_hash)
         )

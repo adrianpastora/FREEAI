@@ -930,6 +930,42 @@ body::before {
   letter-spacing: 0.06em;
 }
 
+.modal__card--wide {
+  max-width: 640px;
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+}
+.setup-intro strong {
+  color: var(--char);
+}
+.setup-token-row {
+  display: flex;
+  gap: 10px;
+  align-items: stretch;
+}
+.setup-token-row input {
+  flex: 1;
+}
+.setup-provider-block {
+  margin-top: 8px;
+  border-top: var(--line);
+  padding-top: 16px;
+}
+.setup-provider-lede {
+  margin: 0 0 12px !important;
+}
+.setup-provider-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+#setupError {
+  color: var(--rose) !important;
+  margin-top: 14px !important;
+}
+
 /* ─────────────── CLIENTS PANEL ─────────────── */
 
 .client-create {

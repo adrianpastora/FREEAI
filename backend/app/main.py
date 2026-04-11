@@ -17,17 +17,19 @@ import uuid
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Self
 
 import structlog
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from .crypto import hash_admin_token
 from .db import create_engine_and_sessionmaker, dispose_engine, get_session
+from .db.models import AppConfigRow
 from .logging_config import configure_logging, get_logger
 from .metrics import http_request_duration_seconds, http_requests_total, render_latest
 from .orchestrator import Orchestrator
@@ -41,6 +43,7 @@ from .repositories import (
     StrategyRepository,
     UsageRepository,
 )
+from .repositories.config_repo import DEFAULT_PROVIDERS
 from .schemas import (
     ChatCompletionRequest,
     ChatCompletionResponse,
@@ -146,6 +149,84 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
+
+
+# ──────────────────────────── first-run setup (public) ────────────────────────────
+
+
+class SetupStatusResponse(BaseModel):
+    needs_initial_setup: bool
+    provider_names: list[str]
+
+
+class InitialSetupBody(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    admin_token: str = Field(..., min_length=12, max_length=512)
+    admin_token_confirm: str = Field(..., min_length=12, max_length=512)
+    provider_keys: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _tokens_match(self) -> Self:
+        if self.admin_token != self.admin_token_confirm:
+            raise ValueError("admin tokens do not match")
+        return self
+
+
+async def _needs_initial_setup(session: AsyncSession) -> bool:
+    settings = get_settings()
+    if settings.admin_token:
+        return False
+    if settings.admin_token_path.exists():
+        return False
+    row = await session.get(AppConfigRow, 1)
+    if row and row.admin_token_hash:
+        return False
+    cfg = ConfigRepository(session)
+    return await cfg.count_providers_with_stored_keys() == 0
+
+
+@app.get("/api/setup/status", response_model=SetupStatusResponse)
+async def setup_status(session: AsyncSession = Depends(get_session)) -> SetupStatusResponse:
+    return SetupStatusResponse(
+        needs_initial_setup=await _needs_initial_setup(session),
+        provider_names=sorted(DEFAULT_PROVIDERS.keys()),
+    )
+
+
+@app.post("/api/setup/initial", status_code=201)
+async def setup_initial(
+    body: InitialSetupBody,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    if not await _needs_initial_setup(session):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "initial setup is not available — already completed, or set "
+                "FREEAI_ADMIN_TOKEN / data/admin_token"
+            ),
+        )
+    cfg = ConfigRepository(session)
+    await cfg.seed_defaults_if_empty()
+    await cfg.set_admin_token_hash(hash_admin_token(body.admin_token))
+    for name, key in body.provider_keys.items():
+        kn = (name or "").strip().lower()
+        if kn not in DEFAULT_PROVIDERS:
+            continue
+        v = (key or "").strip()
+        if not v:
+            continue
+        await cfg.patch_provider(kn, api_key=v)
+    log.info("initial_setup_completed")
+    return {
+        "ok": True,
+        "detail": (
+            "Token de administrador guardado (hash en base de datos). "
+            "Las claves de proveedor se almacenan cifradas como siempre. "
+            "No volveremos a mostrar el token — cópialo ahora."
+        ),
+    }
 
 
 # ──────────────────────────── middleware ────────────────────────────

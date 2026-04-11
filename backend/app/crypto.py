@@ -85,3 +85,25 @@ def decrypt(value: Optional[str]) -> Optional[str]:
     except InvalidToken:
         log.error("could not decrypt value — wrong master key?")
         return None
+
+
+def hash_admin_token(plain: str) -> str:
+    """bcrypt(SHA256(utf8(plain))) so tokens of any length work."""
+    import bcrypt
+    import hashlib
+
+    digest = hashlib.sha256(plain.encode("utf-8")).digest()
+    return bcrypt.hashpw(digest, bcrypt.gensalt(rounds=12)).decode("ascii")
+
+
+def verify_admin_token_hash(plain: str, stored_hash: str) -> bool:
+    import bcrypt
+    import hashlib
+
+    if not stored_hash:
+        return False
+    digest = hashlib.sha256(plain.encode("utf-8")).digest()
+    try:
+        return bcrypt.checkpw(digest, stored_hash.encode("ascii"))
+    except Exception:
+        return False
