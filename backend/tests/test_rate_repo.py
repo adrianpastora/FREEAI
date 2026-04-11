@@ -211,7 +211,6 @@ async def test_try_reserve_heals_unhealthy_provider(seeded_session):
 async def test_concurrent_reservations_respect_limit(sessionmaker):
     """The atomic-reservation guarantee that PL/pgSQL gives us: under N concurrent
     sessions racing for K slots, exactly K should win."""
-    # Seed providers in their own session first
     async with sessionmaker() as s:
         from app.repositories import ConfigRepository
         await ConfigRepository(s).seed_defaults_if_empty()

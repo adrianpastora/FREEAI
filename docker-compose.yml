@@ -29,7 +29,7 @@ services:
       FREEAI_AUTO_MIGRATE: "true"
       FREEAI_LOG_LEVEL: INFO
       FREEAI_LOG_FORMAT: json
-      FREEAI_CORS_ORIGINS: "http://localhost:8000,http://127.0.0.1:8000"
+      FREEAI_CORS_ORIGINS: "${FREEAI_CORS_ORIGINS:-http://localhost:8000,http://127.0.0.1:8000}"
       FREEAI_MASTER_KEY: ${FREEAI_MASTER_KEY:-}
       FREEAI_ADMIN_TOKEN: ${FREEAI_ADMIN_TOKEN:-}
     volumes:
