@@ -10,6 +10,8 @@ Adds:
 from __future__ import annotations
 
 import json
+import os
+import sys
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -22,7 +24,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .db import create_engine_and_sessionmaker, dispose_engine, get_session
@@ -94,14 +96,36 @@ async def lifespan(app: FastAPI):
 
 
 async def _run_migrations(database_url: str) -> None:
+    import asyncio
+
     from alembic import command
     from alembic.config import Config as AlembicConfig
-    cfg = AlembicConfig(str(Path(__file__).parent.parent / "alembic.ini"))
-    cfg.set_main_option("sqlalchemy.url", database_url)
-    log.info("running_migrations")
-    import asyncio
-    await asyncio.to_thread(command.upgrade, cfg, "head")
-    log.info("migrations_done")
+
+    async def _upgrade() -> None:
+        cfg = AlembicConfig(str(Path(__file__).parent.parent / "alembic.ini"))
+        cfg.set_main_option("sqlalchemy.url", database_url)
+        log.info("running_migrations")
+        await asyncio.to_thread(command.upgrade, cfg, "head")
+        log.info("migrations_done")
+
+    # Uvicorn --workers N runs lifespan in every child; concurrent Alembic
+    # upgrades race and can kill workers. Serialize with a file lock (POSIX).
+    if sys.platform == "win32":
+        await _upgrade()
+        return
+
+    import fcntl
+
+    lock_path = Path(
+        os.environ.get("FREEAI_MIGRATION_LOCK_PATH", "/tmp/freeai_alembic.lock")
+    )
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "a+", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            await _upgrade()
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 # ──────────────────────────── app ────────────────────────────
@@ -242,6 +266,8 @@ class ProviderUpdate(BaseModel):
 
 
 class ProviderPatchResponse(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     provider: ProviderStatus
     model_warning: Optional[str] = None
     model_suggestions: list[str] = Field(default_factory=list)
