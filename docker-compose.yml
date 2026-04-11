@@ -13,10 +13,9 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
-    # 5433 en el host: no choca con otro Postgres (p. ej. ATLAS) en 5432.
-    # La app en Docker sigue usando postgres:5432 por la red interna.
-    ports:
-      - "127.0.0.1:5433:5432"
+    # Sin puertos en el host: evita conflictos con otros stacks (5432, 5433, …).
+    # `freeai` llega a la DB por el nombre de servicio `postgres:5432`.
+    # Desde el host: docker compose exec postgres psql -U freeai -d freeai
 
   freeai:
     build:

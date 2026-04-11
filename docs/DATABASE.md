@@ -358,11 +358,11 @@ backup playbook.
 ## 6. Connecting for ad-hoc queries
 
 ```bash
-# docker compose
+# docker compose (recomendado: Postgres no expone puerto en el host por defecto)
 docker compose exec postgres psql -U freeai -d freeai
 
-# local
-psql "postgresql://freeai:freeai@localhost:5433/freeai"
+# Solo si mapeas un puerto en docker-compose.override.yml, p. ej. 15432:
+# psql "postgresql://freeai:freeai@localhost:15432/freeai"
 ```
 
 Useful queries:

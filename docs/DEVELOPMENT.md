@@ -12,10 +12,12 @@ cd FreeAI
 # One-shot bring-up (Postgres + FreeAI)
 docker compose up --build
 
-# Or, for local Python dev with auto-reload
+# Or, for local Python dev with auto-reload (needs Postgres reachable from the host)
 cd backend
 pip install -r requirements.txt
-export FREEAI_DATABASE_URL="postgresql+asyncpg://freeai:freeai@localhost:5433/freeai"
+# Si solo levantas Postgres con compose: añade un override local con
+# `ports: ["127.0.0.1:15432:5432"]` y usa ese puerto aquí, o usa Postgres nativo en :5432.
+export FREEAI_DATABASE_URL="postgresql+asyncpg://freeai:freeai@localhost:5432/freeai"
 export FREEAI_MASTER_KEY=devkey
 export FREEAI_ADMIN_TOKEN=adm_devtoken
 python run.py    # uvicorn with --reload
