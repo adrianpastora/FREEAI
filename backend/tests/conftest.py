@@ -19,6 +19,14 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
+
+# asyncpg is incompatible with Windows ProactorEventLoop — force Selector.
+@pytest.fixture(scope="session")
+def event_loop_policy():
+    if sys.platform == "win32":
+        return asyncio.WindowsSelectorEventLoopPolicy()
+    return asyncio.DefaultEventLoopPolicy()
+
 # Bootstrap env vars BEFORE the app modules are imported.
 os.environ.setdefault("FREEAI_ADMIN_TOKEN", "adm_test_token")
 os.environ.setdefault("FREEAI_MASTER_KEY", "test-master-key-do-not-use-in-prod")
@@ -100,7 +108,14 @@ def _truncate_all_tables(url: str) -> None:
         finally:
             await eng.dispose()
 
-    asyncio.run(_go())
+    if sys.platform == "win32":
+        loop = asyncio.SelectorEventLoop()
+        try:
+            loop.run_until_complete(_go())
+        finally:
+            loop.close()
+    else:
+        asyncio.run(_go())
 
 
 @pytest.fixture(autouse=True)

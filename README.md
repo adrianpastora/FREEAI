@@ -87,7 +87,7 @@ Any OpenAI-compatible client works — point its base URL at
 - **Analytics panel** — the frontend has a live analytics tab reading from
   the `usage_events` table, with KPIs, time series, and breakdowns by
   provider / strategy / outcome.
-- **~95 pytest tests** — unit, integration, E2E, streaming, and security
+- **99 pytest tests** — unit, integration, E2E, streaming, and security
   coverage. 26+ run without Docker, the rest against a real Postgres via
   testcontainers.
 
@@ -116,8 +116,8 @@ are documented so you don't accidentally solve the same problem twice.
 
 ## Status
 
-**Sprint 5 shipped** — all performance, hygiene, and polish items from the
-audit are now addressed:
+**Sprint 6 shipped** — all critical bugs, performance issues, telemetry
+gaps, and product-polish items from the audit are resolved:
 
 ### Sprint 4 (production-readiness)
 1. ✅ **Per-client rate limiting** — dedicated table + plpgsql function.
@@ -138,11 +138,12 @@ audit are now addressed:
 ### Sprint 6 (product polish)
 13. ✅ **Inline strategy editor** — modal form replaces `prompt()` dialogs.
 14. ✅ **Analytics auto-refresh** — polls every 8s while the tab is active.
-15. ✅ **API Docs corrected** — removed stale `/api/playground` reference.
-16. ✅ **E2E + streaming + security tests** — 3 new test files.
-17. ✅ **`.env.example` fixed** — correct `FREEAI_` prefix for all variables.
+15. ✅ **E2E + streaming + security tests** — 3 new test files.
+16. ✅ **Frontend refactored** — chart rendering extracted to `charts.js`.
+17. ✅ **CORS production-ready** — env-configurable, deploy auto-detects server IP.
+18. ✅ **`.env.example` fixed** — correct `FREEAI_` prefix, CORS documented.
 
-~95 tests total. Full audit and remaining future-work backlog (table
+99 tests total. Full audit and remaining future-work backlog (table
 partitioning, Helm chart, cost tracking, semantic cache) live in
 [docs/REVIEW.md](docs/REVIEW.md).
 
@@ -150,7 +151,7 @@ partitioning, Helm chart, cost tracking, semantic cache) live in
 
 ```bash
 cd backend
-pytest                    # all ~95, needs Docker for the DB-backed ones
+pytest                    # all 99, needs Docker for the DB-backed ones
 pytest tests/test_crypto.py tests/test_auto_strategy.py tests/test_known_models.py  # pure (no DB)
 ```
 

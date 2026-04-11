@@ -8,14 +8,24 @@
 > **severity** (🔴 critical, 🟠 high, 🟡 medium, 🟢 low) and a concrete fix
 > sketch. Section 10 is the prioritized backlog turning these into a plan.
 
-## Status as of Sprint 4
+## Status as of Sprint 6
 
-✅ **Sprint 4 fixed all three critical bugs** (§ 1.1, § 1.2, § 6.4). The
-code now compiles, all 74 tests pass (individually — there's a Python 3.14
-Windows event-loop bug in the test runner, not the code), and the
-production-readiness blockers from TL;DR are gone. The remaining backlog
-is performance (§ 2), scheduled jobs (§ 3), telemetry gaps (§ 4), and
-Prometheus cardinality (§ 5). Those are Sprint 5+ work.
+✅ **Sprints 4–6 complete.** All critical bugs, performance issues,
+telemetry gaps, and product-polish items from the original audit are
+resolved. 99 tests pass on Windows and Linux.
+
+- **Sprint 4** fixed the three critical bugs (§ 1.1, § 1.2, § 6.4).
+- **Sprint 5** resolved all performance/hygiene items (§ 2, § 3, § 4, § 5).
+- **Sprint 6** delivered product polish (inline strategy editor, analytics
+  auto-refresh, E2E/streaming/security tests, frontend refactor).
+- **Windows test fix** — `pytest.ini` now sets
+  `asyncio_default_fixture_loop_scope = session` and
+  `asyncio_default_test_loop_scope = session`; `conftest.py` forces
+  `WindowsSelectorEventLoopPolicy` so asyncpg works with Python 3.14's
+  `ProactorEventLoop`. All 99 tests pass reliably.
+
+The remaining backlog is Sprint 7 (future work): table partitioning,
+Helm chart, cost tracking, semantic cache.
 
 ## TL;DR
 
@@ -830,37 +840,42 @@ Ship-critical. Everything here was a bug or security hole.
 items from § 6.1, § 6.2, § 6.5, § 6.6 (other dead code / stale docstrings).
 None are blocking.
 
-### Sprint 5 — performance and hygiene
+### Sprint 5 — performance and hygiene — ✅ DONE
 
-Becomes important as traffic grows.
+7. ✅ **Batch `_rank()` queries** (§ 2.1) — `snapshot_all()` reduces to
+   3 queries per request.
+8. ✅ **Remove streaming per-chunk commit** (§ 2.2).
+9. ✅ **Scheduled purge** (§ 3) — `_periodic_purge` background task in
+   `lifespan` + `purge_rows_total` Prometheus counter.
+10. ✅ **Strategy TTL cache** (§ 2.3) — 5-second in-process cache,
+    invalidated on CRUD.
+11. ✅ **Streaming token counts** (§ 4.1) — `stream_options.include_usage`.
+12. ✅ **TTFB tracking** (§ 4.2) — `ttfb_ms` column, migration 0006.
 
-7. **Batch `_rank()` queries** (§ 2.1) — from N+2 queries to 3 queries
-   per request.
-8. **Remove streaming per-chunk commit** (§ 2.2) — quick win.
-9. **Scheduled purge** (§ 3) — `lifespan` background task plus a Prometheus
-   counter for the job.
-10. **Strategy TTL cache** (§ 2.3) — 5-second in-process cache.
-11. **Streaming token counts** (§ 4.1) — pass `stream_options.include_usage`.
-12. **`StreamChunk` TTFB tracking** (§ 4.2).
+### Sprint 6 — product polish — ✅ DONE
 
-### Sprint 6 — product polish
-
-User-facing quality of life.
-
-13. **Inline strategy editor** (§ 8.1) — replace `prompt()` dialogs.
-14. **Analytics auto-refresh** (§ 8.2).
-15. **End-to-end tests via httpx** (§ 9) — one integration suite.
-16. **Auto-strategy cleanup** (§ 7.4–7.6) — correctness and clarity.
-17. **Restore `security.py` tests** and cover admin auth paths.
+13. ✅ **Inline strategy editor** (§ 8.1) — modal form replaces
+    `prompt()` dialogs.
+14. ✅ **Analytics auto-refresh** (§ 8.2) — polls every 8s while active.
+15. ✅ **End-to-end tests** (§ 9) — `test_main_endpoints.py`,
+    `test_streaming.py`, `test_security_integration.py`.
+16. ✅ **Auto-strategy cleanup** (§ 7.4–7.6) — stopwords deduplicated,
+    dead multi-word entries removed, regex simplified.
+17. ✅ **Frontend refactored** — chart rendering extracted to `charts.js`
+    (§ 8.3), `app.js` reduced from 1044 to 867 LOC.
+18. ✅ **CORS production-ready** — `docker-compose.yml` reads
+    `FREEAI_CORS_ORIGINS` from env with fallback; deploy script
+    auto-detects server IP.
 
 ### Sprint 7 — future work (not urgent)
 
-18. **Table partitioning for event tables** (§ 3 alt).
-19. **Helm chart / K8s manifests.**
-20. **Router-LLM for `auto` strategy** — swap heuristics for a Llama-8B
+19. **Table partitioning for event tables** (§ 3 alt).
+20. **Helm chart / K8s manifests.**
+21. **CI pipeline with tests** — run pytest before deploy.
+22. **Router-LLM for `auto` strategy** — swap heuristics for a Llama-8B
     classifier call. Only worth it if heuristic accuracy becomes a concern.
-21. **Cost tracking** — tokens × provider pricing, monthly reports.
-22. **Semantic cache** — hash of the prompt → response in Redis, bypass
+23. **Cost tracking** — tokens × provider pricing, monthly reports.
+24. **Semantic cache** — hash of the prompt → response in Redis, bypass
     providers for duplicate prompts.
 
 ---
@@ -898,30 +913,33 @@ well-designed and should be preserved:
 
 ## Running tally
 
-- **Bugs fixed in Sprint 4:** 3 critical (1.1 client rate limit, 1.2
-  quarantine heal, 6.4 Strategy Literal). Bug 1.3 (non-deterministic
-  hash) was subsumed by the fix for 1.1.
-- **Bugs remaining:** 1 high (§ 5 metrics cardinality — not blocking,
-  deferred to Sprint 5).
-- **Performance:** 2 high, 1 medium — all Sprint 5.
-- **Jobs missing:** 1 high (affects 2 tables, now 3 with
-  `client_rate_events`).
-- **Telemetry gaps:** 1 medium, 1 low.
-- **Dead code:** 4 items remaining after Sprint 4 (§ 6.1, § 6.2, § 6.5,
-  § 6.6). `ProviderConfig`/`AppConfig` (§ 6.3) and the Strategy Literal
-  issue (§ 6.4) are done.
-- **Inconsistencies:** 5 small items.
-- **Frontend:** 3 nice-to-haves.
-- **Test gaps:** 5 missing categories (unchanged — the new tests cover the
-  bugs we fixed, not the categories identified in § 9).
+- **Bugs fixed:** all 3 critical from the original audit (1.1 client
+  rate limit, 1.2 quarantine heal, 6.4 Strategy Literal) plus the
+  metrics cardinality issue (§ 5). Zero known bugs remaining.
+- **Performance:** all 3 items resolved (batched queries, streaming
+  commit, strategy cache).
+- **Jobs:** scheduled purge running, covering all 3 event tables.
+- **Telemetry:** streaming token counts + TTFB tracking implemented.
+- **Dead code:** all items resolved (config_store, rate_tracker,
+  schemas dead types, stale docstrings).
+- **Frontend:** strategy editor modal, analytics auto-refresh,
+  `charts.js` extraction — all done.
+- **Tests:** comprehensive coverage across unit, integration, E2E,
+  streaming, and security categories.
 
-Total effort estimate is roughly: **Sprint 4 took one focused pass**,
-Sprint 5 is another week, Sprints 6–7 are optional polish. Nothing here
-requires rewrites.
-
-**After Sprint 4, 74 tests exist** (63 pre-Sprint-4 + 11 new):
-- 5 in `test_client_rate_repo.py` (new file)
-- 3 in `test_rate_repo.py` (quarantine heal regression guards)
-- 2 in `test_orchestrator.py` (custom strategy + unknown strategy)
-- 1 in `test_auto_strategy.py` (Strategy-is-str pin)
-All 74 pass when run in isolation against a real Postgres.
+**After Sprint 6, 99 tests exist** — all passing on Windows (Python
+3.14) and Linux against a real Postgres:
+- 16 in `test_auto_strategy.py`
+- 5 in `test_client_rate_repo.py`
+- 4 in `test_client_repo.py`
+- 5 in `test_config_repo.py`
+- 4 in `test_crypto.py`
+- 7 in `test_known_models.py`
+- 12 in `test_main_endpoints.py`
+- 10 in `test_orchestrator.py`
+- 12 in `test_rate_repo.py`
+- 2 in `test_setup_api.py`
+- 8 in `test_security_integration.py`
+- 3 in `test_streaming.py`
+- 6 in `test_strategy_repo.py`
+- 5 in `test_usage_repo.py`
