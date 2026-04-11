@@ -18,9 +18,14 @@ Two containers:
 
 Exposed host port: **`8000`** (freeai). Postgres **no** se publica en el host (solo red Docker); así no choca con otras bases en el mismo servidor. Consultas ad hoc: `docker compose exec postgres psql -U freeai -d freeai`.
 
-**First run**: the admin token is generated and printed to stdout. Either
-grab it from `docker compose logs freeai | grep admin_token` or — better —
-set it yourself with `FREEAI_ADMIN_TOKEN` before starting:
+**First run (UI)**: if you do **not** set `FREEAI_ADMIN_TOKEN` and there is no
+`data/admin_token` file, and no provider API keys are stored yet, the web UI
+shows a **first-time setup** modal (same style as the admin lock dialog). You
+choose an admin token (stored as a **bcrypt hash** in `app_config`) and can
+paste provider keys (stored **encrypted** like normal PATCH /api/providers).
+
+**First run (env / file)**: set the admin token before starting — either
+`FREEAI_ADMIN_TOKEN` or a `data/admin_token` file (Docker volume). Example:
 
 ```bash
 FREEAI_ADMIN_TOKEN="adm_$(openssl rand -base64 24 | tr -d '/+=')" \
@@ -155,7 +160,7 @@ Key events you'll see:
 | `provider over capacity, skipping` | info | When `try_reserve` returns None |
 | `completed` | info | Successful completion |
 | `provider failed` | warn | One provider failed; includes `kind` and `message` |
-| `admin_token_generated` | warn | First-run admin token emission |
+| `initial_setup_completed` | info | First-run UI setup saved admin hash + optional provider keys |
 | `unhandled_exception` | error | Middleware caught anything not a `ProviderError` |
 
 ### 3.2 Prometheus metrics

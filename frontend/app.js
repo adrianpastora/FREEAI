@@ -73,6 +73,122 @@ document.getElementById("adminTokenInput").addEventListener("keydown", (e) => {
   if (e.key === "Enter") document.getElementById("adminTokenSave").click();
 });
 
+// ─────────────── first-run setup (configuración inicial) ───────────────
+
+function showSetupModal() {
+  document.getElementById("setupModal").hidden = false;
+}
+function hideSetupModal() {
+  document.getElementById("setupModal").hidden = true;
+}
+
+function buildSetupProviderFields(names) {
+  const wrap = document.getElementById("setupProviderFields");
+  wrap.innerHTML = "";
+  names.forEach((n) => {
+    const label = document.createElement("label");
+    label.className = "field";
+    const cap = document.createElement("span");
+    cap.className = "field__label";
+    cap.innerHTML = `${n.toUpperCase().replace(/_/g, " ")} <em>(opcional)</em>`;
+    const input = document.createElement("input");
+    input.type = "password";
+    input.dataset.provider = n;
+    input.className = "key-input";
+    input.autocomplete = "off";
+    input.placeholder = "pegar clave API…";
+    label.appendChild(cap);
+    label.appendChild(input);
+    wrap.appendChild(label);
+  });
+}
+
+function openFirstRunSetup(providerNames) {
+  buildSetupProviderFields(providerNames || []);
+  const err = document.getElementById("setupError");
+  err.hidden = true;
+  err.textContent = "";
+  document.getElementById("setupAdminToken").value = "";
+  document.getElementById("setupAdminToken2").value = "";
+  showSetupModal();
+  setTimeout(() => document.getElementById("setupAdminToken").focus(), 50);
+}
+
+document.getElementById("setupGenToken").addEventListener("click", () => {
+  const a = new Uint8Array(22);
+  crypto.getRandomValues(a);
+  let s = "";
+  a.forEach((b) => {
+    s += (`0${b.toString(16)}`).slice(-2);
+  });
+  const tok = `adm_${s}`;
+  document.getElementById("setupAdminToken").value = tok;
+  document.getElementById("setupAdminToken2").value = tok;
+});
+
+document.getElementById("setupSubmit").addEventListener("click", async () => {
+  const err = document.getElementById("setupError");
+  err.hidden = true;
+  const t1 = document.getElementById("setupAdminToken").value.trim();
+  const t2 = document.getElementById("setupAdminToken2").value.trim();
+  if (t1.length < 12) {
+    err.textContent = "El token debe tener al menos 12 caracteres.";
+    err.hidden = false;
+    return;
+  }
+  if (t1 !== t2) {
+    err.textContent = "Los dos campos del token no coinciden.";
+    err.hidden = false;
+    return;
+  }
+  const keys = {};
+  document.querySelectorAll("#setupProviderFields input[data-provider]").forEach((el) => {
+    const v = el.value.trim();
+    if (v) keys[el.dataset.provider] = v;
+  });
+  try {
+    const res = await fetch(`${API_BASE}/api/setup/initial`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        admin_token: t1,
+        admin_token_confirm: t2,
+        provider_keys: keys,
+      }),
+    });
+    if (res.status === 403) {
+      err.textContent =
+        "La configuración inicial ya no está disponible. Usa el candado e introduce tu token de administrador.";
+      err.hidden = false;
+      hideSetupModal();
+      await boot();
+      return;
+    }
+    if (!res.ok) {
+      let msg = `${res.status}`;
+      try {
+        const j = await res.json();
+        if (Array.isArray(j.detail)) msg = j.detail.map((d) => d.msg || d).join("; ");
+        else if (typeof j.detail === "string") msg = j.detail;
+        else msg = JSON.stringify(j);
+      } catch {
+        msg = await res.text();
+      }
+      err.textContent = msg;
+      err.hidden = false;
+      return;
+    }
+    const body = await res.json().catch(() => ({}));
+    setAdminToken(t1);
+    hideSetupModal();
+    if (body.detail) window.alert(body.detail);
+    await boot();
+  } catch (e) {
+    err.textContent = String(e.message || e);
+    err.hidden = false;
+  }
+});
+
 // ─────────────── tab switcher ───────────────
 
 const ribbon = document.querySelectorAll(".ribbon__item");
@@ -869,7 +985,15 @@ analyticsWindowSel.addEventListener("change", refreshAnalytics);
 
 async function boot() {
   updateLockUI();
-  // health is public
+  try {
+    const st = await publicApi("/api/setup/status");
+    if (st.needs_initial_setup) {
+      openFirstRunSetup(st.provider_names);
+      return;
+    }
+  } catch {
+    /* uplink down — sigue e intenta el resto */
+  }
   try {
     const h = await publicApi("/api/health");
     if (h.auth_required && !getAdminToken()) {

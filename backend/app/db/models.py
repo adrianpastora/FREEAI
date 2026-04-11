@@ -39,6 +39,7 @@ class AppConfigRow(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     default_strategy: Mapped[str] = mapped_column(String(32), default="auto", nullable=False)
     enable_fallback: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    admin_token_hash: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     updated_at: Mapped[float] = mapped_column(
         Float, default=time.time, onupdate=time.time, nullable=False
     )

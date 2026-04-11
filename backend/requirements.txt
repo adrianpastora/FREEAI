@@ -6,6 +6,7 @@ pydantic-settings==2.6.0
 python-dotenv==1.0.1
 tenacity==9.0.0
 cryptography==43.0.3
+bcrypt==4.2.1
 
 # database
 sqlalchemy[asyncio]==2.0.36

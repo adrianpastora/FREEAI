@@ -102,6 +102,45 @@
   </div>
 </div>
 
+<!-- ───────── FIRST-RUN SETUP (mismo estilo que admin) ───────── -->
+<div class="modal" id="setupModal" hidden>
+  <div class="modal__backdrop"></div>
+  <div class="modal__card modal__card--wide">
+    <div class="modal__corner modal__corner--tl">┌</div>
+    <div class="modal__corner modal__corner--tr">┐</div>
+    <div class="modal__corner modal__corner--bl">└</div>
+    <div class="modal__corner modal__corner--br">┘</div>
+    <h3>CONFIGURACIÓN&nbsp;INICIAL</h3>
+    <p class="setup-intro">
+      Es la <strong>primera vez</strong> que se accede a este FreeAI. Define un
+      <strong>token de administrador</strong> (mín. 12 caracteres) y, si quieres,
+      las claves de los proveedores. El token se guarda en la base de datos como
+      <strong>hash</strong> (bcrypt); las claves de API se guardan
+      <strong>cifradas</strong> con el mismo sistema que cuando las añades desde
+      el panel de proveedores.
+    </p>
+    <label class="field">
+      <span class="field__label">TOKEN&nbsp;DE&nbsp;ADMINISTRADOR</span>
+      <div class="setup-token-row">
+        <input type="password" id="setupAdminToken" placeholder="mínimo 12 caracteres" autocomplete="new-password" />
+        <button type="button" class="ghost-button ghost-button--small" id="setupGenToken">GENERAR</button>
+      </div>
+    </label>
+    <label class="field">
+      <span class="field__label">CONFIRMAR&nbsp;TOKEN</span>
+      <input type="password" id="setupAdminToken2" placeholder="repite el token" autocomplete="new-password" />
+    </label>
+    <div class="setup-provider-block">
+      <p class="setup-provider-lede">Claves de proveedor <em>(opcional; puedes dejarlas para después)</em></p>
+      <div id="setupProviderFields" class="setup-provider-fields"></div>
+    </div>
+    <div class="modal__actions">
+      <button class="primary-button" id="setupSubmit">GUARDAR&nbsp;Y&nbsp;CONTINUAR</button>
+    </div>
+    <p class="modal__hint" id="setupError" hidden></p>
+  </div>
+</div>
+
 <main class="stage">
 
   <!-- ───────── PROVIDERS ───────── -->
