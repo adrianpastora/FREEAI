@@ -43,6 +43,8 @@ class OpenAICompatibleProvider(BaseProvider):
         }
         if max_tokens:
             payload["max_tokens"] = max_tokens
+        if stream:
+            payload["stream_options"] = {"include_usage": True}
         return payload
 
     def _resolve_model(self, model: Optional[str]) -> str:
@@ -137,12 +139,15 @@ class OpenAICompatibleProvider(BaseProvider):
                         continue
                     delta = choice.get("delta", {}).get("content") or ""
                     finish = choice.get("finish_reason")
-                    if delta or finish:
+                    usage = chunk.get("usage") or {}
+                    if delta or finish or usage:
                         yield StreamChunk(
                             delta=delta,
                             provider=self.name,
                             model=chunk.get("model", chosen),
                             finish_reason=finish,
+                            prompt_tokens=usage.get("prompt_tokens", 0),
+                            completion_tokens=usage.get("completion_tokens", 0),
                         )
         except httpx.TimeoutException as e:
             raise ProviderError(self.name, f"timeout: {e}", kind=ErrorKind.NETWORK) from e

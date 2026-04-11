@@ -37,5 +37,12 @@ orchestrator_fallbacks_total = Counter(
 )
 
 
+purge_rows_total = Counter(
+    "freeai_purged_rows_total",
+    "Rows purged by the periodic cleanup job",
+    ["table"],
+)
+
+
 def render_latest() -> tuple[bytes, str]:
     return generate_latest(), CONTENT_TYPE_LATEST

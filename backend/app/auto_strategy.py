@@ -19,23 +19,24 @@ from dataclasses import dataclass
 
 from .schemas import ChatMessage, Strategy
 
-# Stopword sets — small on purpose. Each list is the top-ish function words of
-# the language that DON'T collide with others. Counts across languages pick a
-# winner; ties default to English.
+# Stopword sets — small, single-word only (multi-word entries never matched
+# because the tokenizer splits on word boundaries). Cross-language collisions
+# exist (e.g. "de", "a") but are tolerable — the language-specific
+# interrogatives and _REASONING_MARKERS break ties.
 _STOPWORDS = {
     "en": {
-        "the", "and", "of", "to", "a", "in", "is", "you", "that", "it",
-        "he", "was", "for", "on", "are", "with", "as", "I", "his", "they",
+        "the", "and", "of", "to", "in", "is", "you", "that", "it",
+        "he", "was", "for", "on", "are", "with", "his", "they",
         "why", "how", "what", "when", "where", "which",
     },
     "es": {
-        "el", "la", "los", "las", "de", "que", "y", "a", "en", "un",
+        "el", "la", "los", "las", "un",
         "ser", "se", "no", "haber", "por", "con", "su", "para", "como",
-        "por qué", "porque", "qué", "cómo", "cuándo", "dónde", "cuál",
+        "porque", "qué", "cómo", "cuándo", "dónde", "cuál",
     },
     "fr": {
-        "le", "la", "les", "de", "des", "un", "une", "et", "à", "est",
-        "que", "pour", "dans", "qui", "sur", "avec", "pas",
+        "le", "les", "des", "une", "et", "à", "est",
+        "pour", "dans", "qui", "sur", "avec", "pas",
         "pourquoi", "comment", "quand", "où", "quel",
     },
     "de": {
@@ -44,9 +45,9 @@ _STOPWORDS = {
         "warum", "wie", "wann", "wo", "welche",
     },
     "pt": {
-        "de", "a", "o", "que", "e", "é", "do", "da", "em", "um", "para",
-        "com", "não", "os", "uma", "por",
-        "por que", "porque", "como", "quando", "onde", "qual",
+        "o", "é", "do", "da", "em", "um",
+        "com", "não", "os", "uma",
+        "porque", "quando", "onde", "qual",
     },
 }
 
@@ -105,8 +106,7 @@ class AutoSignal:
 def detect_language(text: str) -> str:
     """Returns a 2-letter code from {en, es, fr, de, pt}. Defaults to 'en'."""
     lowered = text.lower()
-    # Tokenize loosely — keep accents for ES/FR/DE/PT
-    tokens = re.findall(r"\b[\wáéíóúñüöäß]+\b", lowered, flags=re.UNICODE)
+    tokens = re.findall(r"\b\w+\b", lowered, flags=re.UNICODE)
     if not tokens:
         return "en"
     scores = {lang: 0 for lang in _STOPWORDS}
