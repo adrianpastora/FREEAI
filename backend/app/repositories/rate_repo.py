@@ -225,6 +225,55 @@ class RateRepository:
             total_failures=stats.total_failures,
         )
 
+    async def snapshot_all(self, providers: list[str]) -> dict[str, ProviderSnapshot]:
+        """Batched version of snapshot() — 2 queries instead of 2×N."""
+        if not providers:
+            return {}
+        now = time.time()
+        counts_result = await self.session.execute(
+            text("""
+                SELECT provider_name,
+                       COUNT(*) FILTER (WHERE occurred_at >= :now - 60)    AS rpm,
+                       COUNT(*) FILTER (WHERE occurred_at >= :now - 86400) AS rpd
+                FROM rate_events
+                WHERE provider_name = ANY(:names)
+                GROUP BY provider_name
+            """).bindparams(
+                bindparam("now", value=now),
+                bindparam("names", value=providers),
+            )
+        )
+        counts = {r[0]: (int(r[1]), int(r[2])) for r in counts_result.all()}
+
+        stats_result = await self.session.execute(
+            select(ProviderStatsRow).where(ProviderStatsRow.provider_name.in_(providers))
+        )
+        stats_map = {s.provider_name: s for s in stats_result.scalars().all()}
+
+        snapshots: dict[str, ProviderSnapshot] = {}
+        for name in providers:
+            rpm, rpd = counts.get(name, (0, 0))
+            stats = stats_map.get(name)
+            if not stats:
+                snapshots[name] = ProviderSnapshot(
+                    requests_today=rpd, requests_this_minute=rpm,
+                    last_error=None, last_error_kind=None, last_latency_ms=None,
+                    healthy=True, quarantined_until=None,
+                    total_calls=0, total_failures=0,
+                )
+                continue
+            quarantine_active = stats.quarantined_until > now
+            effective_healthy = not quarantine_active and (stats.healthy or stats.quarantined_until > 0)
+            quarantine_display = stats.quarantined_until if quarantine_active else None
+            snapshots[name] = ProviderSnapshot(
+                requests_today=rpd, requests_this_minute=rpm,
+                last_error=stats.last_error, last_error_kind=stats.last_error_kind,
+                last_latency_ms=stats.last_latency_ms,
+                healthy=effective_healthy, quarantined_until=quarantine_display,
+                total_calls=stats.total_calls, total_failures=stats.total_failures,
+            )
+        return snapshots
+
     async def reset_health(self, provider: str) -> None:
         await self.session.execute(
             update(ProviderStatsRow)

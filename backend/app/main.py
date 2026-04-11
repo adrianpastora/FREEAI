@@ -1,14 +1,18 @@
-"""FreeAI FastAPI app — Sprint 3.
+"""FreeAI FastAPI app — Sprint 5.
 
-Adds:
-  • usage events written on every completion (analytics source)
-  • GET /api/analytics — aggregated dashboard data
-  • GET /api/strategies, POST, PATCH, DELETE — user-editable routing strategies
-  • GET /api/providers/{name}/models — known-model list + suggestions
-  • model validation feedback on PATCH /api/providers/{name}
+Sprint 5 improvements over Sprint 4:
+  • Prometheus metrics use route templates (bounded cardinality)
+  • Streaming no longer commits the DB session per chunk
+  • _rank() uses batched queries (3 instead of 2×N per request)
+  • Periodic purge task for rate_events, client_rate_events, usage_events
+  • Strategy TTL cache (5s, invalidated on CRUD)
+  • Streaming captures token counts via stream_options.include_usage
+  • TTFB tracking on usage_events
+  • Dead code removed (config_store, rate_tracker)
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sys
@@ -31,11 +35,12 @@ from .crypto import hash_admin_token
 from .db import create_engine_and_sessionmaker, dispose_engine, get_session
 from .db.models import AppConfigRow
 from .logging_config import configure_logging, get_logger
-from .metrics import http_request_duration_seconds, http_requests_total, render_latest
+from .metrics import http_request_duration_seconds, http_requests_total, purge_rows_total, render_latest
 from .orchestrator import Orchestrator
 from .providers import PROVIDER_REGISTRY, ErrorKind, ProviderError
 from .providers.known_models import KNOWN_MODELS, is_known, suggest_similar
 from .repositories import (
+    ClientRateRepository,
     ClientRepository,
     ConfigRepository,
     RateRepository,
@@ -91,9 +96,15 @@ async def lifespan(app: FastAPI):
             )
 
     log.info("freeai_ready", providers=len(PROVIDER_REGISTRY))
+    purge_task = asyncio.create_task(_periodic_purge(sessionmaker))
     try:
         yield
     finally:
+        purge_task.cancel()
+        try:
+            await purge_task
+        except asyncio.CancelledError:
+            pass
         await app.state.orchestrator.aclose()
         await dispose_engine(engine)
 
@@ -131,13 +142,40 @@ async def _run_migrations(database_url: str) -> None:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
+async def _periodic_purge(sessionmaker) -> None:
+    """Background loop that trims event tables every hour.
+
+    rate_events: keep 2 days (only rpm/rpd windows matter).
+    client_rate_events: keep 2 days (only per-minute window matters).
+    usage_events: keep 90 days (feeds the analytics dashboard).
+    """
+    while True:
+        await asyncio.sleep(3600)
+        try:
+            async with sessionmaker() as session:
+                r1 = await RateRepository(session).purge_old_events(86400 * 2)
+                r2 = await ClientRateRepository(session).purge_older_than(86400 * 2)
+                r3 = await UsageRepository(session).purge_older_than(86400 * 90)
+                await session.commit()
+                if r1 or r2 or r3:
+                    purge_rows_total.labels(table="rate_events").inc(r1)
+                    purge_rows_total.labels(table="client_rate_events").inc(r2)
+                    purge_rows_total.labels(table="usage_events").inc(r3)
+                    log.info(
+                        "periodic_purge",
+                        rate_events=r1, client_rate_events=r2, usage_events=r3,
+                    )
+        except Exception as exc:  # noqa: BLE001
+            log.error("periodic_purge_failed", error=str(exc))
+
+
 # ──────────────────────────── app ────────────────────────────
 
 
 app = FastAPI(
     title="FreeAI Orchestrator",
     description="Unified API that orchestrates multiple free AI provider tiers.",
-    version="0.4.0",
+    version="0.5.0",
     lifespan=lifespan,
 )
 
@@ -251,13 +289,15 @@ async def request_observability(request: Request, call_next):
     elapsed = time.perf_counter() - started
     response.headers["X-Request-ID"] = request_id
     if request.url.path != "/metrics":
+        route = request.scope.get("route")
+        path_label = route.path if route else request.url.path
         http_requests_total.labels(
             method=request.method,
-            path=request.url.path,
+            path=path_label,
             status=str(response.status_code),
         ).inc()
         http_request_duration_seconds.labels(
-            method=request.method, path=request.url.path
+            method=request.method, path=path_label
         ).observe(elapsed)
     return response
 
@@ -310,7 +350,6 @@ async def chat_completions(
                     req, config_repo, rate_repo, usage_repo, strategy_repo,
                     client_hash=client_hash,
                 ):
-                    await session.commit()
                     yield f"data: {json.dumps(chunk)}\n\n"
                 yield "data: [DONE]\n\n"
             except ProviderError as e:
@@ -541,6 +580,7 @@ async def list_strategies(
 @app.post("/api/strategies", response_model=StrategyOut)
 async def create_strategy(
     payload: StrategyUpsertIn,
+    request: Request,
     session: AsyncSession = Depends(get_session),
     _admin=Depends(require_admin),
 ) -> StrategyOut:
@@ -555,6 +595,7 @@ async def create_strategy(
         is_builtin=False,
     )
     saved = await repo.upsert(dto)
+    request.app.state.orchestrator.invalidate_strategy_cache(payload.name)
     return StrategyOut(**asdict(saved))
 
 
@@ -562,6 +603,7 @@ async def create_strategy(
 async def update_strategy(
     name: str,
     payload: StrategyUpsertIn,
+    request: Request,
     session: AsyncSession = Depends(get_session),
     _admin=Depends(require_admin),
 ) -> StrategyOut:
@@ -571,7 +613,6 @@ async def update_strategy(
     existing = await repo.get(name)
     if not existing:
         raise HTTPException(404, f"unknown strategy '{name}'")
-    # Preserve is_builtin — users can edit built-ins but not flip the flag.
     saved = await repo.upsert(
         StrategyDTO(
             name=name,
@@ -580,12 +621,14 @@ async def update_strategy(
             is_builtin=existing.is_builtin,
         )
     )
+    request.app.state.orchestrator.invalidate_strategy_cache(name)
     return StrategyOut(**asdict(saved))
 
 
 @app.delete("/api/strategies/{name}")
 async def delete_strategy(
     name: str,
+    request: Request,
     session: AsyncSession = Depends(get_session),
     _admin=Depends(require_admin),
 ) -> dict:
@@ -596,6 +639,7 @@ async def delete_strategy(
         raise HTTPException(400, str(e))
     if not deleted:
         raise HTTPException(404, f"unknown strategy '{name}'")
+    request.app.state.orchestrator.invalidate_strategy_cache(name)
     return {"ok": True}
 
 

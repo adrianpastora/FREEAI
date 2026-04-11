@@ -91,6 +91,8 @@ class StreamChunk:
     provider: str
     model: str
     finish_reason: Optional[str] = None
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
 
 
 class BaseProvider:

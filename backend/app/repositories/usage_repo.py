@@ -22,6 +22,7 @@ class UsageEvent:
     completion_tokens: int = 0
     fallback_position: int = 1
     client_hash: Optional[str] = None
+    ttfb_ms: Optional[int] = None
 
 
 @dataclass
@@ -57,6 +58,7 @@ class UsageRepository:
                 completion_tokens=event.completion_tokens,
                 fallback_position=event.fallback_position,
                 client_hash=event.client_hash,
+                ttfb_ms=event.ttfb_ms,
             )
         )
         # We don't flush/commit here — the caller's session commit batches this

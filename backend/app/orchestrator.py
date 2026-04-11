@@ -70,6 +70,30 @@ class _AttemptResult:
     latency_ms: int
 
 
+class _StrategyCache:
+    """In-process TTL cache for strategy lookups (change rarely, read every request)."""
+    _TTL = 5.0
+
+    def __init__(self):
+        self._data: dict[str, tuple[float, Optional[list[str]]]] = {}
+
+    async def get(self, name: str, repo: StrategyRepository) -> Optional[list[str]]:
+        entry = self._data.get(name)
+        now = time.monotonic()
+        if entry and (now - entry[0]) < self._TTL:
+            return entry[1]
+        strat = await repo.get(name)
+        tags = strat.tags if strat else None
+        self._data[name] = (now, tags)
+        return tags
+
+    def invalidate(self, name: Optional[str] = None):
+        if name:
+            self._data.pop(name, None)
+        else:
+            self._data.clear()
+
+
 class Orchestrator:
     """Stateless aside from the shared httpx client. Receives repositories per-call."""
 
@@ -80,9 +104,13 @@ class Orchestrator:
         self._client = httpx.AsyncClient(
             limits=httpx.Limits(max_keepalive_connections=20, max_connections=100),
         )
+        self._strategy_cache = _StrategyCache()
 
     async def aclose(self) -> None:
         await self._client.aclose()
+
+    def invalidate_strategy_cache(self, name: Optional[str] = None) -> None:
+        self._strategy_cache.invalidate(name)
 
     # ──────────────── candidate selection ────────────────
 
@@ -123,9 +151,8 @@ class Orchestrator:
         """Returns (effective strategy name, its tag list, auto-detect signal if any).
 
         Raises ProviderError(CLIENT_ERROR) if the requested strategy doesn't
-        exist. Silently falling back to empty tags (the pre-fix behavior) lets
-        typos and deleted strategies rank providers by weight alone, which is
-        almost never what the user wanted.
+        exist. Uses an in-process TTL cache (5s) so strategies that rarely change
+        don't require a DB lookup on every request.
         """
         if req.strategy == "auto":
             signal = detect_auto_strategy(req.messages)
@@ -133,14 +160,14 @@ class Orchestrator:
         else:
             signal = None
             effective = req.strategy
-        strat = await strategy_repo.get(effective)
-        if strat is None:
+        tags = await self._strategy_cache.get(effective, strategy_repo)
+        if tags is None:
             raise ProviderError(
                 "orchestrator",
                 f"unknown strategy '{effective}' — create it first via POST /api/strategies",
                 kind=ErrorKind.CLIENT_ERROR,
             )
-        return effective, strat.tags, signal
+        return effective, tags, signal
 
     async def _rank(
         self,
@@ -150,12 +177,14 @@ class Orchestrator:
         preferred: Optional[str],
     ) -> list[_Candidate]:
         providers = await config_repo.list_providers()
+        eligible = [dto for dto in providers if dto.enabled and dto.api_key]
+        if not eligible:
+            return []
+        snapshots = await rate_repo.snapshot_all([dto.name for dto in eligible])
         candidates: list[_Candidate] = []
-        for dto in providers:
-            if not dto.enabled or not dto.api_key:
-                continue
-            snap = await rate_repo.snapshot(dto.name)
-            if not snap.healthy:
+        for dto in eligible:
+            snap = snapshots.get(dto.name)
+            if not snap or not snap.healthy:
                 continue
             provider = self._build_provider(dto)
             if not provider:
@@ -407,7 +436,10 @@ class Orchestrator:
 
             started = time.perf_counter()
             first_chunk_sent = False
+            ttfb_ms: Optional[int] = None
             model_seen: Optional[str] = None
+            prompt_tokens = 0
+            completion_tokens = 0
             try:
                 stream_iter = cand.provider.stream(
                     req.messages,
@@ -419,7 +451,12 @@ class Orchestrator:
                 async for chunk in stream_iter:
                     if not first_chunk_sent:
                         first_chunk_sent = True
+                        ttfb_ms = int((time.perf_counter() - started) * 1000)
                     model_seen = chunk.model
+                    if chunk.prompt_tokens:
+                        prompt_tokens = chunk.prompt_tokens
+                    if chunk.completion_tokens:
+                        completion_tokens = chunk.completion_tokens
                     yield self._format_sse_chunk(chunk, completion_id, created, strategy)
                 latency_ms = int((time.perf_counter() - started) * 1000)
                 provider_call_duration_seconds.labels(provider=cand.name).observe(latency_ms / 1000.0)
@@ -432,6 +469,9 @@ class Orchestrator:
                         strategy=strategy,
                         outcome="success",
                         latency_ms=latency_ms,
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                        ttfb_ms=ttfb_ms,
                         fallback_position=fallback_position,
                         client_hash=client_hash,
                     )

@@ -87,8 +87,9 @@ Any OpenAI-compatible client works — point its base URL at
 - **Analytics panel** — the frontend has a live analytics tab reading from
   the `usage_events` table, with KPIs, time series, and breakdowns by
   provider / strategy / outcome.
-- **63 pytest tests**, 26 running without Docker, 37 against a real Postgres
-  via testcontainers.
+- **~95 pytest tests** — unit, integration, E2E, streaming, and security
+  coverage. 26+ run without Docker, the rest against a real Postgres via
+  testcontainers.
 
 ## Documentation
 
@@ -115,32 +116,44 @@ are documented so you don't accidentally solve the same problem twice.
 
 ## Status
 
-**Sprint 4 shipped** — the three critical bugs from the previous audit are
-fixed:
+**Sprint 5 shipped** — all performance, hygiene, and polish items from the
+audit are now addressed:
 
-1. ✅ **Per-client rate limiting now actually works.** New
-   `client_rate_events` table, new plpgsql function
-   `freeai_try_reserve_client`, new `ClientRateRepository`. No FK violation
-   possible. Covered by 5 new tests including a 50-way concurrency check.
-2. ✅ **Quarantined providers heal cleanly.** `rate_repo.snapshot()` rewritten,
-   successful calls fully zero `quarantined_until`, plpgsql function 0003
-   self-heals expired rows. 3 new regression tests guard the behavior.
-3. ✅ **Custom strategies accepted end-to-end.** `Strategy` is now a plain
-   `str` alias; the orchestrator validates against the DB and raises
-   `CLIENT_ERROR` with a clear message for unknown names. 3 new tests.
+### Sprint 4 (production-readiness)
+1. ✅ **Per-client rate limiting** — dedicated table + plpgsql function.
+2. ✅ **Quarantine self-healing** — `snapshot()` rewrite + plpgsql migration.
+3. ✅ **Custom strategies end-to-end** — `Strategy = str`, orchestrator validates.
 
-74 tests total, all pass when run against a real Postgres. Full audit and
-the remaining backlog (performance, scheduled jobs, metrics cardinality,
-test-suite expansion) live in [docs/REVIEW.md](docs/REVIEW.md).
+### Sprint 5 (performance & scalability)
+4. ✅ **Metrics cardinality bounded** — `route.path` template instead of raw URL.
+5. ✅ **Batched ranking queries** — 3 queries per request instead of 2×N.
+6. ✅ **Streaming per-chunk commit removed** — single commit at end of request.
+7. ✅ **Periodic purge task** — background loop trims event tables every hour.
+8. ✅ **Strategy TTL cache** — 5-second in-process cache, invalidated on CRUD.
+9. ✅ **Streaming token counts** — `stream_options.include_usage` captures real tokens.
+10. ✅ **TTFB tracking** — `ttfb_ms` column on usage_events (migration 0006).
+11. ✅ **Dead code removed** — `config_store.py`, `rate_tracker.py` deleted.
+12. ✅ **Auto-strategy cleanup** — stopwords deduplicated, dead multi-word entries removed.
+
+### Sprint 6 (product polish)
+13. ✅ **Inline strategy editor** — modal form replaces `prompt()` dialogs.
+14. ✅ **Analytics auto-refresh** — polls every 8s while the tab is active.
+15. ✅ **API Docs corrected** — removed stale `/api/playground` reference.
+16. ✅ **E2E + streaming + security tests** — 3 new test files.
+17. ✅ **`.env.example` fixed** — correct `FREEAI_` prefix for all variables.
+
+~95 tests total. Full audit and remaining future-work backlog (table
+partitioning, Helm chart, cost tracking, semantic cache) live in
+[docs/REVIEW.md](docs/REVIEW.md).
 
 ## Run the tests
 
 ```bash
 cd backend
-pytest                    # all 63, needs Docker for the 37 DB-backed ones
-pytest tests/test_crypto.py tests/test_auto_strategy.py tests/test_known_models.py  # 26 pure
+pytest                    # all ~95, needs Docker for the DB-backed ones
+pytest tests/test_crypto.py tests/test_auto_strategy.py tests/test_known_models.py  # pure (no DB)
 ```
 
 ## License
 
-Not specified yet. Add one before publishing.
+MIT License. See [LICENSE](LICENSE).

@@ -96,6 +96,15 @@ def hash_admin_token(plain: str) -> str:
     return bcrypt.hashpw(digest, bcrypt.gensalt(rounds=12)).decode("ascii")
 
 
+def mask_key(key: Optional[str]) -> Optional[str]:
+    """Render an API key safely for the UI — keeps first 4 chars + length."""
+    if not key:
+        return None
+    if len(key) <= 8:
+        return "•" * len(key)
+    return f"{key[:4]}{'•' * 8}{key[-2:]}"
+
+
 def verify_admin_token_hash(plain: str, stored_hash: str) -> bool:
     import bcrypt
     import hashlib

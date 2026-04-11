@@ -515,30 +515,59 @@ async function refreshStrategies() {
   });
 }
 
-function openStrategyEditor(existing) {
-  const name = existing
-    ? existing.name
-    : prompt("Strategy name (a-z, 0-9, underscore):", "");
-  if (!name) return;
-  if (!/^[a-z0-9_]+$/.test(name)) { alert("invalid name — use a-z, 0-9, _"); return; }
-  const tagsStr = prompt(
-    "Tag priority (comma-separated). These match against provider tags:\n" +
-    "Known tags: fast, cheap, quality, coding, reasoning, vision, long_context, rag, variety",
-    (existing?.tags || []).join(", "),
-  );
-  if (tagsStr === null) return;
-  const tags = tagsStr.split(",").map((t) => t.trim()).filter(Boolean);
-  const description = prompt("Short description:", existing?.description || "") || "";
+let _stratEditorExisting = null;
 
-  const method = existing ? "PATCH" : "POST";
-  const path = existing ? `/api/strategies/${name}` : "/api/strategies";
-  adminApi(path, { method, body: JSON.stringify({ name, tags, description }) })
-    .then(() => refreshConfig())
-    .catch((err) => {
-      if (err instanceof AuthError) showAdminModal();
-      else alert(err.message);
-    });
+function openStrategyEditor(existing) {
+  _stratEditorExisting = existing;
+  const modal = document.getElementById("strategyEditorModal");
+  const nameInput = document.getElementById("stratEditorName");
+  const tagsInput = document.getElementById("stratEditorTags");
+  const descInput = document.getElementById("stratEditorDesc");
+  const errEl = document.getElementById("stratEditorError");
+  errEl.hidden = true;
+
+  document.getElementById("stratEditorTitle").textContent = existing ? "EDIT STRATEGY" : "NEW STRATEGY";
+  nameInput.value = existing ? existing.name : "";
+  nameInput.disabled = !!existing;
+  tagsInput.value = (existing?.tags || []).join(", ");
+  descInput.value = existing?.description || "";
+
+  modal.hidden = false;
+  setTimeout(() => (existing ? tagsInput : nameInput).focus(), 50);
 }
+
+document.getElementById("stratEditorCancel").addEventListener("click", () => {
+  document.getElementById("strategyEditorModal").hidden = true;
+});
+
+document.getElementById("stratEditorSave").addEventListener("click", async () => {
+  const nameInput = document.getElementById("stratEditorName");
+  const tagsInput = document.getElementById("stratEditorTags");
+  const descInput = document.getElementById("stratEditorDesc");
+  const errEl = document.getElementById("stratEditorError");
+  errEl.hidden = true;
+
+  const name = nameInput.value.trim();
+  if (!name || !/^[a-z0-9_]+$/.test(name)) {
+    errEl.textContent = "Name must use a-z, 0-9, underscore only.";
+    errEl.hidden = false;
+    return;
+  }
+  const tags = tagsInput.value.split(",").map((t) => t.trim()).filter(Boolean);
+  const description = descInput.value.trim();
+  const method = _stratEditorExisting ? "PATCH" : "POST";
+  const path = _stratEditorExisting ? `/api/strategies/${name}` : "/api/strategies";
+
+  try {
+    await adminApi(path, { method, body: JSON.stringify({ name, tags, description }) });
+    document.getElementById("strategyEditorModal").hidden = true;
+    refreshConfig();
+  } catch (err) {
+    if (err instanceof AuthError) { showAdminModal(); return; }
+    errEl.textContent = err.message;
+    errEl.hidden = false;
+  }
+});
 
 document.getElementById("strategyCreate").addEventListener("click", () => openStrategyEditor(null));
 
@@ -1006,8 +1035,10 @@ async function boot() {
 (async function start() {
   await boot();
   setInterval(() => {
-    if (document.querySelector('[data-panel="providers"]').classList.contains("panel--active")) {
-      refreshProviders();
-    }
+    const activePanel = document.querySelector('.panel--active');
+    if (!activePanel) return;
+    const panel = activePanel.dataset.panel;
+    if (panel === "providers") refreshProviders();
+    if (panel === "analytics") refreshAnalytics();
   }, 8000);
 })();

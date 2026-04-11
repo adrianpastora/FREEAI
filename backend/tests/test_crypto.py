@@ -24,7 +24,7 @@ def test_decrypt_legacy_plaintext_passes_through():
 
 
 def test_mask_key():
-    from app.config_store import mask_key
+    from app.crypto import mask_key
     assert mask_key(None) is None
     assert mask_key("") is None
     assert mask_key("short") == "•••••"

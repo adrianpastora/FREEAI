@@ -1,4 +1,4 @@
-"""ORM models. Seven tables:
+"""ORM models. Eight tables:
 
   • app_config          — singleton row (id=1) with default_strategy / fallback flag
   • providers           — one row per registered provider with config + encrypted key
@@ -90,12 +90,12 @@ class ProviderStatsRow(Base):
 class RateEventRow(Base):
     """Append-only log of every provider call. Used to compute rolling rpm/rpd.
 
-    A nightly purge (or partition rotation) keeps the table bounded — for now we
-    rely on the fact that 50k events/day per provider is small enough.
+    Bounded by the periodic purge task (keeps 2 days). BigInteger id for
+    high-write consistency with usage_events and client_rate_events.
     """
     __tablename__ = "rate_events"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     provider_name: Mapped[str] = mapped_column(
         String(64), ForeignKey("providers.name", ondelete="CASCADE"), nullable=False, index=True
     )
@@ -136,7 +136,7 @@ class UsageEventRow(Base):
     """
     __tablename__ = "usage_events"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     occurred_at: Mapped[float] = mapped_column(Float, nullable=False, index=True)
     provider_name: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     model: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
@@ -147,6 +147,7 @@ class UsageEventRow(Base):
     completion_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     fallback_position: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     client_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    ttfb_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
 
 class StrategyRow(Base):
