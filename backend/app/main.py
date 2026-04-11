@@ -1,0 +1,598 @@
+"""FreeAI FastAPI app — Sprint 3.
+
+Adds:
+  • usage events written on every completion (analytics source)
+  • GET /api/analytics — aggregated dashboard data
+  • GET /api/strategies, POST, PATCH, DELETE — user-editable routing strategies
+  • GET /api/providers/{name}/models — known-model list + suggestions
+  • model validation feedback on PATCH /api/providers/{name}
+"""
+from __future__ import annotations
+
+import json
+import time
+import uuid
+from contextlib import asynccontextmanager
+from dataclasses import asdict
+from pathlib import Path
+from typing import Optional
+
+import structlog
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from .db import create_engine_and_sessionmaker, dispose_engine, get_session
+from .logging_config import configure_logging, get_logger
+from .metrics import http_request_duration_seconds, http_requests_total, render_latest
+from .orchestrator import Orchestrator
+from .providers import PROVIDER_REGISTRY, ErrorKind, ProviderError
+from .providers.known_models import KNOWN_MODELS, is_known, suggest_similar
+from .repositories import (
+    ClientRepository,
+    ConfigRepository,
+    RateRepository,
+    StrategyDTO,
+    StrategyRepository,
+    UsageRepository,
+)
+from .schemas import (
+    ChatCompletionRequest,
+    ChatCompletionResponse,
+    ProviderStatus,
+)
+from .security import require_admin, require_client
+from .settings import get_settings
+
+configure_logging()
+log = get_logger("freeai")
+
+
+# ──────────────────────────── lifespan ────────────────────────────
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    settings = get_settings()
+    engine, sessionmaker = create_engine_and_sessionmaker()
+    app.state.engine = engine
+    app.state.sessionmaker = sessionmaker
+    app.state.orchestrator = Orchestrator()
+
+    if settings.auto_migrate:
+        await _run_migrations(settings.database_url)
+
+    async with sessionmaker() as session:
+        config_repo = ConfigRepository(session)
+        strategy_repo = StrategyRepository(session)
+        client_repo = ClientRepository(session)
+
+        added = await config_repo.seed_defaults_if_empty()
+        if added:
+            log.info("seeded_default_providers", count=added)
+        strat_added = await strategy_repo.seed_builtins_if_missing()
+        if strat_added:
+            log.info("seeded_builtin_strategies", count=strat_added)
+        await session.commit()
+
+        if not await client_repo.has_any():
+            log.warning(
+                "bootstrap_mode",
+                message="no API clients configured — /v1/* is open. "
+                        "Create a client via POST /api/clients before exposing.",
+            )
+
+    log.info("freeai_ready", providers=len(PROVIDER_REGISTRY))
+    try:
+        yield
+    finally:
+        await app.state.orchestrator.aclose()
+        await dispose_engine(engine)
+
+
+async def _run_migrations(database_url: str) -> None:
+    from alembic import command
+    from alembic.config import Config as AlembicConfig
+    cfg = AlembicConfig(str(Path(__file__).parent.parent / "alembic.ini"))
+    cfg.set_main_option("sqlalchemy.url", database_url)
+    log.info("running_migrations")
+    import asyncio
+    await asyncio.to_thread(command.upgrade, cfg, "head")
+    log.info("migrations_done")
+
+
+# ──────────────────────────── app ────────────────────────────
+
+
+app = FastAPI(
+    title="FreeAI Orchestrator",
+    description="Unified API that orchestrates multiple free AI provider tiers.",
+    version="0.4.0",
+    lifespan=lifespan,
+)
+
+settings = get_settings()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origin_list,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["*"],
+)
+
+
+# ──────────────────────────── middleware ────────────────────────────
+
+
+@app.middleware("http")
+async def request_observability(request: Request, call_next):
+    request_id = request.headers.get("x-request-id") or uuid.uuid4().hex[:16]
+    structlog.contextvars.clear_contextvars()
+    structlog.contextvars.bind_contextvars(
+        request_id=request_id,
+        method=request.method,
+        path=request.url.path,
+    )
+    started = time.perf_counter()
+    try:
+        response: Response = await call_next(request)
+    except Exception as e:
+        elapsed = time.perf_counter() - started
+        log.error("unhandled_exception", error=str(e), elapsed=elapsed)
+        raise
+    elapsed = time.perf_counter() - started
+    response.headers["X-Request-ID"] = request_id
+    if request.url.path != "/metrics":
+        http_requests_total.labels(
+            method=request.method,
+            path=request.url.path,
+            status=str(response.status_code),
+        ).inc()
+        http_request_duration_seconds.labels(
+            method=request.method, path=request.url.path
+        ).observe(elapsed)
+    return response
+
+
+# ──────────────────────────── error mapping ────────────────────────────
+
+_KIND_TO_STATUS = {
+    ErrorKind.AUTH:         502,
+    ErrorKind.RATE_LIMITED: 503,
+    ErrorKind.CLIENT_ERROR: 400,
+    ErrorKind.SERVER_ERROR: 502,
+    ErrorKind.NETWORK:      504,
+    ErrorKind.PARSING:      502,
+    ErrorKind.UNKNOWN:      502,
+}
+
+
+def _http_from_provider_error(e: ProviderError) -> HTTPException:
+    return HTTPException(
+        status_code=_KIND_TO_STATUS.get(e.kind, 502),
+        detail={"provider": e.provider, "kind": e.kind.value, "message": e.message},
+    )
+
+
+def get_orchestrator(request: Request) -> Orchestrator:
+    return request.app.state.orchestrator
+
+
+# ──────────────────────────── chat completions ────────────────────────────
+
+
+@app.post("/v1/chat/completions")
+async def chat_completions(
+    req: ChatCompletionRequest,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    orch: Orchestrator = Depends(get_orchestrator),
+    client=Depends(require_client),
+):
+    config_repo = ConfigRepository(session)
+    rate_repo = RateRepository(session)
+    usage_repo = UsageRepository(session)
+    strategy_repo = StrategyRepository(session)
+    client_hash = client.key_hash if client else None
+
+    if req.stream:
+        async def event_stream():
+            try:
+                async for chunk in orch.stream(
+                    req, config_repo, rate_repo, usage_repo, strategy_repo,
+                    client_hash=client_hash,
+                ):
+                    await session.commit()
+                    yield f"data: {json.dumps(chunk)}\n\n"
+                yield "data: [DONE]\n\n"
+            except ProviderError as e:
+                err = {"error": {"provider": e.provider, "kind": e.kind.value, "message": e.message}}
+                yield f"data: {json.dumps(err)}\n\n"
+                yield "data: [DONE]\n\n"
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    try:
+        return await orch.chat(
+            req, config_repo, rate_repo, usage_repo, strategy_repo,
+            client_hash=client_hash,
+        )
+    except ProviderError as e:
+        raise _http_from_provider_error(e)
+
+
+# ──────────────────────────── provider admin ────────────────────────────
+
+
+class ProviderUpdate(BaseModel):
+    api_key: Optional[str] = None
+    enabled: Optional[bool] = None
+    weight: Optional[float] = None
+    default_model: Optional[str] = None
+    rpm_limit: Optional[int] = None
+    rpd_limit: Optional[int] = None
+    tags: Optional[list[str]] = None
+
+
+class ProviderPatchResponse(BaseModel):
+    provider: ProviderStatus
+    model_warning: Optional[str] = None
+    model_suggestions: list[str] = Field(default_factory=list)
+
+
+async def _provider_status(
+    name: str, config_repo: ConfigRepository, rate_repo: RateRepository
+) -> ProviderStatus:
+    dto = await config_repo.get_provider(name)
+    if not dto:
+        raise HTTPException(404, f"unknown provider '{name}'")
+    snap = await rate_repo.snapshot(name)
+    return ProviderStatus(
+        name=name,
+        enabled=dto.enabled,
+        has_key=bool(dto.api_key),
+        healthy=snap.healthy,
+        requests_today=snap.requests_today,
+        requests_this_minute=snap.requests_this_minute,
+        rpm_limit=dto.rpm_limit,
+        rpd_limit=dto.rpd_limit,
+        last_error=snap.last_error,
+        last_latency_ms=snap.last_latency_ms,
+        tags=dto.tags,
+        default_model=dto.default_model,
+    )
+
+
+@app.get("/api/providers", response_model=list[ProviderStatus])
+async def list_providers(
+    session: AsyncSession = Depends(get_session),
+    _admin=Depends(require_admin),
+) -> list[ProviderStatus]:
+    config_repo = ConfigRepository(session)
+    rate_repo = RateRepository(session)
+    providers = await config_repo.list_providers()
+    return [await _provider_status(p.name, config_repo, rate_repo) for p in providers]
+
+
+@app.patch("/api/providers/{name}", response_model=ProviderPatchResponse)
+async def update_provider(
+    name: str,
+    patch: ProviderUpdate,
+    session: AsyncSession = Depends(get_session),
+    _admin=Depends(require_admin),
+) -> ProviderPatchResponse:
+    config_repo = ConfigRepository(session)
+    rate_repo = RateRepository(session)
+    fields = patch.model_dump(exclude_unset=True)
+    if "api_key" in fields and fields["api_key"] == "":
+        fields["api_key"] = None
+    try:
+        await config_repo.patch_provider(name, **fields)
+    except KeyError as e:
+        raise HTTPException(404, str(e))
+    if fields:
+        await rate_repo.reset_health(name)
+
+    # Model validation — soft: we accept unknown models but tell the user.
+    model_warning: Optional[str] = None
+    suggestions: list[str] = []
+    if "default_model" in fields and fields["default_model"]:
+        new_model = fields["default_model"]
+        if not is_known(name, new_model):
+            model_warning = (
+                f"'{new_model}' is not in the known-models list for {name}. "
+                "It may still work — FreeAI will pass it through to the provider."
+            )
+            suggestions = suggest_similar(name, new_model)
+
+    status = await _provider_status(name, config_repo, rate_repo)
+    return ProviderPatchResponse(
+        provider=status,
+        model_warning=model_warning,
+        model_suggestions=suggestions,
+    )
+
+
+@app.post("/api/providers/{name}/reset")
+async def reset_provider_health(
+    name: str,
+    session: AsyncSession = Depends(get_session),
+    _admin=Depends(require_admin),
+) -> dict:
+    rate_repo = RateRepository(session)
+    await rate_repo.reset_health(name)
+    return {"ok": True}
+
+
+@app.get("/api/providers/{name}/models")
+async def list_provider_models(
+    name: str,
+    _admin=Depends(require_admin),
+) -> dict:
+    if name not in KNOWN_MODELS:
+        raise HTTPException(404, f"unknown provider '{name}'")
+    return {
+        "provider": name,
+        "models": [
+            {
+                "id": m.id,
+                "context_window": m.context_window,
+                "capabilities": m.capabilities,
+                "note": m.note,
+            }
+            for m in KNOWN_MODELS[name]
+        ],
+    }
+
+
+# ──────────────────────────── config ────────────────────────────
+
+
+class StrategyUpdate(BaseModel):
+    default_strategy: str  # not a Literal anymore — custom strategies allowed
+
+
+class FallbackUpdate(BaseModel):
+    enable_fallback: bool
+
+
+@app.get("/api/config")
+async def get_config(
+    session: AsyncSession = Depends(get_session),
+    _admin=Depends(require_admin),
+) -> dict:
+    config_repo = ConfigRepository(session)
+    strategy_repo = StrategyRepository(session)
+    cfg = await config_repo.get_app_config()
+    strategies = await strategy_repo.list_all()
+    return {
+        "default_strategy": cfg.default_strategy,
+        "enable_fallback": cfg.enable_fallback,
+        "available_strategies": [s.name for s in strategies],
+        "available_providers": list(PROVIDER_REGISTRY.keys()),
+    }
+
+
+@app.put("/api/config/strategy")
+async def set_strategy(
+    payload: StrategyUpdate,
+    session: AsyncSession = Depends(get_session),
+    _admin=Depends(require_admin),
+) -> dict:
+    # Validate that the target strategy exists
+    strategy_repo = StrategyRepository(session)
+    if not await strategy_repo.get(payload.default_strategy):
+        raise HTTPException(400, f"unknown strategy '{payload.default_strategy}'")
+    config_repo = ConfigRepository(session)
+    await config_repo.set_strategy(payload.default_strategy)
+    return {"default_strategy": payload.default_strategy}
+
+
+@app.put("/api/config/fallback")
+async def set_fallback(
+    payload: FallbackUpdate,
+    session: AsyncSession = Depends(get_session),
+    _admin=Depends(require_admin),
+) -> dict:
+    repo = ConfigRepository(session)
+    await repo.set_fallback(payload.enable_fallback)
+    return {"enable_fallback": payload.enable_fallback}
+
+
+# ──────────────────────────── strategies ────────────────────────────
+
+
+class StrategyUpsertIn(BaseModel):
+    name: str = Field(..., min_length=1, max_length=32, pattern=r"^[a-z0-9_]+$")
+    tags: list[str] = Field(default_factory=list)
+    description: str = ""
+
+
+class StrategyOut(BaseModel):
+    name: str
+    tags: list[str]
+    description: str
+    is_builtin: bool
+
+
+@app.get("/api/strategies", response_model=list[StrategyOut])
+async def list_strategies(
+    session: AsyncSession = Depends(get_session),
+    _admin=Depends(require_admin),
+) -> list[StrategyOut]:
+    repo = StrategyRepository(session)
+    return [StrategyOut(**asdict(s)) for s in await repo.list_all()]
+
+
+@app.post("/api/strategies", response_model=StrategyOut)
+async def create_strategy(
+    payload: StrategyUpsertIn,
+    session: AsyncSession = Depends(get_session),
+    _admin=Depends(require_admin),
+) -> StrategyOut:
+    repo = StrategyRepository(session)
+    existing = await repo.get(payload.name)
+    if existing:
+        raise HTTPException(409, f"strategy '{payload.name}' already exists — use PATCH to edit")
+    dto = StrategyDTO(
+        name=payload.name,
+        tags=payload.tags,
+        description=payload.description,
+        is_builtin=False,
+    )
+    saved = await repo.upsert(dto)
+    return StrategyOut(**asdict(saved))
+
+
+@app.patch("/api/strategies/{name}", response_model=StrategyOut)
+async def update_strategy(
+    name: str,
+    payload: StrategyUpsertIn,
+    session: AsyncSession = Depends(get_session),
+    _admin=Depends(require_admin),
+) -> StrategyOut:
+    if payload.name != name:
+        raise HTTPException(400, "strategy name in body must match the URL")
+    repo = StrategyRepository(session)
+    existing = await repo.get(name)
+    if not existing:
+        raise HTTPException(404, f"unknown strategy '{name}'")
+    # Preserve is_builtin — users can edit built-ins but not flip the flag.
+    saved = await repo.upsert(
+        StrategyDTO(
+            name=name,
+            tags=payload.tags,
+            description=payload.description,
+            is_builtin=existing.is_builtin,
+        )
+    )
+    return StrategyOut(**asdict(saved))
+
+
+@app.delete("/api/strategies/{name}")
+async def delete_strategy(
+    name: str,
+    session: AsyncSession = Depends(get_session),
+    _admin=Depends(require_admin),
+) -> dict:
+    repo = StrategyRepository(session)
+    try:
+        deleted = await repo.delete(name)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if not deleted:
+        raise HTTPException(404, f"unknown strategy '{name}'")
+    return {"ok": True}
+
+
+# ──────────────────────────── analytics ────────────────────────────
+
+
+@app.get("/api/analytics")
+async def analytics(
+    window_seconds: int = 24 * 3600,
+    bucket_count: int = 24,
+    session: AsyncSession = Depends(get_session),
+    _admin=Depends(require_admin),
+) -> dict:
+    """Aggregated usage summary. `window_seconds` and `bucket_count` let the
+    frontend switch between "last hour / 12 buckets" and "last 24h / 24 buckets"
+    etc."""
+    if window_seconds < 60 or window_seconds > 7 * 24 * 3600:
+        raise HTTPException(400, "window_seconds must be between 60 and 604800")
+    if bucket_count < 1 or bucket_count > 168:
+        raise HTTPException(400, "bucket_count must be between 1 and 168")
+    repo = UsageRepository(session)
+    summary = await repo.summary(window_seconds=window_seconds, bucket_count=bucket_count)
+    return asdict(summary)
+
+
+# ──────────────────────────── clients ────────────────────────────
+
+
+class ClientCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=64)
+    rpm_limit: int = Field(default=60, ge=1, le=10_000)
+
+
+class ClientCreated(BaseModel):
+    name: str
+    api_key: str
+    key_hash: str
+    rpm_limit: int
+
+
+@app.get("/api/clients")
+async def list_clients(
+    session: AsyncSession = Depends(get_session),
+    _admin=Depends(require_admin),
+) -> list[dict]:
+    repo = ClientRepository(session)
+    return [
+        {"name": c.name, "key_hash": c.key_hash, "rpm_limit": c.rpm_limit, "enabled": c.enabled}
+        for c in await repo.list_all()
+    ]
+
+
+@app.post("/api/clients", response_model=ClientCreated, status_code=201)
+async def create_client(
+    payload: ClientCreate,
+    session: AsyncSession = Depends(get_session),
+    _admin=Depends(require_admin),
+) -> ClientCreated:
+    repo = ClientRepository(session)
+    client, raw = await repo.create(payload.name, payload.rpm_limit)
+    return ClientCreated(
+        name=client.name,
+        api_key=raw,
+        key_hash=client.key_hash,
+        rpm_limit=client.rpm_limit,
+    )
+
+
+@app.delete("/api/clients/{key_hash}")
+async def revoke_client(
+    key_hash: str,
+    session: AsyncSession = Depends(get_session),
+    _admin=Depends(require_admin),
+) -> dict:
+    repo = ClientRepository(session)
+    if not await repo.revoke(key_hash):
+        raise HTTPException(status_code=404, detail="client not found")
+    return {"ok": True}
+
+
+# ──────────────────────────── health + metrics ────────────────────────────
+
+
+@app.get("/api/health")
+async def health(session: AsyncSession = Depends(get_session)) -> dict:
+    config_repo = ConfigRepository(session)
+    client_repo = ClientRepository(session)
+    providers = await config_repo.list_providers()
+    return {
+        "status": "ok",
+        "providers_configured": sum(1 for p in providers if p.api_key),
+        "clients_configured": len(await client_repo.list_all()),
+        "auth_required": await client_repo.has_any(),
+    }
+
+
+@app.get("/metrics")
+async def metrics() -> Response:
+    body, content_type = render_latest()
+    return Response(content=body, media_type=content_type)
+
+
+# ──────────────────────────── static frontend ────────────────────────────
+
+_FRONTEND_DIR = Path(__file__).resolve().parent.parent.parent / "frontend"
+if _FRONTEND_DIR.exists():
+    app.mount("/", StaticFiles(directory=_FRONTEND_DIR, html=True), name="frontend")
