@@ -159,6 +159,32 @@ function renderByOutcome(data) {
   `;
 }
 
+function renderByClient(data) {
+  const el = document.getElementById("chartByClient");
+  const rows = data.by_client;
+  if (!rows || !rows.length) {
+    el.innerHTML = `<div class="chart-card__empty">no client data</div>`;
+    return;
+  }
+  const max = Math.max(...rows.map((r) => r.calls), 1);
+  const labelW = 85, valW = 80, gap = 6;
+  const barZone = 130;
+  const w = labelW + barZone + gap + valW;
+  const rowH = 28;
+  const h = rows.length * rowH + 12;
+  const bars = rows.map((r, i) => {
+    const y = i * rowH + 8;
+    const barW = Math.max(2, (r.calls / max) * barZone);
+    const successRate = r.calls ? Math.round((r.success / r.calls) * 100) : 0;
+    return `
+      <text class="svg-label" x="0" y="${y + 13}">${escapeSvg(r.client)}</text>
+      <rect class="svg-bar svg-bar--cyan" x="${labelW}" y="${y + 4}" width="${barW.toFixed(1)}" height="14" />
+      <text class="svg-label" x="${labelW + barZone + gap}" y="${y + 13}">${r.calls} · ${formatTokens(r.tokens)}t</text>
+    `;
+  }).join("");
+  el.innerHTML = `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="xMidYMid meet">${bars}</svg>`;
+}
+
 function renderByStrategy(data) {
   const el = document.getElementById("chartByStrategy");
   const rows = data.by_strategy;

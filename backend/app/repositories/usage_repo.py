@@ -38,6 +38,7 @@ class AnalyticsSummary:
     by_provider: list[dict]   # [{provider, calls, success, avg_latency_ms, tokens}]
     by_strategy: list[dict]   # [{strategy, calls}]
     by_outcome: list[dict]    # [{outcome, calls}]
+    by_client: list[dict]     # [{client, calls, success, tokens}]
     time_buckets: list[dict]  # [{bucket_start, calls, success}]
 
 
@@ -133,6 +134,30 @@ class UsageRepository:
         )
         by_outcome = [{"outcome": r[0], "calls": int(r[1])} for r in by_outcome_result.all()]
 
+        # Per-client (join clients table to get human name)
+        by_client_result = await self.session.execute(
+            text("""
+                SELECT COALESCE(c.name, 'unknown') AS client_name,
+                       COUNT(*) AS calls,
+                       COUNT(*) FILTER (WHERE ue.outcome = 'success') AS success,
+                       COALESCE(SUM(ue.prompt_tokens + ue.completion_tokens), 0) AS tokens
+                FROM usage_events ue
+                LEFT JOIN clients c ON ue.client_hash = c.key_hash
+                WHERE ue.occurred_at >= :since
+                GROUP BY c.name
+                ORDER BY calls DESC
+            """).bindparams(since=since)
+        )
+        by_client = [
+            {
+                "client": r[0],
+                "calls": int(r[1]),
+                "success": int(r[2]),
+                "tokens": int(r[3]),
+            }
+            for r in by_client_result.all()
+        ]
+
         # Time bucket series — divide the window into N equal buckets and count.
         bucket_width = window_seconds / bucket_count
         buckets_result = await self.session.execute(
@@ -172,6 +197,7 @@ class UsageRepository:
             by_provider=by_provider,
             by_strategy=by_strategy,
             by_outcome=by_outcome,
+            by_client=by_client,
             time_buckets=time_buckets,
         )
 
