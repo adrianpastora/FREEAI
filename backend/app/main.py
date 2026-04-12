@@ -30,6 +30,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .crypto import hash_admin_token
@@ -539,6 +540,7 @@ class ProviderUpdate(BaseModel):
     default_model: Optional[str] = None
     rpm_limit: Optional[int] = None
     rpd_limit: Optional[int] = None
+    tpd_limit: Optional[int] = None
     tags: Optional[list[str]] = None
 
 
@@ -551,12 +553,25 @@ class ProviderPatchResponse(BaseModel):
 
 
 async def _provider_status(
-    name: str, config_repo: ConfigRepository, rate_repo: RateRepository
+    name: str, config_repo: ConfigRepository, rate_repo: RateRepository,
+    session: Optional[AsyncSession] = None,
 ) -> ProviderStatus:
     dto = await config_repo.get_provider(name)
     if not dto:
         raise HTTPException(404, f"unknown provider '{name}'")
     snap = await rate_repo.snapshot(name)
+
+    tokens_today = 0
+    if session:
+        result = await session.execute(
+            text("""
+                SELECT COALESCE(SUM(prompt_tokens + completion_tokens), 0)
+                FROM usage_events
+                WHERE provider_name = :p AND occurred_at >= :since
+            """).bindparams(p=name, since=time.time() - 86400)
+        )
+        tokens_today = int(result.scalar())
+
     return ProviderStatus(
         name=name,
         enabled=dto.enabled,
@@ -566,6 +581,9 @@ async def _provider_status(
         requests_this_minute=snap.requests_this_minute,
         rpm_limit=dto.rpm_limit,
         rpd_limit=dto.rpd_limit,
+        tpd_limit=dto.tpd_limit,
+        tokens_today=tokens_today,
+        weight=dto.weight,
         last_error=snap.last_error,
         last_latency_ms=snap.last_latency_ms,
         tags=dto.tags,
@@ -581,7 +599,7 @@ async def list_providers(
     config_repo = ConfigRepository(session)
     rate_repo = RateRepository(session)
     providers = await config_repo.list_providers()
-    return [await _provider_status(p.name, config_repo, rate_repo) for p in providers]
+    return [await _provider_status(p.name, config_repo, rate_repo, session) for p in providers]
 
 
 @app.patch("/api/providers/{name}", response_model=ProviderPatchResponse)
@@ -615,7 +633,7 @@ async def update_provider(
             )
             suggestions = suggest_similar(name, new_model)
 
-    status = await _provider_status(name, config_repo, rate_repo)
+    status = await _provider_status(name, config_repo, rate_repo, session)
     return ProviderPatchResponse(
         provider=status,
         model_warning=model_warning,

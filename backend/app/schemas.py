@@ -73,6 +73,9 @@ class ProviderStatus(BaseModel):
     requests_this_minute: int
     rpm_limit: Optional[int]
     rpd_limit: Optional[int]
+    tpd_limit: Optional[int] = None
+    tokens_today: int = 0
+    weight: float = 1.0
     last_error: Optional[str] = None
     last_latency_ms: Optional[int] = None
     tags: list[str] = Field(default_factory=list)
