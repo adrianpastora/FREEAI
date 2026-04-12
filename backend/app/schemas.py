@@ -78,5 +78,6 @@ class ProviderStatus(BaseModel):
     weight: float = 1.0
     last_error: Optional[str] = None
     last_latency_ms: Optional[int] = None
+    latency_ema_ms: Optional[float] = None
     tags: list[str] = Field(default_factory=list)
     default_model: Optional[str] = None

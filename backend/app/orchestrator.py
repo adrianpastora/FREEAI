@@ -20,6 +20,7 @@ import httpx
 
 from .auto_strategy import AutoSignal, detect_auto_strategy
 from .logging_config import get_logger
+from .rate_counters import RateCounterStore
 from . import strategy_dsl
 from .virtual_models import DEFAULT_VIRTUAL_MODEL, is_virtual_model, resolve_virtual_model
 from .strategy_dsl import Definition, parse_definition
@@ -121,6 +122,18 @@ class Orchestrator:
             limits=httpx.Limits(max_keepalive_connections=20, max_connections=100),
         )
         self._strategy_cache = _StrategyCache()
+        # Per-provider in-flight request counters for concurrency-aware scoring.
+        # Penalizes providers with many concurrent requests to spread load.
+        self._in_flight: dict[str, int] = {}
+        # In-memory rate counters — avoids COUNT over rate_events on hot path
+        self._counter_store = RateCounterStore()
+
+    def _dec_in_flight(self, name: str) -> None:
+        n = self._in_flight.get(name, 1) - 1
+        if n <= 0:
+            self._in_flight.pop(name, None)
+        else:
+            self._in_flight[name] = n
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -141,14 +154,13 @@ class Orchestrator:
         dto: ProviderConfigDTO,
         snap,
         definition: Optional[Definition],
-        tokens_today: int = 0,
     ) -> Optional[float]:
         """Compute a provider's total score for a given strategy definition.
 
         Returns:
             None  if the provider is excluded — either unhealthy or
                   rejected by a `require` clause in the DSL.
-            float otherwise: baseline + DSL prefer contribution.
+            float otherwise: baseline + DSL prefer contribution - in_flight penalty.
         """
         if not snap.healthy:
             return None
@@ -158,21 +170,28 @@ class Orchestrator:
             weight=dto.weight,
             tags=dto.tags,
             last_latency_ms=snap.last_latency_ms,
+            latency_ema_ms=snap.latency_ema_ms,
             requests_today=snap.requests_today,
             requests_this_minute=snap.requests_this_minute,
             rpd_limit=dto.rpd_limit,
             rpm_limit=dto.rpm_limit,
             tpd_limit=dto.tpd_limit,
-            tokens_today=tokens_today,
+            tokens_today=snap.tokens_today,
             total_failures=snap.total_failures,
         )
         baseline = strategy_dsl.baseline_score(ctx)
         if definition is None:
-            return baseline
-        dsl_score = strategy_dsl.score(definition, ctx)
-        if dsl_score is None:
-            return None
-        return baseline + dsl_score
+            score = baseline
+        else:
+            dsl_score = strategy_dsl.score(definition, ctx)
+            if dsl_score is None:
+                return None
+            score = baseline + dsl_score
+        # Penalize providers with concurrent in-flight requests
+        in_flight = self._in_flight.get(dto.name, 0)
+        if in_flight > 0:
+            score -= 0.5 * in_flight
+        return score
 
     async def _resolve_strategy(
         self,
@@ -231,14 +250,10 @@ class Orchestrator:
         eligible = [dto for dto in providers if dto.enabled and dto.api_key]
         if not eligible:
             return []
-        snapshots = await rate_repo.snapshot_all([dto.name for dto in eligible])
-
-        # Fetch tokens consumed today per provider for token-aware scoring
-        tokens_map: dict[str, int] = {}
-        if usage_repo:
-            tokens_map = await usage_repo.tokens_today_by_provider(
-                [dto.name for dto in eligible]
-            )
+        snapshots = await rate_repo.snapshot_all(
+            [dto.name for dto in eligible],
+            counter_store=self._counter_store,
+        )
 
         candidates: list[_Candidate] = []
         for dto in eligible:
@@ -248,9 +263,8 @@ class Orchestrator:
             provider = self._build_provider(dto)
             if not provider:
                 continue
-            score = self._score(dto, snap, definition, tokens_today=tokens_map.get(dto.name, 0))
+            score = self._score(dto, snap, definition)
             if score is None:
-                # excluded by DSL require clause (or unhealthy — already filtered above)
                 continue
             if preferred and dto.name == preferred:
                 score += 100
@@ -304,14 +318,42 @@ class Orchestrator:
         fallback_position: int,
         client_hash: Optional[str],
     ) -> None:
+        """Record the outcome of a provider attempt. Never raises — a DB
+        error during commit must not mask a successful provider response."""
         provider_call_duration_seconds.labels(provider=reservation.provider).observe(
             result.latency_ms / 1000.0
         )
+        try:
+            await self._commit_attempt_inner(
+                rate_repo, usage_repo, reservation, result,
+                strategy, fallback_position, client_hash,
+            )
+        except Exception:  # noqa: BLE001
+            log.error(
+                "commit_attempt_failed",
+                provider=reservation.provider,
+                exc_info=True,
+            )
+
+    async def _commit_attempt_inner(
+        self,
+        rate_repo: RateRepository,
+        usage_repo: UsageRepository,
+        reservation: ReservationToken,
+        result: _AttemptResult,
+        strategy: str,
+        fallback_position: int,
+        client_hash: Optional[str],
+    ) -> None:
         outcome: str
         if result.response is not None:
             outcome = "success"
             provider_calls_total.labels(provider=reservation.provider, outcome="success").inc()
-            await rate_repo.commit(reservation, result.latency_ms, ok=True)
+            await rate_repo.commit(
+                reservation, result.latency_ms, ok=True,
+                prompt_tokens=result.response.prompt_tokens,
+                completion_tokens=result.response.completion_tokens,
+            )
             await usage_repo.record(
                 UsageEvent(
                     provider=reservation.provider,
@@ -399,6 +441,7 @@ class Orchestrator:
             if reservation is None:
                 log.info("provider over capacity, skipping", provider=cand.name)
                 continue
+            self._counter_store.record(cand.name)
 
             if fallback_chain:
                 orchestrator_fallbacks_total.labels(
@@ -412,7 +455,11 @@ class Orchestrator:
                 strategy=strategy,
                 attempt=len(fallback_chain),
             )
-            result = await self._try_with_retry(cand, req, provider_model)
+            self._in_flight[cand.name] = self._in_flight.get(cand.name, 0) + 1
+            try:
+                result = await self._try_with_retry(cand, req, provider_model)
+            finally:
+                self._dec_in_flight(cand.name)
             await self._commit_attempt(
                 rate_repo, usage_repo, reservation, result,
                 strategy=strategy,
@@ -505,7 +552,9 @@ class Orchestrator:
             )
             if reservation is None:
                 continue
+            self._counter_store.record(cand.name)
             fallback_position += 1
+            self._in_flight[cand.name] = self._in_flight.get(cand.name, 0) + 1
 
             started = time.perf_counter()
             first_chunk_sent = False
@@ -544,7 +593,11 @@ class Orchestrator:
                 latency_ms = int((time.perf_counter() - started) * 1000)
                 provider_call_duration_seconds.labels(provider=cand.name).observe(latency_ms / 1000.0)
                 provider_calls_total.labels(provider=cand.name, outcome="success").inc()
-                await rate_repo.commit(reservation, latency_ms, ok=True)
+                await rate_repo.commit(
+                    reservation, latency_ms, ok=True,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                )
                 await usage_repo.record(
                     UsageEvent(
                         provider=cand.name,
@@ -559,9 +612,11 @@ class Orchestrator:
                         client_hash=client_hash,
                     )
                 )
+                self._dec_in_flight(cand.name)
                 yield self._format_sse_done(completion_id, created, cand.name, strategy)
                 return
             except ProviderError as e:
+                self._dec_in_flight(cand.name)
                 latency_ms = int((time.perf_counter() - started) * 1000)
                 provider_calls_total.labels(provider=cand.name, outcome=e.kind.value).inc()
                 quarantine = e.retry_after if e.kind == ErrorKind.RATE_LIMITED else None

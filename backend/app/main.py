@@ -30,7 +30,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .crypto import hash_admin_token
@@ -557,17 +556,6 @@ async def _provider_status(
         raise HTTPException(404, f"unknown provider '{name}'")
     snap = await rate_repo.snapshot(name)
 
-    tokens_today = 0
-    if session:
-        result = await session.execute(
-            text("""
-                SELECT COALESCE(SUM(prompt_tokens + completion_tokens), 0)
-                FROM usage_events
-                WHERE provider_name = :p AND occurred_at >= :since
-            """).bindparams(p=name, since=time.time() - 86400)
-        )
-        tokens_today = int(result.scalar())
-
     return ProviderStatus(
         name=name,
         enabled=dto.enabled,
@@ -578,10 +566,11 @@ async def _provider_status(
         rpm_limit=dto.rpm_limit,
         rpd_limit=dto.rpd_limit,
         tpd_limit=dto.tpd_limit,
-        tokens_today=tokens_today,
+        tokens_today=snap.tokens_today,
         weight=dto.weight,
         last_error=snap.last_error,
         last_latency_ms=snap.last_latency_ms,
+        latency_ema_ms=snap.latency_ema_ms,
         tags=dto.tags,
         default_model=dto.default_model,
     )
@@ -950,10 +939,12 @@ async def preview_strategy(
             weight=dto.weight,
             tags=dto.tags,
             last_latency_ms=snap.last_latency_ms,
+            latency_ema_ms=snap.latency_ema_ms,
             requests_today=snap.requests_today,
             requests_this_minute=snap.requests_this_minute,
             rpd_limit=dto.rpd_limit,
             rpm_limit=dto.rpm_limit,
+            tokens_today=snap.tokens_today,
             total_failures=snap.total_failures,
         )
         contribution = dsl_score(defn, ctx)
