@@ -114,6 +114,20 @@ body.dark .signoff { background: #100e0a; border-top-color: var(--char-3); color
 body.dark .signoff__line { color: #ddd6c6; }
 body.dark .signoff__meta code { background: #242019; color: var(--amber-soft); }
 
+/* Playground output: keep dark terminal look in both themes */
+body.dark .playground__output {
+  background: #100e0a;
+  color: #f1ece1;
+  border-color: var(--char-3);
+}
+body.dark .playground__output--small {
+  background: #100e0a;
+  color: #f1ece1;
+  border-color: var(--char-3);
+}
+body.dark .output-empty { color: #b5ac98; }
+body.dark .output-empty pre { color: var(--amber); opacity: 0.7; }
+
 /* Meter fills stay visible */
 body.dark .meter__bar { background: var(--bone-3); }
 body.dark .ghost-button { border-color: var(--char-3); color: var(--char); }
