@@ -49,6 +49,7 @@ from .repositories import (
     StrategyRepository,
     UsageRepository,
 )
+from .repositories.usage_repo import UsageEvent
 from .repositories.config_repo import DEFAULT_PROVIDERS
 from .schemas import (
     ChatCompletionRequest,
