@@ -71,10 +71,11 @@ body.dark .masthead {
 }
 body.dark .ribbon {
   background: #100e0a;
+  color: #f1ece1;
   border-bottom-color: var(--char-3);
 }
-body.dark .ribbon__item  { border-right-color: rgba(241,236,225,0.1); }
-body.dark .ribbon__item:hover { background: #241f18; }
+body.dark .ribbon__item  { color: #ddd6c6; border-right-color: rgba(241,236,225,0.12); }
+body.dark .ribbon__item:hover { background: #2a2418; color: #f1ece1; }
 body.dark .ribbon__item--active { background: var(--amber); color: #1a1814; }
 
 body.dark .savings-strip {
