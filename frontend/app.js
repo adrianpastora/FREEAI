@@ -1615,11 +1615,25 @@ analyticsWindowSel.addEventListener("change", refreshAnalytics);
 
 (function initTheme() {
   const saved = localStorage.getItem("freeai_theme");
-  if (saved === "dark") {
+  let useDark = false;
+  if (saved === "dark" || saved === "light") {
+    useDark = saved === "dark";
+  } else {
+    // No preference saved — respect system setting
+    useDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+  }
+  if (useDark) {
     document.body.classList.add("dark");
     const icon = document.getElementById("themeIcon");
     if (icon) icon.textContent = "◑";
   }
+  // Listen for system theme changes (only when no explicit preference)
+  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", (e) => {
+    if (localStorage.getItem("freeai_theme")) return; // user chose manually
+    document.body.classList.toggle("dark", e.matches);
+    const icon = document.getElementById("themeIcon");
+    if (icon) icon.textContent = e.matches ? "◑" : "◐";
+  });
 })();
 
 document.getElementById("themeToggle").addEventListener("click", () => {
