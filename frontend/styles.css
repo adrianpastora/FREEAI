@@ -110,7 +110,9 @@ body.dark input::placeholder { color: var(--char-3); }
 
 /* Code & footer */
 body.dark code { background: #100e0a; color: var(--amber-soft); }
-body.dark .signoff { background: #100e0a; border-top-color: var(--char-3); }
+body.dark .signoff { background: #100e0a; border-top-color: var(--char-3); color: #b5ac98; }
+body.dark .signoff__line { color: #ddd6c6; }
+body.dark .signoff__meta code { background: #242019; color: var(--amber-soft); }
 
 /* Meter fills stay visible */
 body.dark .meter__bar { background: var(--bone-3); }
