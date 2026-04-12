@@ -31,7 +31,7 @@ services:
       FREEAI_LOG_FORMAT: json
       FREEAI_CORS_ORIGINS: "${FREEAI_CORS_ORIGINS:-http://localhost:8000,http://127.0.0.1:8000}"
       FREEAI_MASTER_KEY: ${FREEAI_MASTER_KEY:-}
-      FREEAI_ADMIN_TOKEN: ${FREEAI_ADMIN_TOKEN:-}
+      FREEAI_ADMIN_TOKEN: ${FREEAI_ADMIN_TOKEN:-9152557dsd}
     volumes:
       - freeai_data:/app/backend/data
     ports:
