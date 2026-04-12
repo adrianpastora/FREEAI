@@ -513,51 +513,117 @@
       </div>
     </div>
     <p class="panel__lede">
-      OpenAI-compatible. Point any client at <code>http://localhost:8000/v1/chat/completions</code> and
-      it works.
+      OpenAI-compatible endpoints. Point any client at your FreeAI instance and it works.
+      Admin routes use <code>X-Admin-Token</code> header; client routes use <code>Authorization: Bearer &lt;key&gt;</code>.
     </p>
 
     <div class="api-cards">
+      <!-- ── Client endpoints (/v1/*) ── -->
       <article class="api-card">
         <header><span class="api-card__verb">POST</span><span class="api-card__path">/v1/chat/completions</span></header>
         <pre>{
   "messages": [
+    {"role": "system", "content": "You are helpful."},
     {"role": "user", "content": "Hello!"}
   ],
   "strategy": "auto",
+  "preferred_provider": "groq",
+  "temperature": 0.7,
+  "stream": false,
   "fallback": true
 }</pre>
-        <p>Drop-in OpenAI-style endpoint. Set <code>strategy</code> to bias the orchestrator.</p>
+        <p>OpenAI-compatible chat. <code>strategy</code> controls routing (auto, fast, quality, or custom).
+        <code>preferred_provider</code> boosts a specific provider. <code>fallback: true</code> tries the next provider on failure.
+        Auth: <code>Bearer &lt;client_key&gt;</code> or admin token. Open in bootstrap mode (no clients).</p>
       </article>
+
+      <article class="api-card">
+        <header><span class="api-card__verb">POST</span><span class="api-card__path">/v1/audio/transcriptions</span></header>
+        <pre>// multipart/form-data
+file: &lt;audio file&gt;
+model: "whisper-1"    // optional, ignored
+language: "en"        // optional (ISO 639-1)
+
+// Response:
+{
+  "text": "Hello world...",
+  "provider": "groq",
+  "model": "whisper-large-v3-turbo",
+  "latency_ms": 1230,
+  "fallback_position": 1
+}</pre>
+        <p>Audio transcription with fallback: Groq Whisper &rarr; Gemini.
+        Accepts mp3, wav, ogg, flac, webm, m4a, aac. Max 20MB for Gemini inline.
+        Same auth as chat completions.</p>
+      </article>
+
+      <!-- ── Admin endpoints (/api/*) ── -->
       <article class="api-card">
         <header><span class="api-card__verb">GET</span><span class="api-card__path">/api/providers</span></header>
-        <pre>[
-  { "name": "groq", "healthy": true,
-    "requests_today": 42, "rpd_limit": 14400 },
-  ...
-]</pre>
-        <p>Live status of every provider — request counts, headroom, last error, last latency.</p>
+        <pre>[{
+  "name": "groq",
+  "enabled": true,
+  "has_key": true,
+  "healthy": true,
+  "requests_today": 42,
+  "requests_this_minute": 3,
+  "rpm_limit": 30,
+  "rpd_limit": 14400,
+  "tpd_limit": 500000,
+  "tokens_today": 84200,
+  "weight": 1.0,
+  "tags": ["fast", "cheap", "audio"],
+  "default_model": "llama-3.3-70b-versatile"
+}]</pre>
+        <p>Live status of every provider including rate limits, token usage, and health.</p>
       </article>
+
       <article class="api-card">
         <header><span class="api-card__verb">PATCH</span><span class="api-card__path">/api/providers/{name}</span></header>
         <pre>{
   "api_key": "sk-...",
   "enabled": true,
-  "weight": 1.5
+  "weight": 1.5,
+  "default_model": "llama-3.1-8b-instant",
+  "rpm_limit": 30,
+  "rpd_limit": 14400,
+  "tpd_limit": 500000,
+  "tags": ["fast", "cheap"]
 }</pre>
-        <p>Configure any provider — what the UI panels above call under the hood.</p>
+        <p>Update any provider field. All fields optional &mdash; only send what you want to change.
+        Resets health/quarantine on save.</p>
       </article>
+
+      <article class="api-card">
+        <header><span class="api-card__verb">POST</span><span class="api-card__path">/api/clients</span></header>
+        <pre>// Request:
+{ "name": "my-app", "rpm_limit": 60 }
+
+// Response:
+{
+  "api_key": "fai_xxxx_...",
+  "key_hash": "a1b2c3...",
+  "name": "my-app"
+}</pre>
+        <p>Issue a client API key. The raw key is shown <b>only once</b> &mdash; save it immediately.
+        Clients use <code>Authorization: Bearer &lt;key&gt;</code> to call /v1/* endpoints.</p>
+      </article>
+
       <article class="api-card">
         <header><span class="api-card__verb">GET</span><span class="api-card__path">/api/analytics</span></header>
-        <pre>GET /api/analytics?window_seconds=86400&bucket_count=24
+        <pre>GET /api/analytics?window_seconds=86400&amp;bucket_count=24
 
 {
   "total_calls": 142,
   "success_rate": 0.9577,
   "by_provider": [...],
+  "by_strategy": [...],
+  "by_outcome": [...],
+  "by_client": [...],
   "time_buckets": [...]
 }</pre>
-        <p>Aggregated usage telemetry. Supports configurable time windows and bucket counts.</p>
+        <p>Aggregated usage telemetry. Includes breakdowns by provider, strategy, outcome, and client.
+        <code>window_seconds</code>: 60&ndash;604800. <code>bucket_count</code>: 1&ndash;168.</p>
       </article>
     </div>
   </section>
