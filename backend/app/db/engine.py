@@ -35,6 +35,8 @@ def create_engine_and_sessionmaker() -> tuple[AsyncEngine, async_sessionmaker[As
         pool_size=settings.db_pool_size,
         max_overflow=settings.db_max_overflow,
         pool_pre_ping=True,
+        pool_recycle=1800,    # recycle connections every 30min to prevent stale/leaked ones
+        pool_timeout=10,      # fail fast if pool is exhausted instead of hanging
     )
     sessionmaker = async_sessionmaker(
         bind=engine,

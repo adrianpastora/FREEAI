@@ -48,6 +48,13 @@ def configure_logging() -> None:
     root.handlers = [handler]
     root.setLevel(level)
 
+    # Silence httpx request logging — it leaks API keys in URLs
+    # (Gemini uses ?key=... query params). Our own orchestrator logs
+    # already record provider, model, latency, and outcome without
+    # exposing credentials.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 
 def get_logger(name: str = "freeai") -> structlog.BoundLogger:
     return structlog.get_logger(name)
