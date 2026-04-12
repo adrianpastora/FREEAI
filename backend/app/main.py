@@ -23,8 +23,9 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Optional, Self
 
+import httpx
 import structlog
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -383,6 +384,148 @@ async def chat_completions(
         )
     except ProviderError as e:
         raise _http_from_provider_error(e)
+
+
+# ──────────────────────────── audio transcriptions ────────────────────────────
+
+_WHISPER_MODELS = ["whisper-large-v3-turbo", "whisper-large-v3"]
+_GROQ_TRANSCRIPTION_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
+_AUDIO_MIMETYPES = {
+    "ogg": "audio/ogg",
+    "mp3": "audio/mpeg",
+    "wav": "audio/wav",
+    "webm": "audio/webm",
+    "m4a": "audio/m4a",
+    "flac": "audio/flac",
+    "mpeg": "audio/mpeg",
+    "mpga": "audio/mpeg",
+}
+
+
+@app.post("/v1/audio/transcriptions")
+async def audio_transcriptions(
+    request: Request,
+    file: UploadFile = File(...),
+    model: str = Form("whisper-1"),
+    language: Optional[str] = Form(None),
+    response_format: Optional[str] = Form(None),
+    session: AsyncSession = Depends(get_session),
+    client=Depends(require_client),
+):
+    """OpenAI-compatible Whisper transcription endpoint.
+
+    Proxies to Groq's whisper-large-v3-turbo. The ``model`` field is
+    accepted for compatibility but ignored — FreeAI always uses Groq's
+    best available Whisper model.
+    """
+    config_repo = ConfigRepository(session)
+    rate_repo = RateRepository(session)
+    usage_repo = UsageRepository(session)
+    client_hash = client.key_hash if client else None
+
+    # ── Find a provider with transcription support (Groq) ──
+    provider_name = "groq"
+    dto = await config_repo.get_provider(provider_name)
+    if not dto or not dto.api_key:
+        raise HTTPException(400, "Groq provider is not configured — add an API key first")
+    if not dto.enabled:
+        raise HTTPException(503, "Groq provider is disabled")
+
+    # ── Reserve capacity (same RPM/RPD limits as chat) ──
+    reservation = await rate_repo.try_reserve(
+        provider_name, dto.rpm_limit, dto.rpd_limit,
+    )
+    if reservation is None:
+        raise HTTPException(
+            503, f"Groq at capacity — try again later",
+            headers={"Retry-After": "60"},
+        )
+
+    # ── Pick the best Whisper model ──
+    whisper_model = _WHISPER_MODELS[0]
+
+    # ── Read uploaded file ──
+    file_bytes = await file.read()
+    ext = (file.filename or "audio.ogg").rsplit(".", 1)[-1].lower()
+    content_type = _AUDIO_MIMETYPES.get(ext, file.content_type or "application/octet-stream")
+
+    # ── Build multipart for Groq ──
+    files_payload = {
+        "file": (file.filename or "audio.ogg", file_bytes, content_type),
+    }
+    data_payload: dict[str, str] = {"model": whisper_model}
+    if language:
+        data_payload["language"] = language
+    if response_format:
+        data_payload["response_format"] = response_format
+
+    # ── Forward to Groq ──
+    started = time.perf_counter()
+    try:
+        async with httpx.AsyncClient() as http:
+            resp = await http.post(
+                _GROQ_TRANSCRIPTION_URL,
+                headers={"Authorization": f"Bearer {dto.api_key}"},
+                files=files_payload,
+                data=data_payload,
+                timeout=120.0,
+            )
+    except httpx.TimeoutException:
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        await rate_repo.commit(reservation, latency_ms, ok=False,
+                               error="timeout", error_kind="network",
+                               quarantine_seconds=30)
+        await usage_repo.record(UsageEvent(
+            provider=provider_name, model=whisper_model,
+            strategy="transcription", outcome="network",
+            latency_ms=latency_ms, client_hash=client_hash,
+        ))
+        raise HTTPException(504, "Groq transcription timed out")
+    except httpx.HTTPError as exc:
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        await rate_repo.commit(reservation, latency_ms, ok=False,
+                               error=str(exc), error_kind="network",
+                               quarantine_seconds=30)
+        await usage_repo.record(UsageEvent(
+            provider=provider_name, model=whisper_model,
+            strategy="transcription", outcome="network",
+            latency_ms=latency_ms, client_hash=client_hash,
+        ))
+        raise HTTPException(504, f"Groq transcription network error: {exc}")
+
+    latency_ms = int((time.perf_counter() - started) * 1000)
+
+    if resp.status_code >= 400:
+        error_body = resp.text[:500]
+        kind = ErrorKind.AUTH if resp.status_code in (401, 403) else (
+            ErrorKind.RATE_LIMITED if resp.status_code == 429 else ErrorKind.SERVER_ERROR
+        )
+        await rate_repo.commit(reservation, latency_ms, ok=False,
+                               error=error_body, error_kind=kind.value,
+                               quarantine_seconds=60 if kind == ErrorKind.SERVER_ERROR else None)
+        await usage_repo.record(UsageEvent(
+            provider=provider_name, model=whisper_model,
+            strategy="transcription", outcome=kind.value,
+            latency_ms=latency_ms, client_hash=client_hash,
+        ))
+        raise HTTPException(
+            _KIND_TO_STATUS.get(kind, 502),
+            {"provider": provider_name, "kind": kind.value, "message": error_body},
+        )
+
+    # ── Success ──
+    await rate_repo.commit(reservation, latency_ms, ok=True)
+    await usage_repo.record(UsageEvent(
+        provider=provider_name, model=whisper_model,
+        strategy="transcription", outcome="success",
+        latency_ms=latency_ms, client_hash=client_hash,
+    ))
+
+    return Response(
+        content=resp.content,
+        status_code=200,
+        media_type=resp.headers.get("content-type", "application/json"),
+    )
 
 
 # ──────────────────────────── provider admin ────────────────────────────
