@@ -35,11 +35,9 @@ KNOWN_MODELS: dict[str, list[KnownModel]] = {
         KnownModel("gemma2-9b-it", 8_192, ["chat"]),
     ],
     "gemini": [
+        KnownModel("gemini-2.5-flash-preview-04-17", 1_048_576, ["chat", "vision", "tools", "long_context", "reasoning"], note="latest"),
         KnownModel("gemini-2.0-flash", 1_048_576, ["chat", "vision", "tools", "long_context"]),
         KnownModel("gemini-2.0-flash-lite", 1_048_576, ["chat", "vision", "long_context"]),
-        KnownModel("gemini-1.5-flash", 1_048_576, ["chat", "vision", "long_context"]),
-        KnownModel("gemini-1.5-flash-8b", 1_048_576, ["chat", "vision", "long_context"], note="smallest"),
-        KnownModel("gemini-1.5-pro", 2_097_152, ["chat", "vision", "long_context", "reasoning"]),
     ],
     "mistral": [
         KnownModel("mistral-small-latest", 32_000, ["chat", "tools"]),
