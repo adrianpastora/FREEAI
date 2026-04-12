@@ -970,6 +970,107 @@ body::before {
   margin-top: 14px !important;
 }
 
+/* ─────────────── PROVIDER SETUP WIZARD ─────────────── */
+
+.wizard__header {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 20px;
+  padding-bottom: 16px;
+  border-bottom: var(--line);
+}
+.wizard__provider-name {
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 600;
+  font-size: 22px;
+  letter-spacing: -0.02em;
+  color: var(--char);
+}
+.wizard__free-tier {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--amber);
+  background: rgba(198,155,68,0.10);
+  padding: 6px 10px;
+  border: 1px dashed rgba(198,155,68,0.3);
+}
+.wizard__steps {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 20px;
+  counter-reset: wizard-step;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.wizard__steps li {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--char-2);
+}
+.wizard__step-num {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--bone);
+  background: var(--char);
+  border-radius: 0;
+}
+.wizard__step-text {
+  flex: 1;
+  padding-top: 3px;
+}
+.wizard__step-text a {
+  color: var(--amber);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.wizard__step-text a:hover {
+  color: var(--char);
+}
+.wizard__step-text code {
+  font-family: var(--mono);
+  font-size: 11px;
+  background: var(--bone);
+  padding: 1px 5px;
+  border: var(--line);
+}
+.wizard__step-text strong {
+  color: var(--char);
+}
+.wizard__links {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.wizard__links a {
+  text-decoration: none;
+}
+.provider-card__foot-actions {
+  display: flex;
+  gap: 8px;
+}
+.wizard-btn {
+  color: var(--amber) !important;
+  border-color: rgba(198,155,68,0.3) !important;
+}
+.wizard-btn:hover {
+  background: var(--amber) !important;
+  color: var(--char) !important;
+}
+
 /* ─────────────── STRATEGY DSL EDITOR ─────────────── */
 
 .dsl-editor-grid {
