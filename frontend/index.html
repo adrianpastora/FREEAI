@@ -535,6 +535,17 @@
         <p>OpenAI-compatible chat. <code>strategy</code> controls routing (auto, fast, quality, or custom).
         <code>preferred_provider</code> boosts a specific provider. <code>fallback: true</code> tries the next provider on failure.
         Auth: <code>Bearer &lt;client_key&gt;</code> or admin token. Open in bootstrap mode (no clients).</p>
+        <p><strong>Virtual models:</strong> set <code>"model"</code> to <code>freeai-auto</code>, <code>freeai-fast</code>,
+        <code>freeai-quality</code>, <code>freeai-code</code>, <code>freeai-reasoning</code>,
+        <code>freeai-cheap</code>, <code>freeai-vision</code>, or <code>freeai-long</code> to pick a strategy directly.</p>
+        <p><strong>Vision:</strong> send images via multimodal content blocks:</p>
+        <pre>{"role": "user", "content": [
+  {"type": "text", "text": "Describe this"},
+  {"type": "image_url", "image_url":
+    {"url": "data:image/png;base64,..."}}
+]}</pre>
+        <p>The orchestrator auto-detects images and routes to vision providers (Gemini, OpenRouter).
+        Works with <code>strategy: "auto"</code> or <code>model: "freeai-vision"</code>.</p>
       </article>
 
       <article class="api-card">
@@ -572,10 +583,13 @@ language: "en"        // optional (ISO 639-1)
   "tpd_limit": 500000,
   "tokens_today": 84200,
   "weight": 1.0,
+  "last_latency_ms": 420,
+  "latency_ema_ms": 385.2,
   "tags": ["fast", "cheap", "audio"],
   "default_model": "llama-3.3-70b-versatile"
 }]</pre>
-        <p>Live status of every provider including rate limits, token usage, and health.</p>
+        <p>Live status of every provider including rate limits, token usage, and health.
+        <code>latency_ema_ms</code> is an exponential moving average (smoother than <code>last_latency_ms</code>).</p>
       </article>
 
       <article class="api-card">
