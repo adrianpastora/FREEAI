@@ -1243,6 +1243,22 @@ function updateProviderSelect(providers) {
 // ─────────────── playground ───────────────
 
 const pgSend = document.getElementById("pgSend");
+const pgClientKeyInput = document.getElementById("pgClientKey");
+
+// Persist client key in localStorage
+pgClientKeyInput.value = localStorage.getItem("freeai_client_key") || "";
+pgClientKeyInput.addEventListener("change", () => {
+  const v = pgClientKeyInput.value.trim();
+  if (v) localStorage.setItem("freeai_client_key", v);
+  else localStorage.removeItem("freeai_client_key");
+});
+
+function getPlaygroundHeaders(extra = {}) {
+  const headers = { "Content-Type": "application/json", ...extra };
+  const key = pgClientKeyInput.value.trim();
+  if (key) headers["Authorization"] = `Bearer ${key}`;
+  return headers;
+}
 
 async function runPlayground() {
   const prompt = document.getElementById("pgPrompt").value.trim();
@@ -1280,12 +1296,9 @@ async function runPlayground() {
 
 async function runOneShot(body, out) {
   out.innerHTML = `<div class="output-empty"><pre>┄┄ transmitting ┄┄</pre></div>`;
-  // /v1/chat/completions does NOT require admin — it's a client endpoint.
-  // In bootstrap mode (no clients) it's open. Otherwise the user needs an
-  // outbound key. The playground hits it directly.
   const res = await fetch(`${API_BASE}/v1/chat/completions`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: getPlaygroundHeaders(),
     body: JSON.stringify(body),
   });
   if (!res.ok) {
@@ -1320,7 +1333,7 @@ async function runStreaming(body, out) {
 
   const res = await fetch(`${API_BASE}/v1/chat/completions`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "Accept": "text/event-stream" },
+    headers: getPlaygroundHeaders({ "Accept": "text/event-stream" }),
     body: JSON.stringify(body),
   });
   if (!res.ok) {
@@ -1372,6 +1385,54 @@ async function runStreaming(body, out) {
 }
 
 pgSend.addEventListener("click", runPlayground);
+
+// ─────────────── audio transcription ───────────────
+
+document.getElementById("pgTranscribe").addEventListener("click", async () => {
+  const fileInput = document.getElementById("pgAudioFile");
+  const out = document.getElementById("pgAudioOutput");
+  const btn = document.getElementById("pgTranscribe");
+
+  if (!fileInput.files.length) {
+    out.innerHTML = `<div class="output-meta"><span>error</span></div><div class="output-body">Select an audio file first.</div>`;
+    return;
+  }
+
+  const formData = new FormData();
+  formData.append("file", fileInput.files[0]);
+  formData.append("model", "whisper-1");
+  const lang = document.getElementById("pgAudioLang").value.trim();
+  if (lang) formData.append("language", lang);
+
+  out.innerHTML = `<div class="output-empty"><pre>┄┄ transcribing ┄┄</pre></div>`;
+  btn.disabled = true;
+
+  try {
+    const headers = {};
+    const key = pgClientKeyInput.value.trim();
+    if (key) headers["Authorization"] = `Bearer ${key}`;
+
+    const res = await fetch(`${API_BASE}/v1/audio/transcriptions`, {
+      method: "POST",
+      headers,
+      body: formData,
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(text);
+    }
+    const data = await res.json();
+    out.innerHTML = `
+      <div class="output-meta"><span>provider: <b>groq</b></span><span>model: <b>whisper-large-v3-turbo</b></span></div>
+      <div class="output-body">${escapeHtml(data.text)}</div>
+    `;
+  } catch (e) {
+    out.innerHTML = `<div class="output-meta"><span>error</span></div><div class="output-body">${escapeHtml(e.message)}</div>`;
+  } finally {
+    btn.disabled = false;
+    refreshProviders();
+  }
+});
 
 function escapeHtml(s) {
   return String(s)
@@ -1472,6 +1533,7 @@ async function refreshAnalytics() {
   renderByProvider(data);
   renderByOutcome(data);
   renderByStrategy(data);
+  renderByClient(data);
 }
 
 // Chart rendering functions live in charts.js (loaded before this file).

@@ -334,6 +334,11 @@
     <div class="playground">
       <div class="playground__form">
         <label class="field">
+          <span class="field__label">CLIENT&nbsp;KEY&nbsp;<em>(needed when clients exist)</em></span>
+          <input type="password" id="pgClientKey" placeholder="paste a client API key… (not needed in bootstrap mode)" />
+        </label>
+
+        <label class="field">
           <span class="field__label">SYSTEM&nbsp;PROMPT&nbsp;<em>(optional)</em></span>
           <textarea id="pgSystem" rows="2" placeholder="You are a precise assistant..."></textarea>
         </label>
@@ -385,6 +390,34 @@
           </pre>
         </div>
       </div>
+
+      <div class="playground__audio">
+        <h3 class="playground__audio-title">AUDIO&nbsp;TRANSCRIPTION</h3>
+        <p class="playground__audio-lede">Upload an audio file to transcribe via Groq Whisper. Requires Groq provider configured.</p>
+        <div class="playground__audio-controls">
+          <label class="field field--inline">
+            <span class="field__label">AUDIO&nbsp;FILE</span>
+            <input type="file" id="pgAudioFile" accept="audio/*,.mp3,.mp4,.mpeg,.mpga,.m4a,.wav,.webm,.ogg,.flac" />
+          </label>
+          <label class="field field--inline">
+            <span class="field__label">LANGUAGE&nbsp;<em>(optional)</em></span>
+            <input type="text" id="pgAudioLang" placeholder="en, es, fr…" style="width:80px" />
+          </label>
+          <button class="primary-button" id="pgTranscribe">
+            <span>TRANSCRIBE</span>
+            <span class="primary-button__char">▸</span>
+          </button>
+        </div>
+        <div class="playground__output playground__output--small" id="pgAudioOutput">
+          <div class="output-empty">
+            <pre>
+   ┌──────────────────────────┐
+   │   awaiting audio file    │
+   └──────────────────────────┘
+            </pre>
+          </div>
+        </div>
+      </div>
     </div>
   </section>
 
@@ -434,6 +467,10 @@
       <div class="chart-card">
         <h3 class="chart-card__title">BY&nbsp;STRATEGY</h3>
         <div class="chart-card__body" id="chartByStrategy"></div>
+      </div>
+      <div class="chart-card">
+        <h3 class="chart-card__title">BY&nbsp;CLIENT</h3>
+        <div class="chart-card__body" id="chartByClient"></div>
       </div>
     </div>
   </section>
