@@ -297,6 +297,28 @@ def matches(clause: Clause, ctx: EvalContext) -> bool:
     return False
 
 
+def baseline_score(ctx: EvalContext) -> float:
+    """Provider-intrinsic score: weight + headroom + latency bonus.
+
+    This is the score a provider gets independently of any DSL rules.
+    Uses the derived fields already present in ``EvalContext``
+    (``rpd_remaining``, ``last_latency_ms``) so that both the
+    orchestrator and the strategy preview endpoint compute the same
+    number without reaching into private methods.
+    """
+    s = ctx.fields.get("weight", 0.0)
+    s += ctx.fields.get("rpd_remaining", 1.0) * 1.5
+    last_ms = ctx.fields.get("last_latency_ms")
+    if last_ms is not None:
+        if last_ms < 800:
+            s += 0.8
+        elif last_ms < 2000:
+            s += 0.3
+        else:
+            s -= 0.3
+    return s
+
+
 def score(defn: Definition, ctx: EvalContext) -> Optional[float]:
     """Compute the DSL contribution to a provider's score.
 
@@ -306,7 +328,7 @@ def score(defn: Definition, ctx: EvalContext) -> Optional[float]:
               (provider is in the pool, scored only by baseline).
         > 0   sum of weights of matching `prefer` clauses.
 
-    The orchestrator adds this on top of `baseline_score(provider)`.
+    The orchestrator adds this on top of ``baseline_score(ctx)``.
     Returning None lets the caller distinguish "excluded" from
     "in the pool but no DSL bonus".
     """

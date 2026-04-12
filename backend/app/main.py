@@ -758,13 +758,12 @@ async def preview_strategy(
 
     snapshots = await rate_repo.snapshot_all([p.name for p in eligible])
 
+    from .strategy_dsl import baseline_score as dsl_baseline
     from .strategy_dsl import context_from_provider
     from .strategy_dsl import score as dsl_score
 
     candidates: list[PreviewedCandidate] = []
     excluded: list[str] = [p.name for p in providers if not (p.enabled and p.api_key)]
-
-    orch = request.app.state.orchestrator
 
     for dto in eligible:
         snap = snapshots.get(dto.name)
@@ -772,8 +771,6 @@ async def preview_strategy(
             excluded.append(dto.name)
             continue
         if not snap.healthy:
-            # Unhealthy is "excluded for now"; the editor shows it in the
-            # excluded list so the user knows it's not their definition's fault.
             excluded.append(dto.name)
             continue
 
@@ -793,7 +790,7 @@ async def preview_strategy(
         if contribution is None:
             excluded.append(dto.name)
             continue
-        baseline = orch._baseline_score(dto, snap)
+        baseline = dsl_baseline(ctx)
         rpd_remaining = ctx.fields["rpd_remaining"]
         candidates.append(PreviewedCandidate(
             name=dto.name,
