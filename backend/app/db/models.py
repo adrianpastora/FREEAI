@@ -53,6 +53,7 @@ class ProviderConfigRow(Base):
     api_key_encrypted: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     rpm_limit: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     rpd_limit: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    tpd_limit: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     weight: Mapped[float] = mapped_column(Float, default=1.0, nullable=False)
     tags: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list, nullable=False)
     default_model: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)

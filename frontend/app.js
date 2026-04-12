@@ -531,6 +531,16 @@ function renderProvider(p) {
   const modelInput = node.querySelector(".model-input");
   populateModelSelect(modelInput, p.name, p.default_model);
 
+  // limit inputs
+  const rpmLimitInput = node.querySelector(".rpm-limit-input");
+  const rpdLimitInput = node.querySelector(".rpd-limit-input");
+  const tpdLimitInput = node.querySelector(".tpd-limit-input");
+  const weightInput   = node.querySelector(".weight-input");
+  rpmLimitInput.value = p.rpm_limit ?? "";
+  rpdLimitInput.value = p.rpd_limit ?? "";
+  tpdLimitInput.value = p.tpd_limit ?? "";
+  weightInput.value   = p.weight ?? 1.0;
+
   // meters
   const rpmFill  = node.querySelector(".meter:nth-child(1) .meter__fill");
   const rpmValue = node.querySelector(".rpm-value");
@@ -554,6 +564,26 @@ function renderProvider(p) {
   } else {
     rpdFill.style.right = "100%";
     rpdValue.textContent = `${p.requests_today}/—`;
+  }
+
+  // tokens today meter
+  const tpdFill  = node.querySelector(".meter__fill--cyan");
+  const tokensValue = node.querySelector(".tokens-value");
+  if (tokensValue) {
+    const t = p.tokens_today || 0;
+    const fmt = t >= 1_000_000 ? (t / 1_000_000).toFixed(1) + "M" : t >= 1000 ? (t / 1000).toFixed(1) + "k" : String(t);
+    if (p.tpd_limit) {
+      const limFmt = p.tpd_limit >= 1_000_000 ? (p.tpd_limit / 1_000_000).toFixed(1) + "M" : p.tpd_limit >= 1000 ? (p.tpd_limit / 1000).toFixed(0) + "k" : String(p.tpd_limit);
+      tokensValue.textContent = `${fmt}/${limFmt}`;
+      const pct = Math.min(100, (t / p.tpd_limit) * 100);
+      if (tpdFill) {
+        tpdFill.style.right = `${100 - pct}%`;
+        if (pct > 80) tpdFill.classList.add("is-warn");
+      }
+    } else {
+      tokensValue.textContent = `${fmt}/—`;
+      if (tpdFill) tpdFill.style.right = "100%";
+    }
   }
 
   node.querySelector(".latency-value").textContent =
@@ -583,6 +613,14 @@ function renderProvider(p) {
     const body = {};
     if (keyInput.value) body.api_key = keyInput.value;
     if (modelInput.value !== p.default_model) body.default_model = modelInput.value;
+    const newRpm = rpmLimitInput.value ? parseInt(rpmLimitInput.value, 10) : null;
+    const newRpd = rpdLimitInput.value ? parseInt(rpdLimitInput.value, 10) : null;
+    const newTpd = tpdLimitInput.value ? parseInt(tpdLimitInput.value, 10) : null;
+    const newWeight = weightInput.value ? parseFloat(weightInput.value) : null;
+    if (newRpm !== p.rpm_limit) body.rpm_limit = newRpm;
+    if (newRpd !== p.rpd_limit) body.rpd_limit = newRpd;
+    if (newTpd !== p.tpd_limit) body.tpd_limit = newTpd;
+    if (newWeight !== null && newWeight !== p.weight) body.weight = newWeight;
     if (!Object.keys(body).length) return flashButton(node.querySelector(".save-key"), "NO CHANGE");
     try {
       const result = await adminApi(`/api/providers/${p.name}`, { method: "PATCH", body: JSON.stringify(body) });
@@ -668,6 +706,27 @@ function updateProviderCard(node, p) {
   } else {
     rpdFill.style.right = "100%";
     rpdValue.textContent = `${p.requests_today}/—`;
+  }
+
+  // tokens today meter
+  const tpdFillUpd = node.querySelector(".meter__fill--cyan");
+  const tokVal = node.querySelector(".tokens-value");
+  if (tokVal) {
+    const t = p.tokens_today || 0;
+    const fmt = t >= 1_000_000 ? (t / 1_000_000).toFixed(1) + "M" : t >= 1000 ? (t / 1000).toFixed(1) + "k" : String(t);
+    if (p.tpd_limit) {
+      const limFmt = p.tpd_limit >= 1_000_000 ? (p.tpd_limit / 1_000_000).toFixed(1) + "M" : p.tpd_limit >= 1000 ? (p.tpd_limit / 1000).toFixed(0) + "k" : String(p.tpd_limit);
+      tokVal.textContent = `${fmt}/${limFmt}`;
+      const pct = Math.min(100, (t / p.tpd_limit) * 100);
+      if (tpdFillUpd) {
+        tpdFillUpd.classList.remove("is-warn");
+        tpdFillUpd.style.right = `${100 - pct}%`;
+        if (pct > 80) tpdFillUpd.classList.add("is-warn");
+      }
+    } else {
+      tokVal.textContent = `${fmt}/—`;
+      if (tpdFillUpd) tpdFillUpd.style.right = "100%";
+    }
   }
 
   // latency

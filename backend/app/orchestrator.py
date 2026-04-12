@@ -141,6 +141,7 @@ class Orchestrator:
         dto: ProviderConfigDTO,
         snap,
         definition: Optional[Definition],
+        tokens_today: int = 0,
     ) -> Optional[float]:
         """Compute a provider's total score for a given strategy definition.
 
@@ -161,6 +162,8 @@ class Orchestrator:
             requests_this_minute=snap.requests_this_minute,
             rpd_limit=dto.rpd_limit,
             rpm_limit=dto.rpm_limit,
+            tpd_limit=dto.tpd_limit,
+            tokens_today=tokens_today,
             total_failures=snap.total_failures,
         )
         baseline = strategy_dsl.baseline_score(ctx)
@@ -222,12 +225,21 @@ class Orchestrator:
         rate_repo: RateRepository,
         definition: Optional[Definition],
         preferred: Optional[str],
+        usage_repo: Optional[UsageRepository] = None,
     ) -> list[_Candidate]:
         providers = await config_repo.list_providers()
         eligible = [dto for dto in providers if dto.enabled and dto.api_key]
         if not eligible:
             return []
         snapshots = await rate_repo.snapshot_all([dto.name for dto in eligible])
+
+        # Fetch tokens consumed today per provider for token-aware scoring
+        tokens_map: dict[str, int] = {}
+        if usage_repo:
+            tokens_map = await usage_repo.tokens_today_by_provider(
+                [dto.name for dto in eligible]
+            )
+
         candidates: list[_Candidate] = []
         for dto in eligible:
             snap = snapshots.get(dto.name)
@@ -236,7 +248,7 @@ class Orchestrator:
             provider = self._build_provider(dto)
             if not provider:
                 continue
-            score = self._score(dto, snap, definition)
+            score = self._score(dto, snap, definition, tokens_today=tokens_map.get(dto.name, 0))
             if score is None:
                 # excluded by DSL require clause (or unhealthy — already filtered above)
                 continue
@@ -366,7 +378,7 @@ class Orchestrator:
                 has_vision=signal.has_vision,
             )
 
-        candidates = await self._rank(config_repo, rate_repo, definition, req.preferred_provider)
+        candidates = await self._rank(config_repo, rate_repo, definition, req.preferred_provider, usage_repo)
         if not candidates:
             raise ProviderError(
                 "orchestrator",
@@ -470,7 +482,7 @@ class Orchestrator:
     ) -> AsyncIterator[dict]:
         app_cfg = await config_repo.get_app_config()
         strategy, definition, _, virtual_model_id, provider_model = await self._resolve_strategy(req, strategy_repo)
-        candidates = await self._rank(config_repo, rate_repo, definition, req.preferred_provider)
+        candidates = await self._rank(config_repo, rate_repo, definition, req.preferred_provider, usage_repo)
         if not candidates:
             raise ProviderError(
                 "orchestrator",

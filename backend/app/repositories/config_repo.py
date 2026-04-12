@@ -25,6 +25,7 @@ class ProviderConfigDTO:
     api_key: Optional[str] = None  # plaintext after read; encrypted on write
     rpm_limit: Optional[int] = None
     rpd_limit: Optional[int] = None
+    tpd_limit: Optional[int] = None
     weight: float = 1.0
     tags: list[str] = field(default_factory=list)
     default_model: Optional[str] = None
@@ -36,41 +37,48 @@ class AppConfigDTO:
     enable_fallback: bool = True
 
 
-# Defaults — used to seed an empty database on first run
+# Defaults — used to seed an empty database on first run.
+# Limits reflect each provider's free tier as of 2026-04:
+#   Groq free:       30 RPM, 14 400 RPD, 500k TPD (llama-3.3-70b)
+#   Gemini free:     10 RPM,   250 RPD (Flash), ~unlimited TPD at 250k TPM
+#   Mistral exper:    2 RPM, ~unlimited RPD, ~1B tokens/month ≈ 33M/day
+#   OpenRouter free: 20 RPM,   200 RPD (per model), no TPD
+#   Cohere trial:    20 RPM, 1 000/month ≈ 33/day, no TPD
+#   HuggingFace:     ~30 RPM, ~1 000 RPD (varies), no TPD
 DEFAULT_PROVIDERS: dict[str, ProviderConfigDTO] = {
     "groq": ProviderConfigDTO(
         name="groq",
-        rpm_limit=30, rpd_limit=14400, weight=1.0,
-        tags=["fast", "cheap", "coding", "reasoning"],
+        rpm_limit=30, rpd_limit=14_400, tpd_limit=500_000, weight=1.0,
+        tags=["fast", "cheap", "coding", "reasoning", "audio"],
         default_model="llama-3.3-70b-versatile",
     ),
     "gemini": ProviderConfigDTO(
         name="gemini",
-        rpm_limit=15, rpd_limit=1500, weight=0.9,
+        rpm_limit=10, rpd_limit=250, tpd_limit=None, weight=0.9,
         tags=["quality", "vision", "long_context", "reasoning"],
         default_model="gemini-2.5-flash",
     ),
     "mistral": ProviderConfigDTO(
         name="mistral",
-        rpm_limit=60, rpd_limit=1_000_000_000, weight=0.8,
+        rpm_limit=2, rpd_limit=1_000_000_000, tpd_limit=33_000_000, weight=0.8,
         tags=["coding", "fast", "cheap"],
         default_model="mistral-small-latest",
     ),
     "openrouter": ProviderConfigDTO(
         name="openrouter",
-        rpm_limit=20, rpd_limit=200, weight=0.7,
+        rpm_limit=20, rpd_limit=200, tpd_limit=None, weight=0.7,
         tags=["quality", "variety", "reasoning"],
         default_model="meta-llama/llama-3.3-70b-instruct:free",
     ),
     "cohere": ProviderConfigDTO(
         name="cohere",
-        rpm_limit=20, rpd_limit=1000, weight=0.6,
+        rpm_limit=20, rpd_limit=33, tpd_limit=None, weight=0.6,
         tags=["fast", "rag"],
         default_model="command-r-08-2024",
     ),
     "huggingface": ProviderConfigDTO(
         name="huggingface",
-        rpm_limit=30, rpd_limit=1000, weight=0.5,
+        rpm_limit=30, rpd_limit=1_000, tpd_limit=None, weight=0.5,
         tags=["variety", "cheap"],
         default_model="meta-llama/Llama-3.2-3B-Instruct",
     ),
@@ -100,6 +108,7 @@ class ConfigRepository:
             api_key_encrypted=encrypted,
             rpm_limit=dto.rpm_limit,
             rpd_limit=dto.rpd_limit,
+            tpd_limit=dto.tpd_limit,
             weight=dto.weight,
             tags=dto.tags,
             default_model=dto.default_model,
@@ -111,6 +120,7 @@ class ConfigRepository:
                 "api_key_encrypted": stmt.excluded.api_key_encrypted,
                 "rpm_limit": stmt.excluded.rpm_limit,
                 "rpd_limit": stmt.excluded.rpd_limit,
+                "tpd_limit": stmt.excluded.tpd_limit,
                 "weight": stmt.excluded.weight,
                 "tags": stmt.excluded.tags,
                 "default_model": stmt.excluded.default_model,
@@ -156,6 +166,7 @@ class ConfigRepository:
             api_key=decrypt(row.api_key_encrypted),
             rpm_limit=row.rpm_limit,
             rpd_limit=row.rpd_limit,
+            tpd_limit=row.tpd_limit,
             weight=row.weight,
             tags=list(row.tags or []),
             default_model=row.default_model,

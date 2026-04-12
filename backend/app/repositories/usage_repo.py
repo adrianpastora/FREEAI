@@ -201,6 +201,25 @@ class UsageRepository:
             time_buckets=time_buckets,
         )
 
+    async def tokens_today_by_provider(self, provider_names: list[str]) -> dict[str, int]:
+        """Return {provider_name: total_tokens_last_24h} for the given providers."""
+        if not provider_names:
+            return {}
+        since = time.time() - 86400
+        result = await self.session.execute(
+            text("""
+                SELECT provider_name,
+                       COALESCE(SUM(prompt_tokens + completion_tokens), 0) AS tokens
+                FROM usage_events
+                WHERE provider_name = ANY(:names) AND occurred_at >= :since
+                GROUP BY provider_name
+            """).bindparams(
+                bindparam("names", value=provider_names),
+                since=since,
+            )
+        )
+        return {r[0]: int(r[1]) for r in result.all()}
+
     async def purge_older_than(self, seconds: int) -> int:
         cutoff = time.time() - seconds
         result = await self.session.execute(

@@ -298,16 +298,21 @@ def matches(clause: Clause, ctx: EvalContext) -> bool:
 
 
 def baseline_score(ctx: EvalContext) -> float:
-    """Provider-intrinsic score: weight + headroom + latency bonus.
+    """Provider-intrinsic score: weight + headroom + latency bonus + token headroom.
 
     This is the score a provider gets independently of any DSL rules.
     Uses the derived fields already present in ``EvalContext``
-    (``rpd_remaining``, ``last_latency_ms``) so that both the
-    orchestrator and the strategy preview endpoint compute the same
-    number without reaching into private methods.
+    (``rpd_remaining``, ``tpd_remaining``, ``last_latency_ms``) so that
+    both the orchestrator and the strategy preview endpoint compute the
+    same number without reaching into private methods.
+
+    Token headroom (tpd_remaining) is weighted at 2.0 — higher than RPD
+    headroom (1.5) — because exhausting tokens causes hard provider
+    errors (quarantine), while RPD just skips to the next candidate.
     """
     s = ctx.fields.get("weight", 0.0)
     s += ctx.fields.get("rpd_remaining", 1.0) * 1.5
+    s += ctx.fields.get("tpd_remaining", 1.0) * 2.0
     last_ms = ctx.fields.get("last_latency_ms")
     if last_ms is not None:
         if last_ms < 800:
@@ -356,14 +361,17 @@ def context_from_provider(
     requests_this_minute: int,
     rpd_limit: Optional[int],
     rpm_limit: Optional[int],
+    tpd_limit: Optional[int] = None,
+    tokens_today: int = 0,
     total_failures: int,
 ) -> EvalContext:
     """Build an EvalContext from the fields the orchestrator already has.
 
     Convenience constructor so callers don't have to know the field
-    names. Derived fields (`rpd_remaining`, `rpm_remaining`) are computed
-    here. If a limit is None or zero, the corresponding remaining field
-    is 1.0 (treated as "no limit, fully open").
+    names. Derived fields (`rpd_remaining`, `rpm_remaining`,
+    `tpd_remaining`) are computed here. If a limit is None or zero,
+    the corresponding remaining field is 1.0 (treated as
+    "no limit, fully open").
     """
     rpd_remaining = 1.0
     if rpd_limit and rpd_limit > 0:
@@ -371,6 +379,9 @@ def context_from_provider(
     rpm_remaining = 1.0
     if rpm_limit and rpm_limit > 0:
         rpm_remaining = max(0.0, 1.0 - requests_this_minute / rpm_limit)
+    tpd_remaining = 1.0
+    if tpd_limit and tpd_limit > 0:
+        tpd_remaining = max(0.0, 1.0 - tokens_today / tpd_limit)
     return EvalContext(fields={
         "name": name,
         "enabled": enabled,
@@ -381,6 +392,8 @@ def context_from_provider(
         "requests_this_minute": requests_this_minute,
         "rpd_remaining": rpd_remaining,
         "rpm_remaining": rpm_remaining,
+        "tpd_remaining": tpd_remaining,
+        "tokens_today": tokens_today,
         "total_failures": total_failures,
     })
 

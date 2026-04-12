@@ -606,6 +606,24 @@
           <select class="model-input"><option value="">loading models…</option></select>
         </div>
       </div>
+      <div class="provider-row provider-row--limits">
+        <div class="limit-field">
+          <span class="provider-row__label">RPM&nbsp;LIMIT</span>
+          <input type="number" class="limit-input rpm-limit-input" min="1" placeholder="—" />
+        </div>
+        <div class="limit-field">
+          <span class="provider-row__label">DAILY&nbsp;LIMIT</span>
+          <input type="number" class="limit-input rpd-limit-input" min="1" placeholder="—" />
+        </div>
+        <div class="limit-field">
+          <span class="provider-row__label">TOKENS/DAY</span>
+          <input type="number" class="limit-input tpd-limit-input" min="1" placeholder="—" />
+        </div>
+        <div class="limit-field">
+          <span class="provider-row__label">WEIGHT</span>
+          <input type="number" class="limit-input weight-input" min="0" max="10" step="0.1" placeholder="1.0" />
+        </div>
+      </div>
       <div class="provider-row provider-row--meters">
         <div class="meter">
           <div class="meter__label">RPM</div>
@@ -616,6 +634,11 @@
           <div class="meter__label">DAILY</div>
           <div class="meter__bar"><div class="meter__fill"></div></div>
           <div class="meter__value rpd-value">0/—</div>
+        </div>
+        <div class="meter">
+          <div class="meter__label">TOKENS/24H</div>
+          <div class="meter__bar"><div class="meter__fill meter__fill--cyan"></div></div>
+          <div class="meter__value tokens-value">0/—</div>
         </div>
       </div>
       <div class="provider-row provider-row--latency">
