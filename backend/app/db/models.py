@@ -79,8 +79,11 @@ class ProviderStatsRow(Base):
     last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     last_error_kind: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     last_latency_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    latency_ema_ms: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     total_calls: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     total_failures: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    tokens_today: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    tokens_day_start: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     updated_at: Mapped[float] = mapped_column(
         Float, default=time.time, onupdate=time.time, nullable=False
     )

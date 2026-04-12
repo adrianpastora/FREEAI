@@ -15,7 +15,7 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
-from sqlalchemy import bindparam, delete, select, text, update
+from sqlalchemy import bindparam, case, delete, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -39,10 +39,12 @@ class ProviderSnapshot:
     last_error: Optional[str]
     last_error_kind: Optional[str]
     last_latency_ms: Optional[int]
+    latency_ema_ms: Optional[float]
     healthy: bool
     quarantined_until: Optional[float]
     total_calls: int
     total_failures: int
+    tokens_today: int
 
 
 class RateRepository:
@@ -79,26 +81,55 @@ class RateRepository:
         error: Optional[str] = None,
         error_kind: Optional[str] = None,
         quarantine_seconds: Optional[float] = None,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
     ) -> None:
         # Update stats row (always exists — try_reserve created it)
         if ok:
             # A successful call fully heals the provider: clear the streak,
             # mark healthy, AND clear any lingering quarantine timestamp so
             # snapshot() doesn't have to reason about "expired but not cleared".
-            # Before this fix, quarantined_until kept its old value after a
-            # successful call and read paths had to carry the expiration logic
-            # (which had its own bug). See REVIEW § 1.2.
+
+            # EMA and token counter computed atomically in SQL to avoid
+            # read-then-write races under concurrent requests.
+            _EMA_ALPHA = 0.3
+            now = time.time()
+            tokens_added = prompt_tokens + completion_tokens
+
+            # EMA: COALESCE handles NULL (first call) → seed with current latency
+            ema_col = ProviderStatsRow.latency_ema_ms
+            new_ema = case(
+                (ema_col.is_(None), float(latency_ms)),
+                else_=_EMA_ALPHA * latency_ms + (1 - _EMA_ALPHA) * ema_col,
+            )
+
+            # Token counter: reset when day rolled over (day_start + 86400 < now)
+            day_col = ProviderStatsRow.tokens_day_start
+            tok_col = ProviderStatsRow.tokens_today
+            day_rolled = (now - day_col) >= 86400
+            new_tokens = case(
+                (day_rolled, tokens_added),
+                else_=tok_col + tokens_added,
+            )
+            new_day_start = case(
+                (day_rolled, now),
+                else_=day_col,
+            )
+
             await self.session.execute(
                 update(ProviderStatsRow)
                 .where(ProviderStatsRow.provider_name == reservation.provider)
                 .values(
                     last_latency_ms=latency_ms,
+                    latency_ema_ms=new_ema,
                     last_error=None,
                     last_error_kind=None,
                     consecutive_failures=0,
                     healthy=True,
                     quarantined_until=0.0,
                     total_calls=ProviderStatsRow.total_calls + 1,
+                    tokens_today=new_tokens,
+                    tokens_day_start=new_day_start,
                 )
             )
             return
@@ -197,10 +228,12 @@ class RateRepository:
                 last_error=None,
                 last_error_kind=None,
                 last_latency_ms=None,
+                latency_ema_ms=None,
                 healthy=True,
                 quarantined_until=None,
                 total_calls=0,
                 total_failures=0,
+                tokens_today=0,
             )
 
         # Effective health: if we're inside an active quarantine window, we're
@@ -213,37 +246,57 @@ class RateRepository:
         # quarantine field returned to callers: None once expired
         quarantine_display = stats.quarantined_until if quarantine_active else None
 
+        # Token counter: reset if day rolled over
+        tokens_today = stats.tokens_today
+        if now - stats.tokens_day_start >= 86400:
+            tokens_today = 0
+
         return ProviderSnapshot(
             requests_today=int(rpd or 0),
             requests_this_minute=int(rpm or 0),
             last_error=stats.last_error,
             last_error_kind=stats.last_error_kind,
             last_latency_ms=stats.last_latency_ms,
+            latency_ema_ms=stats.latency_ema_ms,
             healthy=effective_healthy,
             quarantined_until=quarantine_display,
             total_calls=stats.total_calls,
             total_failures=stats.total_failures,
+            tokens_today=tokens_today,
         )
 
-    async def snapshot_all(self, providers: list[str]) -> dict[str, ProviderSnapshot]:
-        """Batched version of snapshot() — 2 queries instead of 2×N."""
+    async def snapshot_all(
+        self,
+        providers: list[str],
+        counter_store=None,
+    ) -> dict[str, ProviderSnapshot]:
+        """Batched version of snapshot() — 2 queries instead of 2×N.
+
+        If ``counter_store`` (a ``RateCounterStore``) is provided, rpm/rpd
+        are read from in-memory counters instead of a SQL COUNT over
+        rate_events, eliminating the heaviest query from the hot path.
+        """
         if not providers:
             return {}
         now = time.time()
-        counts_result = await self.session.execute(
-            text("""
-                SELECT provider_name,
-                       COUNT(*) FILTER (WHERE occurred_at >= :now - 60)    AS rpm,
-                       COUNT(*) FILTER (WHERE occurred_at >= :now - 86400) AS rpd
-                FROM rate_events
-                WHERE provider_name = ANY(:names)
-                GROUP BY provider_name
-            """).bindparams(
-                bindparam("now", value=now),
-                bindparam("names", value=providers),
+
+        if counter_store is not None:
+            counts = {name: counter_store.counts(name) for name in providers}
+        else:
+            counts_result = await self.session.execute(
+                text("""
+                    SELECT provider_name,
+                           COUNT(*) FILTER (WHERE occurred_at >= :now - 60)    AS rpm,
+                           COUNT(*) FILTER (WHERE occurred_at >= :now - 86400) AS rpd
+                    FROM rate_events
+                    WHERE provider_name = ANY(:names)
+                    GROUP BY provider_name
+                """).bindparams(
+                    bindparam("now", value=now),
+                    bindparam("names", value=providers),
+                )
             )
-        )
-        counts = {r[0]: (int(r[1]), int(r[2])) for r in counts_result.all()}
+            counts = {r[0]: (int(r[1]), int(r[2])) for r in counts_result.all()}
 
         stats_result = await self.session.execute(
             select(ProviderStatsRow).where(ProviderStatsRow.provider_name.in_(providers))
@@ -258,19 +311,23 @@ class RateRepository:
                 snapshots[name] = ProviderSnapshot(
                     requests_today=rpd, requests_this_minute=rpm,
                     last_error=None, last_error_kind=None, last_latency_ms=None,
+                    latency_ema_ms=None,
                     healthy=True, quarantined_until=None,
-                    total_calls=0, total_failures=0,
+                    total_calls=0, total_failures=0, tokens_today=0,
                 )
                 continue
             quarantine_active = stats.quarantined_until > now
             effective_healthy = not quarantine_active and (stats.healthy or stats.quarantined_until > 0)
             quarantine_display = stats.quarantined_until if quarantine_active else None
+            tokens_today = stats.tokens_today if (now - stats.tokens_day_start < 86400) else 0
             snapshots[name] = ProviderSnapshot(
                 requests_today=rpd, requests_this_minute=rpm,
                 last_error=stats.last_error, last_error_kind=stats.last_error_kind,
                 last_latency_ms=stats.last_latency_ms,
+                latency_ema_ms=stats.latency_ema_ms,
                 healthy=effective_healthy, quarantined_until=quarantine_display,
                 total_calls=stats.total_calls, total_failures=stats.total_failures,
+                tokens_today=tokens_today,
             )
         return snapshots
 

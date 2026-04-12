@@ -44,10 +44,10 @@ FIELD_TYPES: dict[str, str] = {
     # The latency field is the most recent observed call latency, NOT a
     # percentile. Named this way deliberately so a user writing
     # `last_latency_ms < 1000` knows they are filtering on a single sample.
-    # A real p50 over a window would need aggregation across usage_events
-    # and is intentionally out of scope here — see docs/STRATEGY_DSL.md
-    # for the rationale.
     "last_latency_ms":     "number",
+    # Exponential moving average of latency (alpha=0.3). More stable than
+    # last_latency_ms — prefer this for scoring and strategy rules.
+    "latency_ema_ms":      "number",
     "requests_today":      "number",
     "requests_this_minute": "number",
     "rpd_remaining":       "number",
@@ -298,29 +298,41 @@ def matches(clause: Clause, ctx: EvalContext) -> bool:
 
 
 def baseline_score(ctx: EvalContext) -> float:
-    """Provider-intrinsic score: weight + headroom + latency bonus + token headroom.
+    """Provider-intrinsic score: weight + headroom + latency bonus + token headroom + reliability.
 
     This is the score a provider gets independently of any DSL rules.
     Uses the derived fields already present in ``EvalContext``
-    (``rpd_remaining``, ``tpd_remaining``, ``last_latency_ms``) so that
-    both the orchestrator and the strategy preview endpoint compute the
-    same number without reaching into private methods.
+    so that both the orchestrator and the strategy preview endpoint
+    compute the same number without reaching into private methods.
 
-    Token headroom (tpd_remaining) is weighted at 2.0 — higher than RPD
-    headroom (1.5) — because exhausting tokens causes hard provider
-    errors (quarantine), while RPD just skips to the next candidate.
+    Scoring signals and their ranges:
+      - weight:        admin-set priority (0.0–2.0, typically ~1.0)
+      - rpd headroom:  0..1 ratio × 1.5 → max 1.5
+      - tpd headroom:  0..1 ratio × 2.0 → max 2.0 (highest — exhaustion causes quarantine)
+      - latency:       [-1.0, +2.0] range using EMA when available (smoothed over ~10 samples)
+      - reliability:   -0.1 per failure, capped at -2.0 (penalizes flaky providers)
     """
     s = ctx.fields.get("weight", 0.0)
     s += ctx.fields.get("rpd_remaining", 1.0) * 1.5
     s += ctx.fields.get("tpd_remaining", 1.0) * 2.0
-    last_ms = ctx.fields.get("last_latency_ms")
-    if last_ms is not None:
-        if last_ms < 800:
-            s += 0.8
-        elif last_ms < 2000:
-            s += 0.3
+
+    # Prefer EMA for latency scoring (smoothed); fall back to single sample
+    latency = ctx.fields.get("latency_ema_ms") or ctx.fields.get("last_latency_ms")
+    if latency is not None:
+        if latency < 500:
+            s += 2.0
+        elif latency < 1000:
+            s += 1.2
+        elif latency < 2000:
+            s += 0.4
         else:
-            s -= 0.3
+            s -= 1.0
+
+    # Reliability penalty: penalize providers with accumulated failures
+    total_failures = ctx.fields.get("total_failures", 0)
+    if total_failures > 0:
+        s -= 0.1 * min(total_failures, 20)
+
     return s
 
 
@@ -357,6 +369,7 @@ def context_from_provider(
     weight: float,
     tags: list[str],
     last_latency_ms: Optional[int],
+    latency_ema_ms: Optional[float] = None,
     requests_today: int,
     requests_this_minute: int,
     rpd_limit: Optional[int],
@@ -388,6 +401,7 @@ def context_from_provider(
         "weight": weight,
         "tags": tags,
         "last_latency_ms": last_latency_ms,
+        "latency_ema_ms": latency_ema_ms,
         "requests_today": requests_today,
         "requests_this_minute": requests_this_minute,
         "rpd_remaining": rpd_remaining,
