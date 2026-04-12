@@ -521,6 +521,40 @@ async function refreshConfig() {
   await refreshStrategies();
 }
 
+// ─────────────── strategy card render ───────────────
+
+// Pretty-print one DSL clause for the strategy card body. Used both
+// for require ("tags ∋ coding") and prefer ("tags ∋ fast (×5)").
+function renderClauseShort(c, isPrefer) {
+  if (!c || typeof c !== "object") return "";
+  const f = c.field || "?";
+  const op = c.op || "?";
+  const v = Array.isArray(c.value) ? `[${c.value.join(", ")}]` : c.value;
+  const sym = op === "contains" ? "∋" : op;
+  const w = isPrefer && typeof c.weight === "number" ? ` (×${c.weight})` : "";
+  return `${escapeHtml(f)} ${escapeHtml(sym)} ${escapeHtml(String(v))}${w}`;
+}
+
+function renderStrategyRules(definition) {
+  // For the special `auto` strategy and any strategy with no DSL rules,
+  // show a single italic placeholder. The user knows what `auto` does
+  // by name; the placeholder is for the rare baseline-only case.
+  if (!definition || (
+    (!definition.require || definition.require.length === 0) &&
+    (!definition.prefer  || definition.prefer.length === 0)
+  )) {
+    return '<span class="strategy-card__rule-empty">baseline scoring (no DSL rules)</span>';
+  }
+  const lines = [];
+  for (const c of definition.require || []) {
+    lines.push(`<span class="strategy-card__rule strategy-card__rule--require">${renderClauseShort(c, false)}</span>`);
+  }
+  for (const c of definition.prefer || []) {
+    lines.push(`<span class="strategy-card__rule strategy-card__rule--prefer">${renderClauseShort(c, true)}</span>`);
+  }
+  return lines.join("");
+}
+
 async function refreshStrategies() {
   try {
     strategiesCache = await adminApi("/api/strategies");
@@ -537,8 +571,8 @@ async function refreshStrategies() {
       <div class="strategy-card__index">// ${String(i + 1).padStart(2, "0")}</div>
       <div class="strategy-card__name">${escapeHtml(s.name.replace(/_/g, " "))}</div>
       <div class="strategy-card__desc">${escapeHtml(s.description || STRATEGY_DESCRIPTIONS[s.name] || "")}</div>
-      <div class="strategy-card__tags">
-        ${s.tags.map((t) => `<span class="strategy-card__tag">${escapeHtml(t)}</span>`).join("") || '<span class="strategy-card__tag">auto-detect</span>'}
+      <div class="strategy-card__rules">
+        ${renderStrategyRules(s.definition)}
       </div>
       <div class="strategy-card__actions">
         <button class="mini-btn edit-strategy">EDIT</button>
@@ -577,13 +611,296 @@ async function refreshStrategies() {
   });
 }
 
-let _stratEditorExisting = null;
+// ─────────────── strategy editor — DSL form builder ───────────────
 
-function openStrategyEditor(existing) {
+// In-memory state for the editor. The DOM is rerendered from this on
+// every change so we never have to keep IDs in sync. Each clause is a
+// dict matching the DSL JSON shape; the editor mutates these in place.
+let _stratEditorExisting = null;
+let _editorState = { require: [], prefer: [] };
+
+// Vocabulary loaded once when the editor opens. Populates the value
+// dropdown when field === "tags" so the user can only pick tags that
+// actually exist on a provider.
+let _editorTagsCache = [];
+
+// Schema mirror of FIELD_TYPES / OPS_BY_TYPE in app/strategy_dsl.py.
+// Kept here so the editor can offer the right operators per field
+// without a round-trip. If the backend gains a field, add it here too.
+const DSL_FIELDS = {
+  tags:                 { type: "string_array" },
+  name:                 { type: "string" },
+  weight:               { type: "number" },
+  enabled:              { type: "bool" },
+  latency_p50_ms:       { type: "number" },
+  requests_today:       { type: "number" },
+  requests_this_minute: { type: "number" },
+  rpd_remaining:        { type: "number" },
+  rpm_remaining:        { type: "number" },
+  total_failures:       { type: "number" },
+};
+const DSL_OPS_BY_TYPE = {
+  string_array: ["contains"],
+  string:       ["==", "!=", "in"],
+  number:       ["==", "!=", "<", "<=", ">", ">="],
+  bool:         ["==", "!="],
+};
+
+function _opsFor(fieldName) {
+  const t = DSL_FIELDS[fieldName]?.type || "string";
+  return DSL_OPS_BY_TYPE[t] || ["=="];
+}
+
+// Best-effort guess at the right input type for a clause's value.
+function _valueInputType(fieldName) {
+  const t = DSL_FIELDS[fieldName]?.type;
+  if (t === "number") return "number";
+  return "text";
+}
+
+// Coerce a string the user typed into the right value type for the field.
+function _coerceValue(fieldName, raw) {
+  const t = DSL_FIELDS[fieldName]?.type;
+  if (raw === "" || raw == null) return raw;
+  if (t === "number") {
+    const n = Number(raw);
+    return Number.isNaN(n) ? raw : n;
+  }
+  if (t === "bool") return raw === "true";
+  return raw;
+}
+
+function _renderClauseRow(clause, idx, isPrefer) {
+  // Build a row for one clause. Fully replaces itself on every state
+  // mutation — no event delegation to maintain.
+  const row = document.createElement("div");
+  row.className = "dsl-clause" + (isPrefer ? " dsl-clause--prefer" : "");
+
+  const fieldSel = document.createElement("select");
+  fieldSel.className = "dsl-clause__field";
+  Object.keys(DSL_FIELDS).forEach((f) => {
+    const opt = document.createElement("option");
+    opt.value = f;
+    opt.textContent = f;
+    if (f === clause.field) opt.selected = true;
+    fieldSel.appendChild(opt);
+  });
+  fieldSel.addEventListener("change", () => {
+    clause.field = fieldSel.value;
+    // Reset the operator to the first valid one for the new field type.
+    clause.op = _opsFor(clause.field)[0];
+    // Reset value if the type changes drastically.
+    if (DSL_FIELDS[clause.field].type === "number") clause.value = 0;
+    else clause.value = "";
+    _renderEditorClauses();
+    _schedulePreview();
+  });
+
+  const opSel = document.createElement("select");
+  opSel.className = "dsl-clause__op";
+  _opsFor(clause.field).forEach((op) => {
+    const opt = document.createElement("option");
+    opt.value = op;
+    opt.textContent = op;
+    if (op === clause.op) opt.selected = true;
+    opSel.appendChild(opt);
+  });
+  opSel.addEventListener("change", () => {
+    clause.op = opSel.value;
+    _schedulePreview();
+  });
+
+  // Value: a tag dropdown when field=tags (vocabulary discovery), a
+  // typed input otherwise.
+  let valueEl;
+  if (clause.field === "tags" && clause.op === "contains") {
+    valueEl = document.createElement("select");
+    valueEl.className = "dsl-clause__value";
+    if (_editorTagsCache.length === 0) {
+      const o = document.createElement("option");
+      o.value = "";
+      o.textContent = "(no tags discovered)";
+      valueEl.appendChild(o);
+    }
+    _editorTagsCache.forEach((t) => {
+      const o = document.createElement("option");
+      o.value = t.tag;
+      o.textContent = `${t.tag} (${t.providers.length} provider${t.providers.length === 1 ? "" : "s"})`;
+      if (t.tag === clause.value) o.selected = true;
+      valueEl.appendChild(o);
+    });
+    if (!_editorTagsCache.find((t) => t.tag === clause.value) && clause.value) {
+      // Custom value the user typed before — keep it as an option.
+      const o = document.createElement("option");
+      o.value = clause.value;
+      o.textContent = `${clause.value} (custom — won't match yet)`;
+      o.selected = true;
+      valueEl.appendChild(o);
+    }
+    valueEl.addEventListener("change", () => {
+      clause.value = valueEl.value;
+      _schedulePreview();
+    });
+  } else {
+    valueEl = document.createElement("input");
+    valueEl.className = "dsl-clause__value";
+    valueEl.type = _valueInputType(clause.field);
+    valueEl.value = clause.value ?? "";
+    valueEl.placeholder = "value";
+    valueEl.addEventListener("input", () => {
+      clause.value = _coerceValue(clause.field, valueEl.value);
+      _schedulePreview();
+    });
+  }
+
+  row.appendChild(fieldSel);
+  row.appendChild(opSel);
+  row.appendChild(valueEl);
+
+  if (isPrefer) {
+    const wLabel = document.createElement("span");
+    wLabel.className = "dsl-clause__weight-label";
+    wLabel.textContent = "weight";
+    row.appendChild(wLabel);
+
+    const wInput = document.createElement("input");
+    wInput.className = "dsl-clause__weight";
+    wInput.type = "number";
+    wInput.step = "0.5";
+    wInput.value = clause.weight ?? 5;
+    wInput.addEventListener("input", () => {
+      clause.weight = Number(wInput.value);
+      _schedulePreview();
+    });
+    row.appendChild(wInput);
+  }
+
+  const del = document.createElement("button");
+  del.type = "button";
+  del.className = "dsl-clause__del";
+  del.textContent = "×";
+  del.title = "remove clause";
+  del.addEventListener("click", () => {
+    const arr = isPrefer ? _editorState.prefer : _editorState.require;
+    arr.splice(idx, 1);
+    _renderEditorClauses();
+    _schedulePreview();
+  });
+  row.appendChild(del);
+
+  return row;
+}
+
+function _renderEditorClauses() {
+  const reqList = document.getElementById("dslRequireList");
+  const prefList = document.getElementById("dslPreferList");
+  reqList.innerHTML = "";
+  prefList.innerHTML = "";
+  _editorState.require.forEach((c, i) => {
+    reqList.appendChild(_renderClauseRow(c, i, false));
+  });
+  _editorState.prefer.forEach((c, i) => {
+    prefList.appendChild(_renderClauseRow(c, i, true));
+  });
+}
+
+function _editorDefinitionForApi() {
+  // Build the JSON shape the API expects from the in-memory state.
+  // Filter out clauses with an empty value so we don't send half-edited rows.
+  const cleanClause = (c, isPrefer) => {
+    const out = { field: c.field, op: c.op, value: c.value };
+    if (isPrefer) out.weight = Number(c.weight) || 0;
+    return out;
+  };
+  return {
+    require: _editorState.require
+      .filter((c) => c.value !== "" && c.value != null)
+      .map((c) => cleanClause(c, false)),
+    prefer: _editorState.prefer
+      .filter((c) => c.value !== "" && c.value != null)
+      .map((c) => cleanClause(c, true)),
+  };
+}
+
+// ─────── live preview ───────
+
+let _previewTimer = null;
+
+function _schedulePreview() {
+  if (_previewTimer) clearTimeout(_previewTimer);
+  _previewTimer = setTimeout(_runPreview, 300);
+}
+
+async function _runPreview() {
+  const status = document.getElementById("dslPreviewStatus");
+  const list = document.getElementById("dslPreviewList");
+  const warningsEl = document.getElementById("dslPreviewWarnings");
+  status.textContent = "running…";
+  try {
+    const result = await adminApi("/api/strategies/preview", {
+      method: "POST",
+      body: JSON.stringify({ definition: _editorDefinitionForApi() }),
+    });
+    list.innerHTML = "";
+    if (result.candidates.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "strategy-card__rule-empty";
+      empty.textContent = "no provider would match this strategy right now";
+      list.appendChild(empty);
+    } else {
+      const max = Math.max(...result.candidates.map((c) => c.score));
+      result.candidates.forEach((c) => {
+        const row = document.createElement("div");
+        row.className = "dsl-preview__row";
+        row.innerHTML = `
+          <span class="dsl-preview__name">${escapeHtml(c.name)}</span>
+          <span class="dsl-preview__score">${c.score.toFixed(2)}</span>
+          <span class="dsl-preview__bar" style="width:${Math.max(8, (c.score / max) * 100)}%"></span>
+        `;
+        list.appendChild(row);
+      });
+    }
+    if (result.excluded.length > 0) {
+      result.excluded.forEach((name) => {
+        const row = document.createElement("div");
+        row.className = "dsl-preview__row dsl-preview__row--excluded";
+        row.innerHTML = `
+          <span class="dsl-preview__name">${escapeHtml(name)}</span>
+          <span class="dsl-preview__score">excluded</span>
+          <span></span>
+        `;
+        list.appendChild(row);
+      });
+    }
+    if (result.warnings && result.warnings.length > 0) {
+      warningsEl.innerHTML = result.warnings
+        .map((w) => `<span>⚠ ${escapeHtml(w)}</span>`).join("");
+      warningsEl.hidden = false;
+    } else {
+      warningsEl.hidden = true;
+    }
+    status.textContent = `${result.candidates.length} match · ${result.excluded.length} excluded`;
+  } catch (err) {
+    if (err instanceof AuthError) { showAdminModal(); return; }
+    status.textContent = "preview error";
+    list.innerHTML = `<div class="strategy-card__rule-empty">${escapeHtml(err.message)}</div>`;
+    warningsEl.hidden = true;
+  }
+}
+
+// ─────── editor open / save / cancel ───────
+
+async function openStrategyEditor(existing) {
   _stratEditorExisting = existing;
+  // Hydrate the editor state from the strategy's definition (if any).
+  const def = existing?.definition || { require: [], prefer: [] };
+  _editorState = {
+    require: (def.require || []).map((c) => ({ ...c })),
+    prefer:  (def.prefer  || []).map((c) => ({ ...c })),
+  };
+
   const modal = document.getElementById("strategyEditorModal");
   const nameInput = document.getElementById("stratEditorName");
-  const tagsInput = document.getElementById("stratEditorTags");
   const descInput = document.getElementById("stratEditorDesc");
   const errEl = document.getElementById("stratEditorError");
   errEl.hidden = true;
@@ -591,12 +908,32 @@ function openStrategyEditor(existing) {
   document.getElementById("stratEditorTitle").textContent = existing ? "EDIT STRATEGY" : "NEW STRATEGY";
   nameInput.value = existing ? existing.name : "";
   nameInput.disabled = !!existing;
-  tagsInput.value = (existing?.tags || []).join(", ");
   descInput.value = existing?.description || "";
 
+  // Load the tag vocabulary every time the editor opens. Cheap (one
+  // round-trip) and stays fresh against provider edits.
+  try {
+    _editorTagsCache = await adminApi("/api/tags");
+  } catch (err) {
+    if (err instanceof AuthError) { showAdminModal(); return; }
+    _editorTagsCache = [];
+  }
+
+  _renderEditorClauses();
   modal.hidden = false;
-  setTimeout(() => (existing ? tagsInput : nameInput).focus(), 50);
+  setTimeout(() => (existing ? descInput : nameInput).focus(), 50);
+  // Run an initial preview so the user sees what the current state ranks.
+  _schedulePreview();
 }
+
+document.getElementById("dslAddRequire").addEventListener("click", () => {
+  _editorState.require.push({ field: "tags", op: "contains", value: "" });
+  _renderEditorClauses();
+});
+document.getElementById("dslAddPrefer").addEventListener("click", () => {
+  _editorState.prefer.push({ field: "tags", op: "contains", value: "", weight: 5 });
+  _renderEditorClauses();
+});
 
 document.getElementById("stratEditorCancel").addEventListener("click", () => {
   document.getElementById("strategyEditorModal").hidden = true;
@@ -604,7 +941,6 @@ document.getElementById("stratEditorCancel").addEventListener("click", () => {
 
 document.getElementById("stratEditorSave").addEventListener("click", async () => {
   const nameInput = document.getElementById("stratEditorName");
-  const tagsInput = document.getElementById("stratEditorTags");
   const descInput = document.getElementById("stratEditorDesc");
   const errEl = document.getElementById("stratEditorError");
   errEl.hidden = true;
@@ -615,13 +951,16 @@ document.getElementById("stratEditorSave").addEventListener("click", async () =>
     errEl.hidden = false;
     return;
   }
-  const tags = tagsInput.value.split(",").map((t) => t.trim()).filter(Boolean);
   const description = descInput.value.trim();
+  const definition = _editorDefinitionForApi();
   const method = _stratEditorExisting ? "PATCH" : "POST";
   const path = _stratEditorExisting ? `/api/strategies/${name}` : "/api/strategies";
 
   try {
-    await adminApi(path, { method, body: JSON.stringify({ name, tags, description }) });
+    await adminApi(path, {
+      method,
+      body: JSON.stringify({ name, definition, description }),
+    });
     document.getElementById("strategyEditorModal").hidden = true;
     refreshConfig();
   } catch (err) {

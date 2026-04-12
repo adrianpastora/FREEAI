@@ -965,6 +965,174 @@ body::before {
   color: var(--rose) !important;
   margin-top: 14px !important;
 }
+
+/* ─────────────── STRATEGY DSL EDITOR ─────────────── */
+
+.dsl-editor-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+.dsl-section {
+  margin-top: 16px;
+  border-top: var(--line);
+  padding-top: 14px;
+}
+.dsl-section__head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.dsl-section__title {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: var(--char);
+}
+.dsl-section__hint {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--char-3);
+  letter-spacing: 0.04em;
+}
+.dsl-clauses {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.dsl-clause {
+  display: grid;
+  grid-template-columns: 140px 80px minmax(0, 1fr) 32px;
+  gap: 6px;
+  align-items: center;
+}
+.dsl-clause--prefer {
+  grid-template-columns: 140px 80px minmax(0, 1fr) auto 60px 32px;
+}
+.dsl-clause__field,
+.dsl-clause__op,
+.dsl-clause__value,
+.dsl-clause__weight {
+  font-family: var(--mono);
+  font-size: 11px;
+  border: var(--line);
+  background: var(--paper, #fbf6ee);
+  padding: 6px 8px;
+  color: var(--char);
+  min-width: 0;
+  box-sizing: border-box;
+}
+.dsl-clause__value { width: 100%; }
+.dsl-clause__weight { width: 100%; }
+.dsl-clause__weight-label {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--char-3);
+  letter-spacing: 0.05em;
+}
+.dsl-clause__del {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  background: transparent;
+  border: var(--line);
+  color: var(--char);
+  width: 26px;
+  height: 26px;
+  cursor: pointer;
+  padding: 0;
+}
+.dsl-clause__del:hover {
+  background: var(--rose);
+  color: var(--paper, #fbf6ee);
+}
+.dsl-clauses:empty + .ghost-button::before {
+  content: "no clauses yet — ";
+  color: var(--char-3);
+  font-weight: 400;
+}
+
+/* ─────────────── strategy preview ─────────────── */
+
+.dsl-preview {
+  margin-top: 18px;
+  border-top: var(--line);
+  padding-top: 14px;
+}
+.dsl-preview__list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+  min-height: 24px;
+}
+.dsl-preview__row {
+  display: grid;
+  grid-template-columns: 100px 60px 1fr;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.dsl-preview__row--excluded {
+  color: var(--char-3);
+}
+.dsl-preview__row--excluded .dsl-preview__name { text-decoration: line-through; }
+.dsl-preview__row--excluded .dsl-preview__score { font-style: italic; }
+.dsl-preview__name { font-weight: 700; color: var(--char); }
+.dsl-preview__score { color: var(--char-3); text-align: right; }
+.dsl-preview__bar {
+  height: 8px;
+  background: var(--amber);
+  border: 1px solid var(--char);
+}
+.dsl-preview__warnings {
+  border: var(--line);
+  background: var(--amber-soft);
+  padding: 8px 10px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--char);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.dsl-preview__warnings[hidden] { display: none; }
+
+/* ─────────────── strategy card body ─────────────── */
+
+.strategy-card__rules {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--char-3);
+  letter-spacing: 0.02em;
+}
+.strategy-card__rule {
+  display: block;
+}
+.strategy-card__rule--require::before {
+  content: "REQ ";
+  color: var(--rose);
+  font-weight: 700;
+}
+.strategy-card__rule--prefer::before {
+  content: "PREF ";
+  color: var(--amber);
+  font-weight: 700;
+}
+.strategy-card__rule-empty {
+  color: var(--char-3);
+  font-style: italic;
+}
+
 .setup-reveal-warning {
   border: var(--line);
   padding: 14px 16px;

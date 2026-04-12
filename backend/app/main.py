@@ -725,6 +725,168 @@ async def delete_strategy(
     return {"ok": True}
 
 
+# ──────────────────────────── tags vocabulary ────────────────────────────
+
+
+class TagInfo(BaseModel):
+    tag: str
+    providers: list[str]
+
+
+@app.get("/api/tags", response_model=list[TagInfo])
+async def list_tags(
+    session: AsyncSession = Depends(get_session),
+    _admin=Depends(require_admin),
+) -> list[TagInfo]:
+    """Vocabulary discovery for the strategy editor.
+
+    Returns every distinct tag currently in use by at least one provider,
+    along with the list of providers carrying it. The frontend uses this
+    to populate dropdowns in the form builder so users can only pick
+    tags that will actually match something.
+    """
+    config_repo = ConfigRepository(session)
+    providers = await config_repo.list_providers()
+    bag: dict[str, list[str]] = {}
+    for p in providers:
+        for t in p.tags or []:
+            bag.setdefault(t, []).append(p.name)
+    return [TagInfo(tag=t, providers=sorted(names)) for t, names in sorted(bag.items())]
+
+
+# ──────────────────────────── strategy preview ────────────────────────────
+
+
+class StrategyPreviewIn(BaseModel):
+    """Body for /api/strategies/preview — a candidate definition only.
+
+    No `name` or `description` because the preview never touches the DB;
+    it just runs the same ranker the orchestrator would use, with the
+    candidate definition, against the live provider snapshots.
+    """
+    definition: Optional[dict] = None
+
+
+class PreviewedCandidate(BaseModel):
+    name: str
+    score: float
+    healthy: bool
+    rpd_remaining: float
+    last_latency_ms: Optional[int] = None
+
+
+class StrategyPreviewOut(BaseModel):
+    candidates: list[PreviewedCandidate]
+    excluded: list[str]  # providers filtered out by require clauses
+    warnings: list[str]  # soft notes from the parser/static analysis
+
+
+@app.post("/api/strategies/preview", response_model=StrategyPreviewOut)
+async def preview_strategy(
+    payload: StrategyPreviewIn,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    _admin=Depends(require_admin),
+) -> StrategyPreviewOut:
+    """Run the ranker against `definition` without saving the strategy.
+
+    Lets the editor show a live preview as the user builds clauses.
+    Validation errors raise 422 — same as the create/update endpoints —
+    so the editor can show field-level feedback. The preview itself
+    only fails if the parser fails; an empty candidate list (everything
+    excluded) is a valid preview, not an error.
+    """
+    try:
+        defn = parse_definition(payload.definition)
+    except ParseError as e:
+        raise HTTPException(422, str(e))
+
+    config_repo = ConfigRepository(session)
+    rate_repo = RateRepository(session)
+    providers = await config_repo.list_providers()
+    eligible = [p for p in providers if p.enabled and p.api_key]
+    if not eligible:
+        return StrategyPreviewOut(
+            candidates=[],
+            excluded=[p.name for p in providers if not (p.enabled and p.api_key)],
+            warnings=["no providers configured with an API key"],
+        )
+
+    snapshots = await rate_repo.snapshot_all([p.name for p in eligible])
+
+    from .strategy_dsl import context_from_provider
+    from .strategy_dsl import score as dsl_score
+
+    candidates: list[PreviewedCandidate] = []
+    excluded: list[str] = [p.name for p in providers if not (p.enabled and p.api_key)]
+
+    orch = request.app.state.orchestrator
+
+    for dto in eligible:
+        snap = snapshots.get(dto.name)
+        if not snap:
+            excluded.append(dto.name)
+            continue
+        if not snap.healthy:
+            # Unhealthy is "excluded for now"; the editor shows it in the
+            # excluded list so the user knows it's not their definition's fault.
+            excluded.append(dto.name)
+            continue
+
+        ctx = context_from_provider(
+            name=dto.name,
+            enabled=dto.enabled,
+            weight=dto.weight,
+            tags=dto.tags,
+            last_latency_ms=snap.last_latency_ms,
+            requests_today=snap.requests_today,
+            requests_this_minute=snap.requests_this_minute,
+            rpd_limit=dto.rpd_limit,
+            rpm_limit=dto.rpm_limit,
+            total_failures=snap.total_failures,
+        )
+        contribution = dsl_score(defn, ctx)
+        if contribution is None:
+            excluded.append(dto.name)
+            continue
+        baseline = orch._baseline_score(dto, snap)
+        rpd_remaining = ctx.fields["rpd_remaining"]
+        candidates.append(PreviewedCandidate(
+            name=dto.name,
+            score=baseline + contribution,
+            healthy=snap.healthy,
+            rpd_remaining=rpd_remaining,
+            last_latency_ms=snap.last_latency_ms,
+        ))
+
+    candidates.sort(key=lambda c: c.score, reverse=True)
+
+    # Soft warnings: prefer clauses on tag values that no provider has.
+    warnings: list[str] = []
+    known_tags: set[str] = set()
+    for p in providers:
+        for t in p.tags or []:
+            known_tags.add(t)
+    for clause in (defn.prefer + defn.require):
+        if clause.field == "tags" and clause.op == "contains" and clause.value not in known_tags:
+            warnings.append(
+                f"tag '{clause.value}' is not used by any current provider — "
+                f"this clause won't fire until a provider is given that tag"
+            )
+
+    if not candidates:
+        warnings.append(
+            "no providers match this definition right now; the strategy "
+            "would route nothing if saved as-is"
+        )
+
+    return StrategyPreviewOut(
+        candidates=candidates,
+        excluded=sorted(set(excluded)),
+        warnings=warnings,
+    )
+
+
 # ──────────────────────────── analytics ────────────────────────────
 
 
