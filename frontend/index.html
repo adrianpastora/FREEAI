@@ -51,12 +51,12 @@
       <div class="status-block__label">STRATEGY</div>
       <div class="status-block__value" id="strategyValue">auto</div>
     </div>
-    <div class="status-block status-block--savings">
-      <div class="status-block__label">SAVED&nbsp;VS&nbsp;GPT-4o</div>
-      <div class="status-block__value savings-value" id="savingsValue">
-        <span class="savings-dollar">$</span><span class="savings-amount" id="savingsAmount">0.00</span>
+    <div class="savings-strip">
+      <div class="savings-strip__label">SAVED&nbsp;VS&nbsp;GPT-4o</div>
+      <div class="savings-strip__amount" id="savingsValue">
+        <span class="savings-dollar">$</span><span id="savingsAmount">0.00</span>
       </div>
-      <div class="savings-sub" id="savingsSub"></div>
+      <div class="savings-strip__tokens" id="savingsSub"></div>
     </div>
   </div>
 </header>
@@ -95,6 +95,9 @@
     </div>
   </div>
   <div class="ribbon__rule"></div>
+  <button class="ribbon__theme" id="themeToggle" title="toggle dark / light mode">
+    <span id="themeIcon">◐</span>
+  </button>
   <button class="ribbon__lock" id="lockButton" title="admin token">
     <span id="lockIcon">⛒</span>
   </button>

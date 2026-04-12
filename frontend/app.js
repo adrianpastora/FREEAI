@@ -1611,6 +1611,24 @@ async function refreshAnalytics() {
 document.getElementById("analyticsRefresh").addEventListener("click", refreshAnalytics);
 analyticsWindowSel.addEventListener("change", refreshAnalytics);
 
+// ─────────────── dark mode ───────────────
+
+(function initTheme() {
+  const saved = localStorage.getItem("freeai_theme");
+  if (saved === "dark") {
+    document.body.classList.add("dark");
+    const icon = document.getElementById("themeIcon");
+    if (icon) icon.textContent = "◑";
+  }
+})();
+
+document.getElementById("themeToggle").addEventListener("click", () => {
+  document.body.classList.toggle("dark");
+  const isDark = document.body.classList.contains("dark");
+  localStorage.setItem("freeai_theme", isDark ? "dark" : "light");
+  document.getElementById("themeIcon").textContent = isDark ? "◑" : "◐";
+});
+
 // ─────────────── savings estimator ───────────────
 
 // GPT-4o pricing (per 1K tokens, blended input/output estimate)
@@ -1629,16 +1647,20 @@ function updateSavingsBadge(totalTokens) {
     : cost.toFixed(0);
 
   // Animate glow on update
-  wrapper.classList.add("is-updating");
-  setTimeout(() => wrapper.classList.remove("is-updating"), 600);
+  if (wrapper) {
+    wrapper.classList.add("is-updating");
+    setTimeout(() => wrapper.classList.remove("is-updating"), 600);
+  }
 
   el.textContent = formatted;
 
   // Token count summary
-  const tkFmt = totalTokens >= 1_000_000 ? (totalTokens / 1_000_000).toFixed(1) + "M"
-    : totalTokens >= 1_000 ? (totalTokens / 1_000).toFixed(1) + "k"
-    : String(totalTokens);
-  sub.textContent = `${tkFmt} tokens routed free`;
+  if (sub) {
+    const tkFmt = totalTokens >= 1_000_000 ? (totalTokens / 1_000_000).toFixed(1) + "M"
+      : totalTokens >= 1_000 ? (totalTokens / 1_000).toFixed(1) + "k"
+      : String(totalTokens);
+    sub.textContent = `${tkFmt} tokens // $0 cost`;
+  }
 }
 
 // Fetch lifetime savings (max window = 7 days)
