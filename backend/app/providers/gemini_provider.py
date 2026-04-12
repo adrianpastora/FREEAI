@@ -12,7 +12,7 @@ from .base import BaseProvider, ErrorKind, ProviderError, ProviderResponse, Stre
 
 class GeminiProvider(BaseProvider):
     name = "gemini"
-    BASE_URL = "https://generativelanguage.googleapis.com/v1/models"
+    BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
     supports_streaming = True
     request_timeout = 60.0
 
