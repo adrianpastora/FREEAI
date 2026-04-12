@@ -23,6 +23,7 @@ consistent across the codebase.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import time
 from dataclasses import dataclass
@@ -84,6 +85,14 @@ _GEMINI_PROMPT = (
     "Output ONLY the transcript text, no timestamps, no speaker labels, "
     "no commentary."
 )
+
+# Retry config — transient errors (503, timeouts) get retried with
+# exponential backoff before falling through to the next provider.
+_MAX_RETRIES = 2          # up to 3 total attempts per provider
+_RETRY_BASE_DELAY = 1.5   # seconds: 1.5, 3.0 (total ~4.5s worst case)
+
+# Errors worth retrying within the same provider
+_RETRYABLE_KINDS = {ErrorKind.SERVER_ERROR, ErrorKind.NETWORK, ErrorKind.RATE_LIMITED}
 
 # MIME types we accept (superset of what both providers support)
 AUDIO_MIMETYPES = {
@@ -257,14 +266,39 @@ def supports_transcription(provider_name: str) -> bool:
 async def transcribe(
     provider_name: str, audio: AudioInput, api_key: str
 ) -> TranscriptionResult | TranscriptionError:
-    """Dispatch to the right provider's transcription function."""
+    """Dispatch to a provider's transcription function with retry.
+
+    Transient errors (503, timeouts, rate-limits) are retried up to
+    _MAX_RETRIES times with exponential backoff before giving up and
+    returning the last error. Non-transient errors (auth, client error,
+    parsing) are returned immediately.
+    """
     fn = _TRANSCRIBE_FN.get(provider_name)
     if not fn:
         return TranscriptionError(
             provider=provider_name, model="unknown", kind=ErrorKind.CLIENT_ERROR,
             message=f"{provider_name} does not support transcription", latency_ms=0,
         )
-    return await fn(audio, api_key)
+
+    last_error: Optional[TranscriptionError] = None
+    for attempt in range(_MAX_RETRIES + 1):
+        result = await fn(audio, api_key)
+
+        if isinstance(result, TranscriptionResult):
+            return result
+
+        last_error = result
+
+        # Only retry on transient errors
+        if result.kind not in _RETRYABLE_KINDS:
+            return result
+
+        # Don't sleep after the last attempt
+        if attempt < _MAX_RETRIES:
+            delay = _RETRY_BASE_DELAY * (2 ** attempt)
+            await asyncio.sleep(delay)
+
+    return last_error  # type: ignore[return-value]
 
 
 # ─────────────────────── helpers ────────────────────────────────────
