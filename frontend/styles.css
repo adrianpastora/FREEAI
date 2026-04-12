@@ -29,6 +29,73 @@
   --noise-url: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='220' height='220'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix type='matrix' values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.32 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
 }
 
+/* ─── dark mode: invert bone/char, keep accent colors ─── */
+body.dark {
+  --bone:        #16140f;
+  --bone-2:      #1e1c16;
+  --bone-3:      #2a2620;
+  --char:        #f1ece1;
+  --char-2:      #e6dfce;
+  --char-3:      #a89f8c;
+
+  --line:        1.5px solid var(--char-3);
+  --line-thick:  3px solid var(--char-3);
+
+  --shadow-hard:    6px 6px 0 rgba(0,0,0,0.5);
+  --shadow-hard-sm: 3px 3px 0 rgba(0,0,0,0.4);
+}
+body.dark .grain {
+  opacity: .12;
+  mix-blend-mode: screen;
+}
+body.dark .scanlines {
+  background: repeating-linear-gradient(
+    to bottom,
+    transparent 0, transparent 3px,
+    rgba(241,236,225,0.02) 3px, rgba(241,236,225,0.02) 4px
+  );
+  mix-blend-mode: screen;
+}
+body.dark::before {
+  background-image:
+    linear-gradient(to right, rgba(241,236,225,0.03) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(241,236,225,0.03) 1px, transparent 1px);
+}
+body.dark .masthead {
+  background:
+    radial-gradient(circle at 92% 12%, rgba(255,122,24,0.15), transparent 38%),
+    var(--bone);
+}
+body.dark .ribbon {
+  background: #0c0b08;
+  border-bottom-color: var(--char-3);
+}
+body.dark .ribbon__item { border-right-color: rgba(241,236,225,0.1); }
+body.dark .ribbon__item:hover { background: #1a1812; }
+body.dark .ribbon__item--active { background: var(--amber); color: #16140f; }
+body.dark .savings-strip {
+  background:
+    linear-gradient(90deg, rgba(255,122,24,0.1) 0%, transparent 60%),
+    var(--bone-2);
+}
+body.dark .provider-card,
+body.dark .strategy-card,
+body.dark .kpi-card,
+body.dark .chart-card,
+body.dark .api-card {
+  background: var(--bone-2);
+  border-color: var(--char-3);
+}
+body.dark .modal__backdrop { background: rgba(0,0,0,0.75); }
+body.dark .modal__card { background: var(--bone-2); border-color: var(--char-3); }
+body.dark input, body.dark select, body.dark textarea {
+  background: var(--bone);
+  color: var(--char);
+  border-color: var(--char-3);
+}
+body.dark code { background: #0c0b08; color: var(--amber-soft); }
+body.dark .signoff { background: #0c0b08; border-top-color: var(--char-3); }
+
 * { box-sizing: border-box; }
 
 html, body {
@@ -144,22 +211,39 @@ body::before {
 .display-line.italic { font-style: italic; color: var(--amber); font-weight: 400; }
 
 .masthead__status {
-  display: grid;
-  grid-template-columns: 1fr 1fr 1fr 1fr;
-  gap: 8px;
+  display: flex;
+  flex-direction: column;
   border: var(--line);
   background: var(--bone-2);
   box-shadow: var(--shadow-hard-sm);
-  padding: 14px 16px;
+}
+.masthead__status-row {
+  display: none; /* not used — flex children lay out directly */
+}
+/* The 3 status blocks sit in a row */
+.masthead__status {
+  display: flex;
+  flex-direction: column;
+}
+.masthead__status > .status-block {
+  /* override for inline layout */
+}
+/* Use a nested approach: the first 3 blocks flow, then savings strip spans */
+.masthead__status {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-rows: auto auto;
+  gap: 0;
+  padding: 0;
 }
 .status-block {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  padding-right: 12px;
+  padding: 14px 12px 14px 16px;
   border-right: 1px dashed var(--char-3);
 }
-.status-block:last-child { border-right: 0; padding-right: 0; }
+.status-block:nth-child(3) { border-right: 0; }
 .status-block__label {
   font-size: 9px;
   letter-spacing: 0.16em;
@@ -174,43 +258,51 @@ body::before {
   text-transform: uppercase;
 }
 
-/* ─── savings badge ─── */
-.status-block--savings {
-  border-right: 0;
-  border-left: 2px solid var(--amber);
-  padding-left: 14px;
-  padding-right: 0;
-  position: relative;
+/* ─── savings strip — spans full width below the 3 status blocks ─── */
+.savings-strip {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  border-top: 2px solid var(--amber);
+  background:
+    linear-gradient(90deg, rgba(255,122,24,0.08) 0%, transparent 60%),
+    var(--bone-2);
 }
-.status-block--savings .status-block__label {
+.savings-strip__label {
+  font-size: 9px;
+  letter-spacing: 0.16em;
   color: var(--amber);
   font-weight: 500;
+  white-space: nowrap;
 }
-.savings-value {
+.savings-strip__amount {
   font-family: var(--mono);
-  font-size: 18px !important;
+  font-size: 20px;
   font-weight: 900;
   color: var(--amber);
   letter-spacing: -0.02em;
-  text-shadow: 0 0 12px rgba(255,122,24,0.3);
+  text-shadow: 0 0 12px rgba(255,122,24,0.25);
   transition: text-shadow 0.4s ease;
+  line-height: 1;
 }
-.savings-value.is-updating {
-  text-shadow: 0 0 20px rgba(255,122,24,0.6);
+.savings-strip__amount.is-updating {
+  text-shadow: 0 0 24px rgba(255,122,24,0.6);
 }
 .savings-dollar {
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 400;
   vertical-align: top;
   margin-right: 1px;
   opacity: 0.7;
 }
-.savings-sub {
-  font-size: 8px;
-  letter-spacing: 0.12em;
+.savings-strip__tokens {
+  font-size: 9px;
+  letter-spacing: 0.1em;
   color: var(--char-3);
-  margin-top: 2px;
   text-transform: uppercase;
+  white-space: nowrap;
 }
 
 .dot {
@@ -981,8 +1073,22 @@ body::before {
 
 /* ─────────────── LOCK BUTTON & MODAL ─────────────── */
 
-.ribbon__lock {
+.ribbon__theme {
   margin-left: auto;
+  background: transparent;
+  border: none;
+  color: var(--bone);
+  padding: 0 16px;
+  font-size: 18px;
+  cursor: pointer;
+  border-left: 1px dashed rgba(241,236,225,0.18);
+  transition: color .2s, transform .3s;
+  opacity: 0.7;
+}
+.ribbon__theme:hover { opacity: 1; color: var(--amber); transform: rotate(180deg); }
+body.dark .ribbon__theme { color: var(--amber); opacity: 1; }
+
+.ribbon__lock {
   background: var(--char-2);
   border: none;
   color: var(--amber);
@@ -1746,12 +1852,12 @@ body::before {
     font-size: clamp(28px, 7vw, 48px);
   }
   .masthead__status {
-    grid-template-columns: 1fr 1fr 1fr 1fr;
-    gap: 6px;
-    padding: 10px 12px;
+    grid-template-columns: 1fr 1fr 1fr;
   }
+  .status-block { padding: 10px 10px 10px 12px; }
   .status-block__value { font-size: 11px; }
-  .savings-value { font-size: 14px !important; }
+  .savings-strip { padding: 6px 12px; }
+  .savings-strip__amount { font-size: 16px; }
 
   .ribbon__item {
     padding: 12px 16px 12px 14px;
@@ -2006,19 +2112,18 @@ body::before {
   .status-block {
     border-right: none;
     border-bottom: 1px dashed var(--char-3);
-    padding: 8px 0;
+    padding: 8px 12px;
     flex-direction: row;
     justify-content: space-between;
     align-items: center;
   }
-  .status-block:last-child { border-bottom: 0; }
-  .status-block--savings {
-    border-left: none;
-    border-bottom: 0;
-    border-top: 2px solid var(--amber);
-    padding: 10px 0 0;
-    margin-top: 4px;
+  .status-block:nth-child(3) { border-right: none; border-bottom: 1px dashed var(--char-3); }
+  .savings-strip {
+    flex-wrap: wrap;
+    gap: 6px 12px;
+    padding: 8px 12px;
   }
+  .savings-strip__amount { font-size: 16px; }
 
   .ribbon__item {
     padding: 10px 10px;
