@@ -120,7 +120,11 @@ async def _run_migrations(database_url: str) -> None:
         cfg = AlembicConfig(str(Path(__file__).parent.parent / "alembic.ini"))
         cfg.set_main_option("sqlalchemy.url", database_url)
         log.info("running_migrations")
-        await asyncio.to_thread(command.upgrade, cfg, "head")
+        try:
+            await asyncio.to_thread(command.upgrade, cfg, "head")
+        except Exception:
+            log.exception("migration_failed")
+            raise
         log.info("migrations_done")
 
     # Uvicorn --workers N runs lifespan in every child; concurrent Alembic
