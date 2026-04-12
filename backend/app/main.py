@@ -111,40 +111,22 @@ async def lifespan(app: FastAPI):
 
 
 async def _run_migrations(database_url: str) -> None:
-    import asyncio
-
-    from alembic import command
-    from alembic.config import Config as AlembicConfig
-
-    async def _upgrade() -> None:
-        cfg = AlembicConfig(str(Path(__file__).parent.parent / "alembic.ini"))
-        cfg.set_main_option("sqlalchemy.url", database_url)
-        log.info("running_migrations")
-        try:
-            await asyncio.to_thread(command.upgrade, cfg, "head")
-        except Exception:
-            log.exception("migration_failed")
-            raise
-        log.info("migrations_done")
-
-    # Uvicorn --workers N runs lifespan in every child; concurrent Alembic
-    # upgrades race and can kill workers. Serialize with a file lock (POSIX).
-    if sys.platform == "win32":
-        await _upgrade()
-        return
-
-    import fcntl
-
-    lock_path = Path(
-        os.environ.get("FREEAI_MIGRATION_LOCK_PATH", "/tmp/freeai_alembic.lock")
+    log.info("running_migrations")
+    proc = await asyncio.subprocess.create_subprocess_exec(
+        sys.executable, "-m", "alembic", "upgrade", "head",
+        cwd=str(Path(__file__).parent.parent),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
     )
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(lock_path, "a+", encoding="utf-8") as lock_file:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-        try:
-            await _upgrade()
-        finally:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+    stdout, stderr = await proc.communicate()
+    if stdout:
+        for line in stdout.decode().splitlines():
+            log.info("alembic_stdout", line=line)
+    if proc.returncode != 0:
+        err = stderr.decode()
+        log.error("migration_failed", returncode=proc.returncode, stderr=err)
+        raise RuntimeError(f"alembic upgrade failed (exit {proc.returncode}): {err}")
+    log.info("migrations_done")
 
 
 async def _periodic_purge(sessionmaker) -> None:
