@@ -1,9 +1,13 @@
 """Strategy repository — routing rules stored as data.
 
-The built-in strategies mirror what used to be STRATEGY_TAGS in orchestrator.py.
-They're seeded on first run and flagged is_builtin=True so the UI/API can
-distinguish user-defined ones (which can be deleted) from the canonical set
-(which can only be edited).
+Each strategy carries a DSL `definition` (see app.strategy_dsl) that the
+orchestrator uses to filter and score providers. Built-in strategies are
+seeded on first run with is_builtin=True so the UI/API can distinguish
+them from user-defined ones (which can be deleted; built-ins can only
+be edited).
+
+The special strategy `auto` carries definition=None — it's a hardcoded
+prompt-inspector that picks one of the other strategies at request time.
 """
 from __future__ import annotations
 
@@ -20,21 +24,112 @@ from ..db.models import StrategyRow
 @dataclass
 class StrategyDTO:
     name: str
-    tags: list[str] = field(default_factory=list)
+    # JSON-shaped DSL definition; None means "no DSL rules" (used by `auto`,
+    # which delegates to detect_auto_strategy() at request time).
+    definition: Optional[dict] = None
     description: str = ""
     is_builtin: bool = False
 
 
-# Must match the Strategy Literal in schemas.py for the built-in names.
+def _tag_prefer(tag: str, weight: float = 5.0) -> dict:
+    """Shorthand for the most common DSL clause: prefer providers with this tag."""
+    return {"field": "tags", "op": "contains", "value": tag, "weight": weight}
+
+
+def _tag_require(tag: str) -> dict:
+    """Shorthand for: provider MUST have this tag."""
+    return {"field": "tags", "op": "contains", "value": tag}
+
+
+# Built-in strategies, expressed as DSL definitions. Each one matches what
+# the old `tags` list achieved, but now the routing intent is explicit:
+# `require` filters out providers that don't qualify; `prefer` adds points.
+# See docs/STRATEGY_DSL.md for the rationale behind each shape.
 BUILTIN_STRATEGIES: list[StrategyDTO] = [
-    StrategyDTO("auto", [], "Reads the prompt and picks a lane.", is_builtin=True),
-    StrategyDTO("fastest", ["fast"], "Lowest expected latency.", is_builtin=True),
-    StrategyDTO("cheapest", ["cheap"], "Most generous free quotas.", is_builtin=True),
-    StrategyDTO("best_quality", ["quality", "reasoning"], "Highest-rated reasoning models.", is_builtin=True),
-    StrategyDTO("coding", ["coding", "reasoning"], "Tuned for code, tracebacks, refactors.", is_builtin=True),
-    StrategyDTO("reasoning", ["reasoning", "quality"], "Multi-step thinking and explanations.", is_builtin=True),
-    StrategyDTO("vision", ["vision"], "Image-capable providers only.", is_builtin=True),
-    StrategyDTO("long_context", ["long_context"], "Large context windows.", is_builtin=True),
+    StrategyDTO(
+        name="auto",
+        definition=None,
+        description="Reads the prompt and picks a lane.",
+        is_builtin=True,
+    ),
+    StrategyDTO(
+        name="fastest",
+        definition={
+            "require": [],
+            "prefer": [
+                _tag_prefer("fast", 5),
+                {"field": "latency_p50_ms", "op": "<", "value": 1000, "weight": 3},
+            ],
+        },
+        description="Lowest expected latency.",
+        is_builtin=True,
+    ),
+    StrategyDTO(
+        name="cheapest",
+        definition={
+            "require": [],
+            "prefer": [
+                _tag_prefer("cheap", 5),
+                {"field": "rpd_remaining", "op": ">", "value": 0.5, "weight": 3},
+            ],
+        },
+        description="Most generous free quotas.",
+        is_builtin=True,
+    ),
+    StrategyDTO(
+        name="best_quality",
+        definition={
+            "require": [],
+            "prefer": [
+                _tag_prefer("quality", 5),
+                _tag_prefer("reasoning", 4),
+            ],
+        },
+        description="Highest-rated reasoning models.",
+        is_builtin=True,
+    ),
+    StrategyDTO(
+        name="coding",
+        definition={
+            "require": [_tag_require("coding")],
+            "prefer": [
+                _tag_prefer("reasoning", 5),
+                {"field": "latency_p50_ms", "op": "<", "value": 2000, "weight": 2},
+            ],
+        },
+        description="Tuned for code, tracebacks, refactors.",
+        is_builtin=True,
+    ),
+    StrategyDTO(
+        name="reasoning",
+        definition={
+            "require": [],
+            "prefer": [
+                _tag_prefer("reasoning", 5),
+                _tag_prefer("quality", 3),
+            ],
+        },
+        description="Multi-step thinking and explanations.",
+        is_builtin=True,
+    ),
+    StrategyDTO(
+        name="vision",
+        definition={
+            "require": [_tag_require("vision")],
+            "prefer": [],
+        },
+        description="Image-capable providers only.",
+        is_builtin=True,
+    ),
+    StrategyDTO(
+        name="long_context",
+        definition={
+            "require": [_tag_require("long_context")],
+            "prefer": [],
+        },
+        description="Large context windows.",
+        is_builtin=True,
+    ),
 ]
 
 
@@ -53,14 +148,14 @@ class StrategyRepository:
     async def upsert(self, dto: StrategyDTO) -> StrategyDTO:
         stmt = pg_insert(StrategyRow).values(
             name=dto.name,
-            tags=dto.tags,
+            definition=dto.definition,
             description=dto.description,
             is_builtin=dto.is_builtin,
         )
         stmt = stmt.on_conflict_do_update(
             index_elements=[StrategyRow.name],
             set_={
-                "tags": stmt.excluded.tags,
+                "definition": stmt.excluded.definition,
                 "description": stmt.excluded.description,
                 # Never overwrite is_builtin from an update — it's set once at seed
             },
@@ -92,7 +187,7 @@ class StrategyRepository:
     def _to_dto(row: StrategyRow) -> StrategyDTO:
         return StrategyDTO(
             name=row.name,
-            tags=list(row.tags or []),
+            definition=row.definition,  # JSONB → dict (or None for `auto`)
             description=row.description,
             is_builtin=row.is_builtin,
         )

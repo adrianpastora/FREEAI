@@ -27,7 +27,7 @@ from sqlalchemy import (
     String,
     Text,
 )
-from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .engine import Base
@@ -151,15 +151,21 @@ class UsageEventRow(Base):
 
 
 class StrategyRow(Base):
-    """A routing strategy — tags list decides which providers match.
+    """A routing strategy — DSL definition decides which providers match.
+
+    The `definition` column is a JSONB document with `require` and `prefer`
+    clauses. See app.strategy_dsl for the schema and docs/STRATEGY_DSL.md
+    for the design rationale.
 
     Built-in strategies (auto, fastest, cheapest, ...) are seeded at startup
     with is_builtin=True. Users can add custom ones from the UI; built-ins
-    can be edited but not deleted."""
+    can be edited but not deleted. The special strategy `auto` has
+    definition = NULL — it's a hardcoded prompt-inspector, not a data rule.
+    """
     __tablename__ = "strategies"
 
     name: Mapped[str] = mapped_column(String(32), primary_key=True)
-    tags: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list, nullable=False)
+    definition: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     description: Mapped[str] = mapped_column(Text, default="", nullable=False)
     is_builtin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     updated_at: Mapped[float] = mapped_column(

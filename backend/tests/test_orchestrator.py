@@ -195,9 +195,22 @@ async def test_custom_strategy_is_accepted_and_used(session):
     secondary = FakeProvider(name="secondary", response=_make_response("secondary"))
     orch = await _setup_two_providers(session, primary, secondary)
 
-    # Create a custom strategy that strongly prefers "coding" tag
+    # Create a custom strategy that strongly prefers the "coding" tag.
+    # In the new DSL, this is a `prefer.contains` clause; the providers
+    # both happen to carry tags=["fast","coding"] so they both qualify
+    # and the heavy weight breaks ties in favour of coding-tagged ones.
     await StrategyRepository(session).upsert(
-        StrategyDTO(name="mine", tags=["coding"], description="custom", is_builtin=False)
+        StrategyDTO(
+            name="mine",
+            definition={
+                "require": [],
+                "prefer": [
+                    {"field": "tags", "op": "contains", "value": "coding", "weight": 5},
+                ],
+            },
+            description="custom",
+            is_builtin=False,
+        )
     )
     await session.commit()
 
@@ -216,7 +229,8 @@ async def test_custom_strategy_is_accepted_and_used(session):
 @pytest.mark.asyncio
 async def test_unknown_strategy_raises_client_error(session):
     """Requesting a strategy that doesn't exist should be a clear CLIENT_ERROR,
-    not a silent fallback to empty tags (which picks providers by weight alone)."""
+    not a silent fallback to baseline scoring (which would silently rank by
+    weight + headroom + latency without telling the user their strategy is gone)."""
     primary = FakeProvider(name="primary", response=_make_response("primary"))
     secondary = FakeProvider(name="secondary", response=_make_response("secondary"))
     orch = await _setup_two_providers(session, primary, secondary)
