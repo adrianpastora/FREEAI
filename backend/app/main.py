@@ -557,82 +557,28 @@ async def set_fallback(
 
 
 class StrategyUpsertIn(BaseModel):
-    """Input shape for strategy create/update.
+    """Input shape for strategy create/update — DSL definition only.
 
-    Accepts the new `definition` (DSL) shape AND, for one commit during
-    the migration, the legacy `tags` shape. If both are present
-    `definition` wins. If only `tags` is present, it's converted on the
-    fly to a `prefer` clause per tag with weight 5 — lossless rewrite of
-    the old behavior.
-
-    The frontend in commit 3 will stop sending `tags`. The legacy field
-    is removed in commit 4.
+    See app.strategy_dsl for the schema and docs/STRATEGY_DSL.md for
+    the design rationale. The legacy `tags` field that bridged the
+    transition was removed in commit 4 of the strategy DSL rework.
     """
     name: str = Field(..., min_length=1, max_length=32, pattern=r"^[a-z0-9_]+$")
     definition: Optional[dict] = None
-    tags: Optional[list[str]] = None  # legacy bridge — drop in commit 4
     description: str = ""
-
-
-def _resolve_definition(payload: "StrategyUpsertIn") -> Optional[dict]:
-    """Coalesce the new and legacy fields into a single definition dict.
-
-    Returns None for an empty/legacy-empty payload — that's a valid
-    "baseline only" strategy and stored as NULL in the DB.
-    """
-    if payload.definition is not None:
-        return payload.definition
-    if payload.tags:
-        return {
-            "require": [],
-            "prefer": [
-                {"field": "tags", "op": "contains", "value": t, "weight": 5}
-                for t in payload.tags
-            ],
-        }
-    return None
 
 
 class StrategyOut(BaseModel):
     name: str
     definition: Optional[dict] = None
-    # Legacy bridge: derived from `definition` so the unmodified frontend
-    # in commit 2 keeps rendering strategy chips. Removed in commit 4 once
-    # the frontend stops reading `s.tags`.
-    tags: list[str] = Field(default_factory=list)
     description: str
     is_builtin: bool
-
-
-def _derive_legacy_tags(definition: Optional[dict]) -> list[str]:
-    """Pull tag values out of any `prefer.contains` clauses on field=tags.
-
-    This is the inverse of the legacy bridge in `_resolve_definition`:
-    a strategy that came in via the old `tags` shape, was converted to
-    a `prefer.contains` list, and is now being read back, will round-
-    trip to the same tag list. New definitions that use other fields
-    (like latency_p50_ms) get an empty list — fine, the old frontend
-    just shows no chips for those.
-    """
-    if not definition:
-        return []
-    out: list[str] = []
-    for clause in definition.get("prefer") or []:
-        if (
-            isinstance(clause, dict)
-            and clause.get("field") == "tags"
-            and clause.get("op") == "contains"
-            and isinstance(clause.get("value"), str)
-        ):
-            out.append(clause["value"])
-    return out
 
 
 def _strategy_to_out(dto: StrategyDTO) -> StrategyOut:
     return StrategyOut(
         name=dto.name,
         definition=dto.definition,
-        tags=_derive_legacy_tags(dto.definition),
         description=dto.description,
         is_builtin=dto.is_builtin,
     )
@@ -666,11 +612,10 @@ async def create_strategy(
     existing = await repo.get(payload.name)
     if existing:
         raise HTTPException(409, f"strategy '{payload.name}' already exists — use PATCH to edit")
-    definition = _resolve_definition(payload)
-    _validate_definition_or_422(definition)
+    _validate_definition_or_422(payload.definition)
     dto = StrategyDTO(
         name=payload.name,
-        definition=definition,
+        definition=payload.definition,
         description=payload.description,
         is_builtin=False,
     )
@@ -693,12 +638,11 @@ async def update_strategy(
     existing = await repo.get(name)
     if not existing:
         raise HTTPException(404, f"unknown strategy '{name}'")
-    definition = _resolve_definition(payload)
-    _validate_definition_or_422(definition)
+    _validate_definition_or_422(payload.definition)
     saved = await repo.upsert(
         StrategyDTO(
             name=name,
-            definition=definition,
+            definition=payload.definition,
             description=payload.description,
             is_builtin=existing.is_builtin,
         )
