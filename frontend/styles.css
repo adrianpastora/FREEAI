@@ -29,55 +29,61 @@
   --noise-url: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='220' height='220'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix type='matrix' values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.32 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
 }
 
-/* ─── dark mode: invert bone/char, keep accent colors ─── */
+/* ─── dark mode: warm CRT phosphor ───
+   Warm dark-brown base, cream text, amber stays as-is.
+   Contrast targets: body text ≥ 11:1, labels ≥ 5.5:1 (WCAG AA+). */
 body.dark {
-  --bone:        #16140f;
-  --bone-2:      #1e1c16;
-  --bone-3:      #2a2620;
+  --bone:        #1a1814;
+  --bone-2:      #242019;
+  --bone-3:      #332e25;
   --char:        #f1ece1;
-  --char-2:      #e6dfce;
-  --char-3:      #a89f8c;
+  --char-2:      #ddd6c6;
+  --char-3:      #b5ac98;
 
   --line:        1.5px solid var(--char-3);
   --line-thick:  3px solid var(--char-3);
 
-  --shadow-hard:    6px 6px 0 rgba(0,0,0,0.5);
-  --shadow-hard-sm: 3px 3px 0 rgba(0,0,0,0.4);
+  --shadow-hard:    6px 6px 0 rgba(0,0,0,0.45);
+  --shadow-hard-sm: 3px 3px 0 rgba(0,0,0,0.35);
 }
-body.dark .grain {
-  opacity: .12;
-  mix-blend-mode: screen;
-}
+
+/* Texture overlays adapt for dark bg */
+body.dark .grain  { opacity: .10; mix-blend-mode: screen; }
 body.dark .scanlines {
   background: repeating-linear-gradient(
     to bottom,
     transparent 0, transparent 3px,
-    rgba(241,236,225,0.02) 3px, rgba(241,236,225,0.02) 4px
+    rgba(241,236,225,0.018) 3px, rgba(241,236,225,0.018) 4px
   );
   mix-blend-mode: screen;
 }
 body.dark::before {
   background-image:
-    linear-gradient(to right, rgba(241,236,225,0.03) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(241,236,225,0.03) 1px, transparent 1px);
+    linear-gradient(to right, rgba(241,236,225,0.035) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(241,236,225,0.035) 1px, transparent 1px);
 }
+
+/* Layout overrides */
 body.dark .masthead {
   background:
-    radial-gradient(circle at 92% 12%, rgba(255,122,24,0.15), transparent 38%),
+    radial-gradient(circle at 92% 12%, rgba(255,122,24,0.14), transparent 38%),
     var(--bone);
 }
 body.dark .ribbon {
-  background: #0c0b08;
+  background: #100e0a;
   border-bottom-color: var(--char-3);
 }
-body.dark .ribbon__item { border-right-color: rgba(241,236,225,0.1); }
-body.dark .ribbon__item:hover { background: #1a1812; }
-body.dark .ribbon__item--active { background: var(--amber); color: #16140f; }
+body.dark .ribbon__item  { border-right-color: rgba(241,236,225,0.1); }
+body.dark .ribbon__item:hover { background: #241f18; }
+body.dark .ribbon__item--active { background: var(--amber); color: #1a1814; }
+
 body.dark .savings-strip {
   background:
     linear-gradient(90deg, rgba(255,122,24,0.1) 0%, transparent 60%),
     var(--bone-2);
 }
+
+/* Cards & surfaces */
 body.dark .provider-card,
 body.dark .strategy-card,
 body.dark .kpi-card,
@@ -86,15 +92,29 @@ body.dark .api-card {
   background: var(--bone-2);
   border-color: var(--char-3);
 }
-body.dark .modal__backdrop { background: rgba(0,0,0,0.75); }
+body.dark .provider-card__corner,
+body.dark .modal__corner { color: var(--char-3); }
+
+/* Modals */
+body.dark .modal__backdrop { background: rgba(0,0,0,0.72); }
 body.dark .modal__card { background: var(--bone-2); border-color: var(--char-3); }
+
+/* Forms */
 body.dark input, body.dark select, body.dark textarea {
   background: var(--bone);
   color: var(--char);
   border-color: var(--char-3);
 }
-body.dark code { background: #0c0b08; color: var(--amber-soft); }
-body.dark .signoff { background: #0c0b08; border-top-color: var(--char-3); }
+body.dark input::placeholder { color: var(--char-3); }
+
+/* Code & footer */
+body.dark code { background: #100e0a; color: var(--amber-soft); }
+body.dark .signoff { background: #100e0a; border-top-color: var(--char-3); }
+
+/* Meter fills stay visible */
+body.dark .meter__bar { background: var(--bone-3); }
+body.dark .ghost-button { border-color: var(--char-3); color: var(--char); }
+body.dark .ghost-button:hover { background: var(--char-3); color: var(--bone); }
 
 * { box-sizing: border-box; }
 
@@ -210,31 +230,16 @@ body::before {
 .display-line { display: block; }
 .display-line.italic { font-style: italic; color: var(--amber); font-weight: 400; }
 
-.masthead__status {
-  display: flex;
-  flex-direction: column;
-  border: var(--line);
-  background: var(--bone-2);
-  box-shadow: var(--shadow-hard-sm);
-}
-.masthead__status-row {
-  display: none; /* not used — flex children lay out directly */
-}
-/* The 3 status blocks sit in a row */
-.masthead__status {
-  display: flex;
-  flex-direction: column;
-}
-.masthead__status > .status-block {
-  /* override for inline layout */
-}
-/* Use a nested approach: the first 3 blocks flow, then savings strip spans */
+/* Status panel: 3-column grid with a full-width savings strip below.
+   The border + background live here; children have NO outer margin. */
 .masthead__status {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;
-  grid-template-rows: auto auto;
   gap: 0;
-  padding: 0;
+  border: var(--line);
+  background: var(--bone-2);
+  box-shadow: var(--shadow-hard-sm);
+  overflow: hidden;            /* keeps savings-strip inside the border */
 }
 .status-block {
   display: flex;
@@ -1851,9 +1856,6 @@ body.dark .ribbon__theme { color: var(--amber); opacity: 1; }
   .masthead__title h1 {
     font-size: clamp(28px, 7vw, 48px);
   }
-  .masthead__status {
-    grid-template-columns: 1fr 1fr 1fr;
-  }
   .status-block { padding: 10px 10px 10px 12px; }
   .status-block__value { font-size: 11px; }
   .savings-strip { padding: 6px 12px; }
@@ -2107,7 +2109,6 @@ body.dark .ribbon__theme { color: var(--amber); opacity: 1; }
   }
   .masthead__status {
     grid-template-columns: 1fr;
-    gap: 0;
   }
   .status-block {
     border-right: none;
@@ -2120,7 +2121,7 @@ body.dark .ribbon__theme { color: var(--amber); opacity: 1; }
   .status-block:nth-child(3) { border-right: none; border-bottom: 1px dashed var(--char-3); }
   .savings-strip {
     flex-wrap: wrap;
-    gap: 6px 12px;
+    gap: 4px 12px;
     padding: 8px 12px;
   }
   .savings-strip__amount { font-size: 16px; }
