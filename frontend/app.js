@@ -292,7 +292,7 @@ async function publicApi(path, opts = {}) {
   return res.json();
 }
 
-function showModelWarning(cardNode, warning, suggestions, modelInput) {
+function showModelWarning(cardNode, warning, suggestions, modelSelect) {
   cardNode.querySelector(".model-warning")?.remove();
   if (!warning) return;
   const wrap = document.createElement("div");
@@ -305,7 +305,14 @@ function showModelWarning(cardNode, warning, suggestions, modelInput) {
   `;
   wrap.querySelectorAll("[data-model]").forEach((s) => {
     s.addEventListener("click", () => {
-      modelInput.value = s.dataset.model;
+      const id = s.dataset.model;
+      if (![...modelSelect.options].some((o) => o.value === id)) {
+        const opt = document.createElement("option");
+        opt.value = id;
+        opt.textContent = id;
+        modelSelect.appendChild(opt);
+      }
+      modelSelect.value = id;
       wrap.remove();
     });
   });
@@ -340,6 +347,35 @@ const grid = document.getElementById("providerGrid");
 const tpl  = document.getElementById("providerCardTemplate");
 
 let providersCache = [];
+
+async function populateModelSelect(select, providerName, currentModel) {
+  try {
+    const data = await adminApi(`/api/providers/${providerName}/models`);
+    select.innerHTML = "";
+    data.models.forEach((m) => {
+      const opt = document.createElement("option");
+      opt.value = m.id;
+      opt.textContent = m.note ? `${m.id} (${m.note})` : m.id;
+      select.appendChild(opt);
+    });
+    if (currentModel) {
+      const known = data.models.some((m) => m.id === currentModel);
+      if (!known) {
+        const opt = document.createElement("option");
+        opt.value = currentModel;
+        opt.textContent = `${currentModel} (custom)`;
+        select.appendChild(opt);
+      }
+      select.value = currentModel;
+    }
+  } catch {
+    select.innerHTML = "";
+    const opt = document.createElement("option");
+    opt.value = currentModel || "";
+    opt.textContent = currentModel || "unavailable";
+    select.appendChild(opt);
+  }
+}
 
 function renderProvider(p) {
   const node = tpl.content.firstElementChild.cloneNode(true);
@@ -376,7 +412,7 @@ function renderProvider(p) {
   if (p.has_key) keyInput.placeholder = "•••••••• key on file";
 
   const modelInput = node.querySelector(".model-input");
-  modelInput.value = p.default_model || "";
+  populateModelSelect(modelInput, p.name, p.default_model);
 
   // meters
   const rpmFill  = node.querySelector(".meter:nth-child(1) .meter__fill");
