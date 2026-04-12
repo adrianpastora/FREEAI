@@ -59,7 +59,7 @@ def test_parse_full_definition():
     d = parse_definition({
         "require": [
             {"field": "tags", "op": "contains", "value": "coding"},
-            {"field": "latency_p50_ms", "op": "<", "value": 2000},
+            {"field": "last_latency_ms", "op": "<", "value": 2000},
         ],
         "prefer": [
             {"field": "tags", "op": "contains", "value": "fast", "weight": 5},
@@ -128,14 +128,14 @@ def test_parse_rejects_op_invalid_for_field_type():
     # `contains` only valid on string_array, not on a numeric field.
     with pytest.raises(ParseError, match="not valid for field"):
         parse_definition({"require": [
-            {"field": "latency_p50_ms", "op": "contains", "value": 800},
+            {"field": "last_latency_ms", "op": "contains", "value": 800},
         ]})
 
 
 def test_parse_rejects_string_value_on_numeric_field():
     with pytest.raises(ParseError, match="value must be a number"):
         parse_definition({"require": [
-            {"field": "latency_p50_ms", "op": "<", "value": "fast"},
+            {"field": "last_latency_ms", "op": "<", "value": "fast"},
         ]})
 
 
@@ -151,7 +151,7 @@ def test_parse_rejects_bool_disguised_as_number():
     # so `True` doesn't quietly become 1.
     with pytest.raises(ParseError, match="value must be a number"):
         parse_definition({"require": [
-            {"field": "latency_p50_ms", "op": "<", "value": True},
+            {"field": "last_latency_ms", "op": "<", "value": True},
         ]})
 
 
@@ -256,12 +256,12 @@ def test_matches_neq():
 
 
 def test_matches_lt_lte_gt_gte():
-    ctx = _ctx(latency_p50_ms=500)
-    assert matches(Clause("latency_p50_ms", "<", 1000), ctx) is True
-    assert matches(Clause("latency_p50_ms", "<", 500), ctx) is False
-    assert matches(Clause("latency_p50_ms", "<=", 500), ctx) is True
-    assert matches(Clause("latency_p50_ms", ">", 500), ctx) is False
-    assert matches(Clause("latency_p50_ms", ">=", 500), ctx) is True
+    ctx = _ctx(last_latency_ms=500)
+    assert matches(Clause("last_latency_ms", "<", 1000), ctx) is True
+    assert matches(Clause("last_latency_ms", "<", 500), ctx) is False
+    assert matches(Clause("last_latency_ms", "<=", 500), ctx) is True
+    assert matches(Clause("last_latency_ms", ">", 500), ctx) is False
+    assert matches(Clause("last_latency_ms", ">=", 500), ctx) is True
 
 
 def test_matches_in_string():
@@ -276,10 +276,10 @@ def test_matches_returns_false_when_field_missing():
 
 
 def test_matches_returns_false_when_field_value_is_none():
-    # latency_p50_ms can legitimately be None for a provider that
+    # last_latency_ms can legitimately be None for a provider that
     # hasn't been called yet. The evaluator must NOT crash.
-    c = Clause("latency_p50_ms", "<", 1000)
-    assert matches(c, _ctx(latency_p50_ms=None)) is False
+    c = Clause("last_latency_ms", "<", 1000)
+    assert matches(c, _ctx(last_latency_ms=None)) is False
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -309,12 +309,12 @@ def test_score_require_fail_returns_none():
 def test_score_multiple_require_all_must_pass():
     d = parse_definition({"require": [
         {"field": "tags", "op": "contains", "value": "coding"},
-        {"field": "latency_p50_ms", "op": "<", "value": 2000},
+        {"field": "last_latency_ms", "op": "<", "value": 2000},
     ]})
     # First passes, second fails -> excluded.
-    assert score(d, _ctx(tags=["coding"], latency_p50_ms=5000)) is None
+    assert score(d, _ctx(tags=["coding"], last_latency_ms=5000)) is None
     # Both pass.
-    assert score(d, _ctx(tags=["coding"], latency_p50_ms=500)) == 0.0
+    assert score(d, _ctx(tags=["coding"], last_latency_ms=500)) == 0.0
 
 
 def test_score_prefer_sums_matching_weights():
@@ -368,7 +368,7 @@ def test_context_from_provider_computes_remaining():
     )
     assert ctx.fields["name"] == "groq"
     assert ctx.fields["tags"] == ["fast", "cheap"]
-    assert ctx.fields["latency_p50_ms"] == 420
+    assert ctx.fields["last_latency_ms"] == 420
     assert ctx.fields["rpd_remaining"] == pytest.approx(0.7)
     assert ctx.fields["rpm_remaining"] == pytest.approx(0.5)
 
@@ -411,7 +411,7 @@ def test_serialize_round_trip():
             {"field": "tags", "op": "contains", "value": "coding"},
         ],
         "prefer": [
-            {"field": "latency_p50_ms", "op": "<", "value": 1000, "weight": 3},
+            {"field": "last_latency_ms", "op": "<", "value": 1000, "weight": 3},
         ],
     }
     d = parse_definition(raw)
@@ -441,14 +441,14 @@ def test_serialize_omits_weight_on_require_clauses():
         "require": [],
         "prefer": [
             {"field": "tags", "op": "contains", "value": "fast", "weight": 5},
-            {"field": "latency_p50_ms", "op": "<", "value": 1000, "weight": 3},
+            {"field": "last_latency_ms", "op": "<", "value": 1000, "weight": 3},
         ],
     }),
     ("coding", {
         "require": [{"field": "tags", "op": "contains", "value": "coding"}],
         "prefer": [
             {"field": "tags", "op": "contains", "value": "reasoning", "weight": 5},
-            {"field": "latency_p50_ms", "op": "<", "value": 2000, "weight": 2},
+            {"field": "last_latency_ms", "op": "<", "value": 2000, "weight": 2},
         ],
     }),
     ("vision", {

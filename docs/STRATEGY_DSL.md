@@ -46,7 +46,7 @@ Stored in `strategies.definition` as a single JSONB column. The
   ],
   "prefer": [            // soft scoring — adds points to candidates that match
     { "field": "tags",            "op": "contains", "value": "fast",   "weight": 5 },
-    { "field": "latency_p50_ms",  "op": "<",        "value": 1000,     "weight": 3 },
+    { "field": "last_latency_ms", "op": "<",        "value": 1000,     "weight": 3 },
     { "field": "rpd_remaining",   "op": ">",        "value": 0.5,      "weight": 2 }
   ]
 }
@@ -67,7 +67,7 @@ parse error at save time.
 | `name`            | string    | `provider_configs.name`                              | Use with `op: ==` / `!=`                               |
 | `weight`          | float     | `provider_configs.weight`                            | Hand-tuned admin priority                              |
 | `enabled`         | bool      | `provider_configs.enabled`                           | Always true here — disabled providers are pre-filtered |
-| `latency_p50_ms`  | int       | `ProviderSnapshot.last_latency_ms` (proxy for now)   | Real p50 needs analytics-side aggregation; v2          |
+| `last_latency_ms` | int       | `ProviderSnapshot.last_latency_ms`                   | Single most recent observed call, NOT a percentile     |
 | `requests_today`  | int       | `ProviderSnapshot.requests_today`                    |                                                        |
 | `requests_this_minute` | int  | `ProviderSnapshot.requests_this_minute`              |                                                        |
 | `rpd_remaining`   | float     | derived: `1 - requests_today / rpd_limit` (0..1)     | Convenience field, normalized                          |
@@ -110,7 +110,7 @@ A strategy is rejected with a structured error if:
 1. **Unknown field** in `require` or `prefer`. Error names the field and
    lists allowed fields.
 2. **Unknown operator**, or operator that doesn't match the field type
-   (e.g. `latency_p50_ms contains 800`).
+   (e.g. `last_latency_ms contains 800`).
 3. **`weight` missing or non-numeric** in any `prefer` clause.
 4. **`require` matches zero providers** at save time. Hard error: a
    strategy you can't possibly route is a bug, not a config. The error
@@ -127,14 +127,14 @@ A strategy is rejected with a structured error if:
 require: []
 prefer:
   - { field: tags, op: contains, value: fast, weight: 5 }
-  - { field: latency_p50_ms, op: "<", value: 1000, weight: 3 }
+  - { field: last_latency_ms, op: "<", value: 1000, weight: 3 }
 
 # coding
 require:
   - { field: tags, op: contains, value: coding }
 prefer:
   - { field: tags, op: contains, value: reasoning, weight: 5 }
-  - { field: latency_p50_ms, op: "<", value: 2000, weight: 2 }
+  - { field: last_latency_ms, op: "<", value: 2000, weight: 2 }
 
 # vision
 require:
@@ -227,7 +227,7 @@ The strategy editor modal becomes a structured form, not a textarea.
 │  REQUIRE  (provider must satisfy ALL)             │
 │  ┌────────────────────────────────────────────┐   │
 │  │ FIELD [tags ▾]  OP [contains ▾]  VALUE [coding ▾] │
-│  │ FIELD [latency_p50_ms ▾] OP [< ▾] VALUE [2000]    │
+│  │ FIELD [last_latency_ms ▾] OP [< ▾] VALUE [2000]   │
 │  │                                       [+ add] │   │
 │  └────────────────────────────────────────────┘   │
 │                                                    │
@@ -276,7 +276,7 @@ in one go; clients that still send `tags` get a 422.
 
 ## Design decisions (resolved)
 
-1. **`latency_p50_ms`** — implemented as a proxy reading `ProviderSnapshot.last_latency_ms` (most recent call). Real p50 needs aggregation over `usage_events` and is left as a v2 follow-up.
+1. **`last_latency_ms`** — initially named `latency_p50_ms` in the design doc and the first three commits, but the implementation only reads `ProviderSnapshot.last_latency_ms` (the most recent observed call), not a windowed percentile. The misleading name was renamed in migration 0009 (2026-04-12). A real p50 over `usage_events` would need analytics-side aggregation and is intentionally out of scope until cost tracking lands — at that point the same aggregation infra produces both. New strategies should use `last_latency_ms`; old strategies stored as JSONB are rewritten in place by 0009.
 
 2. **Live preview cost** — debounced to 300ms on the frontend, and the endpoint is admin-only. Not exposed to the public side.
 
