@@ -20,9 +20,10 @@ with the new field name (already updated in strategy_repo.py); this
 migration's job is to fix any user-created strategy that referenced the
 old name.
 
-The translation is done with a single SQL UPDATE that uses
-`jsonb_agg(jsonb_set(...))` so it works regardless of how many clauses
-each row has and doesn't need to load anything into Python.
+The two SQL statements below are exposed as module-level constants so
+test_migration_0009.py can execute them against a real Postgres without
+spinning Alembic. Keep these as the single source of truth — both
+upgrade()/downgrade() and the test reference these exact strings.
 """
 from typing import Sequence, Union
 
@@ -34,111 +35,60 @@ branch_labels = None
 depends_on = None
 
 
+def _rename_field_sql(section: str, old: str, new: str) -> str:
+    """Build the JSONB rewrite SQL for one section (require or prefer).
+
+    Walks the array of clauses in `definition->{section}`, and for any
+    clause whose `field` equals `old`, replaces it with `new`. Other
+    clauses are passed through untouched. NULL definitions ('auto') are
+    skipped via the WHERE.
+
+    The COALESCE handles rows where the section is present but empty —
+    `jsonb_agg` over zero rows returns NULL, which would otherwise null
+    out the section.
+    """
+    return f"""
+        UPDATE strategies
+        SET definition = jsonb_set(
+            definition,
+            '{{{section}}}',
+            COALESCE(
+                (
+                    SELECT jsonb_agg(
+                        CASE
+                            WHEN clause->>'field' = '{old}'
+                                THEN jsonb_set(clause, '{{field}}', '"{new}"'::jsonb)
+                            ELSE clause
+                        END
+                    )
+                    FROM jsonb_array_elements(definition->'{section}') AS clause
+                ),
+                '[]'::jsonb
+            )
+        )
+        WHERE definition IS NOT NULL
+          AND definition ? '{section}'
+    """
+
+
+# Exposed as module constants so the migration test can execute the
+# exact same SQL the migration runs — no risk of test/migration drift.
+UPGRADE_REQUIRE_SQL = _rename_field_sql("require", "latency_p50_ms", "last_latency_ms")
+UPGRADE_PREFER_SQL  = _rename_field_sql("prefer",  "latency_p50_ms", "last_latency_ms")
+DOWNGRADE_REQUIRE_SQL = _rename_field_sql("require", "last_latency_ms", "latency_p50_ms")
+DOWNGRADE_PREFER_SQL  = _rename_field_sql("prefer",  "last_latency_ms", "latency_p50_ms")
+
+
 def upgrade() -> None:
-    # Rewrite require[*] and prefer[*] clauses where field == 'latency_p50_ms'.
-    # The two sections are independent, so we update them with two passes for
-    # readability — one CTE per section. NULL definitions ('auto') are skipped.
-    op.execute(
-        """
-        UPDATE strategies
-        SET definition = jsonb_set(
-            definition,
-            '{require}',
-            COALESCE(
-                (
-                    SELECT jsonb_agg(
-                        CASE
-                            WHEN clause->>'field' = 'latency_p50_ms'
-                                THEN jsonb_set(clause, '{field}', '"last_latency_ms"'::jsonb)
-                            ELSE clause
-                        END
-                    )
-                    FROM jsonb_array_elements(definition->'require') AS clause
-                ),
-                '[]'::jsonb
-            )
-        )
-        WHERE definition IS NOT NULL
-          AND definition ? 'require'
-        """
-    )
-    op.execute(
-        """
-        UPDATE strategies
-        SET definition = jsonb_set(
-            definition,
-            '{prefer}',
-            COALESCE(
-                (
-                    SELECT jsonb_agg(
-                        CASE
-                            WHEN clause->>'field' = 'latency_p50_ms'
-                                THEN jsonb_set(clause, '{field}', '"last_latency_ms"'::jsonb)
-                            ELSE clause
-                        END
-                    )
-                    FROM jsonb_array_elements(definition->'prefer') AS clause
-                ),
-                '[]'::jsonb
-            )
-        )
-        WHERE definition IS NOT NULL
-          AND definition ? 'prefer'
-        """
-    )
+    op.execute(UPGRADE_REQUIRE_SQL)
+    op.execute(UPGRADE_PREFER_SQL)
 
 
 def downgrade() -> None:
-    # Symmetric — flip the field name back. Only useful for rolling back the
-    # commit; new strategies created after the upgrade will lose meaning if
-    # downgraded, because the DSL parser at that point only knows
-    # last_latency_ms. Documented as one-way for forward migration; the
+    # Symmetric — flip the field name back. Only useful for a rollback;
+    # strategies created post-upgrade that use the new name will be
+    # downgraded too, which means a future re-upgrade restores them
+    # correctly. Documented as one-way for forward migration; the
     # downgrade exists so a panicked rollback doesn't blow up.
-    op.execute(
-        """
-        UPDATE strategies
-        SET definition = jsonb_set(
-            definition,
-            '{require}',
-            COALESCE(
-                (
-                    SELECT jsonb_agg(
-                        CASE
-                            WHEN clause->>'field' = 'last_latency_ms'
-                                THEN jsonb_set(clause, '{field}', '"latency_p50_ms"'::jsonb)
-                            ELSE clause
-                        END
-                    )
-                    FROM jsonb_array_elements(definition->'require') AS clause
-                ),
-                '[]'::jsonb
-            )
-        )
-        WHERE definition IS NOT NULL
-          AND definition ? 'require'
-        """
-    )
-    op.execute(
-        """
-        UPDATE strategies
-        SET definition = jsonb_set(
-            definition,
-            '{prefer}',
-            COALESCE(
-                (
-                    SELECT jsonb_agg(
-                        CASE
-                            WHEN clause->>'field' = 'last_latency_ms'
-                                THEN jsonb_set(clause, '{field}', '"latency_p50_ms"'::jsonb)
-                            ELSE clause
-                        END
-                    )
-                    FROM jsonb_array_elements(definition->'prefer') AS clause
-                ),
-                '[]'::jsonb
-            )
-        )
-        WHERE definition IS NOT NULL
-          AND definition ? 'prefer'
-        """
-    )
+    op.execute(DOWNGRADE_REQUIRE_SQL)
+    op.execute(DOWNGRADE_PREFER_SQL)
