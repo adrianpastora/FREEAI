@@ -57,13 +57,21 @@ async def verify_admin_credentials(session: AsyncSession, presented: Optional[st
 async def require_client(
     request: Request,
     authorization: Optional[str] = Header(default=None),
+    x_admin_token: Optional[str] = Header(default=None, alias="X-Admin-Token"),
     session: AsyncSession = Depends(get_session),
 ):
     """Auth dependency for /v1/* — bootstrap-aware.
 
     Returns the matched Client DTO (or None in bootstrap mode). Raises 401 on
     missing/invalid keys and 429 on client rate limit breach.
+
+    Also accepts the admin token (via X-Admin-Token header) as a bypass so the
+    built-in playground can call /v1/* without needing a separate client key.
     """
+    # Admin bypass — if a valid admin token is presented, skip client auth.
+    if x_admin_token and await verify_admin_credentials(session, x_admin_token):
+        return None
+
     settings = get_settings()
     client_repo = ClientRepository(session)
     has_clients = await client_repo.has_any()

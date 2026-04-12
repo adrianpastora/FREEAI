@@ -1243,20 +1243,11 @@ function updateProviderSelect(providers) {
 // ─────────────── playground ───────────────
 
 const pgSend = document.getElementById("pgSend");
-const pgClientKeyInput = document.getElementById("pgClientKey");
-
-// Persist client key in localStorage
-pgClientKeyInput.value = localStorage.getItem("freeai_client_key") || "";
-pgClientKeyInput.addEventListener("change", () => {
-  const v = pgClientKeyInput.value.trim();
-  if (v) localStorage.setItem("freeai_client_key", v);
-  else localStorage.removeItem("freeai_client_key");
-});
 
 function getPlaygroundHeaders(extra = {}) {
   const headers = { "Content-Type": "application/json", ...extra };
-  const key = pgClientKeyInput.value.trim();
-  if (key) headers["Authorization"] = `Bearer ${key}`;
+  const token = getAdminToken();
+  if (token) headers["X-Admin-Token"] = token;
   return headers;
 }
 
@@ -1409,8 +1400,8 @@ document.getElementById("pgTranscribe").addEventListener("click", async () => {
 
   try {
     const headers = {};
-    const key = pgClientKeyInput.value.trim();
-    if (key) headers["Authorization"] = `Bearer ${key}`;
+    const token = getAdminToken();
+    if (token) headers["X-Admin-Token"] = token;
 
     const res = await fetch(`${API_BASE}/v1/audio/transcriptions`, {
       method: "POST",
