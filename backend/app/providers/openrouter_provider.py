@@ -5,6 +5,7 @@ from .openai_compat import OpenAICompatibleProvider
 class OpenRouterProvider(OpenAICompatibleProvider):
     name = "openrouter"
     BASE_URL = "https://openrouter.ai/api/v1/chat/completions"
+    supports_vision = True  # many OpenRouter models accept image_url natively
     request_timeout = 90.0
 
     def _extra_headers(self) -> dict[str, str]:

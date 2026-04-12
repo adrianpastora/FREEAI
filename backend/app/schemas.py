@@ -1,14 +1,43 @@
 """Pydantic schemas — OpenAI-compatible chat completion shapes."""
 from __future__ import annotations
 
-from typing import Literal, Optional
+from typing import Any, Literal, Optional, Union
 from pydantic import BaseModel, Field
 
 
 class ChatMessage(BaseModel):
+    """OpenAI-compatible message. ``content`` can be a plain string or a list
+    of content blocks for multimodal requests::
+
+        content: [
+            {"type": "text", "text": "What's in this image?"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}
+        ]
+    """
     role: Literal["system", "user", "assistant", "tool"]
-    content: str
+    content: Union[str, list[dict[str, Any]]]
     name: Optional[str] = None
+
+    @property
+    def text_content(self) -> str:
+        """Extract plain text from content (works for both str and multimodal)."""
+        if isinstance(self.content, str):
+            return self.content
+        return " ".join(
+            block.get("text", "")
+            for block in self.content
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+
+    @property
+    def has_images(self) -> bool:
+        """True if content contains image_url blocks."""
+        if isinstance(self.content, str):
+            return False
+        return any(
+            isinstance(b, dict) and b.get("type") == "image_url"
+            for b in self.content
+        )
 
 
 # `Strategy` used to be a `Literal[...]` enumerating the builtin names. In

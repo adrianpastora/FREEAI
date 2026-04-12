@@ -100,6 +100,7 @@ class BaseProvider:
 
     name: str = "base"
     supports_streaming: bool = False
+    supports_vision: bool = False
 
     def __init__(self, api_key: Optional[str], default_model: Optional[str] = None):
         self.api_key = api_key
@@ -133,6 +134,13 @@ class BaseProvider:
         yield  # pragma: no cover — make this an async generator for type checkers
 
     def _messages_to_dicts(self, messages: list[ChatMessage]) -> list[dict]:
+        """Convert ChatMessages to OpenAI-compatible dicts.
+
+        Multimodal content (list of blocks) is passed through as-is — the
+        OpenAI API and compatible providers (Groq, OpenRouter, Mistral)
+        accept the ``[{"type": "text"}, {"type": "image_url"}]`` format
+        natively.
+        """
         return [{"role": m.role, "content": m.content} for m in messages]
 
     def _raise_for_status(self, resp: httpx.Response) -> None:

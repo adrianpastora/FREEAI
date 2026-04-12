@@ -122,12 +122,17 @@ def detect_language(text: str) -> str:
 
 
 def detect_auto_strategy(messages: list[ChatMessage]) -> AutoSignal:
-    last_user = next((m.content for m in reversed(messages) if m.role == "user"), "")
-    total_chars = sum(len(m.content) for m in messages)
+    # Use text_content property to handle both str and multimodal content
+    last_user_msg = next((m for m in reversed(messages) if m.role == "user"), None)
+    last_user = last_user_msg.text_content if last_user_msg else ""
+    total_chars = sum(len(m.text_content) for m in messages)
+
+    # Detect actual image_url blocks in any message (not just keywords)
+    has_image_blocks = any(m.has_images for m in messages)
 
     language = detect_language(last_user)
     has_code = bool(_CODE_RE.search(last_user))
-    has_vision = bool(_VISION_RE.search(last_user))
+    has_vision = has_image_blocks or bool(_VISION_RE.search(last_user))
     has_reasoning = bool(_REASONING_MARKERS.get(language, _REASONING_MARKERS["en"]).search(last_user))
 
     if has_vision:
