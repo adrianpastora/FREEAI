@@ -72,9 +72,16 @@ Any OpenAI-compatible client works — point its base URL at
   quarantine for 24h.
 - **Streaming with bounded fallback** — SSE out, falling back only before the
   first byte. OpenAI-compatible providers and Gemini support it natively.
+- **Multimodal vision** — send images via OpenAI-compatible `image_url`
+  content blocks. The orchestrator detects images and routes to
+  vision-capable providers (Gemini, OpenRouter). Gemini receives images
+  translated to its native `inlineData`/`fileData` format; OpenRouter gets
+  the standard OpenAI multimodal format. Non-vision providers are
+  automatically excluded.
 - **Language-aware auto strategy** — detects EN/ES/FR/DE/PT from stopword
   frequency and picks coding/reasoning/vision/long_context/fastest from
-  signals in the prompt, without an external LLM call.
+  signals in the prompt (including actual `image_url` blocks), without an
+  external LLM call.
 - **Inbound auth with bootstrap mode** — the server issues its own client API
   keys. With zero clients created, `/v1/*` is open and the server logs a
   warning. One `POST /api/clients` later, it requires a bearer key.
@@ -143,7 +150,18 @@ gaps, and product-polish items from the audit are resolved:
 17. ✅ **CORS production-ready** — env-configurable, deploy auto-detects server IP.
 18. ✅ **`.env.example` fixed** — correct `FREEAI_` prefix, CORS documented.
 
-99 tests total. Full audit and remaining future-work backlog (table
+### Sprint 7 (scoring optimizations + vision)
+19. ✅ **Latency EMA** — exponential moving average replaces single-sample scoring.
+20. ✅ **Incremental token counter** — eliminates `SUM()` over `usage_events` on hot path.
+21. ✅ **Atomic SQL scoring** — EMA and token counter computed in `CASE WHEN` SQL, no read-then-write races.
+22. ✅ **Rebalanced baseline_score** — latency range `[-1.0, +2.0]`, reliability penalty, wider thresholds.
+23. ✅ **Concurrency-aware scoring** — in-flight request penalty spreads load across providers.
+24. ✅ **In-memory rate counters** — `RateCounterStore` avoids `COUNT(*)` on rate_events hot path.
+25. ✅ **Resilient commit** — `_commit_attempt` never raises; DB errors logged, response delivered.
+26. ✅ **Multimodal vision** — `ChatMessage.content` accepts `str | list[dict]`; Gemini transforms `image_url` to `inlineData`/`fileData`; auto-strategy detects image blocks; orchestrator filters to vision providers.
+27. ✅ **Migration 0011** — `latency_ema_ms`, `tokens_today`, `tokens_day_start` columns.
+
+Full audit and remaining future-work backlog (table
 partitioning, Helm chart, cost tracking, semantic cache) live in
 [docs/REVIEW.md](docs/REVIEW.md).
 

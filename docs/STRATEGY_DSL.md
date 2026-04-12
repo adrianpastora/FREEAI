@@ -67,7 +67,8 @@ parse error at save time.
 | `name`            | string    | `provider_configs.name`                              | Use with `op: ==` / `!=`                               |
 | `weight`          | float     | `provider_configs.weight`                            | Hand-tuned admin priority                              |
 | `enabled`         | bool      | `provider_configs.enabled`                           | Always true here — disabled providers are pre-filtered |
-| `last_latency_ms` | int       | `ProviderSnapshot.last_latency_ms`                   | Single most recent observed call, NOT a percentile     |
+| `last_latency_ms` | int       | `ProviderSnapshot.last_latency_ms`                   | Single most recent observed call                       |
+| `latency_ema_ms`  | float     | `ProviderSnapshot.latency_ema_ms`                    | **New.** Exponential moving average (alpha=0.3). More stable than `last_latency_ms` — prefer this for latency-based rules |
 | `requests_today`  | int       | `ProviderSnapshot.requests_today`                    |                                                        |
 | `requests_this_minute` | int  | `ProviderSnapshot.requests_this_minute`              |                                                        |
 | `rpd_remaining`   | float     | derived: `1 - requests_today / rpd_limit` (0..1)     | Convenience field, normalized                          |
@@ -93,15 +94,32 @@ parse error.
 score(provider, strategy):
     if any require fails:
         return -infinity   # excluded
-    s = baseline_score(provider)              # weight + headroom + latency_bonus, unchanged
+    s = baseline_score(provider)
     for clause in prefer:
         if clause matches:
             s += clause.weight
+    s -= 0.5 * in_flight_requests    # concurrency penalty
+    return s
+
+baseline_score(provider):
+    s  = weight                       # admin priority (0.0–2.0)
+    s += rpd_remaining * 1.5          # request headroom (0..1.5)
+    s += tpd_remaining * 2.0          # token headroom (0..2.0, highest weight)
+    # latency bonus uses EMA when available, falls back to single sample
+    latency = latency_ema_ms or last_latency_ms
+    if latency < 500ms:    s += 2.0
+    elif latency < 1000ms: s += 1.2
+    elif latency < 2000ms: s += 0.4
+    else:                  s -= 1.0
+    # reliability penalty
+    s -= 0.1 * min(total_failures, 20)   # cap at -2.0
     return s
 ```
 
-`baseline_score` is exactly today's `_score()` minus the tag loop. The
-DSL replaces the tag loop, not the rest of the heuristic.
+The baseline gives roughly equal weight to capacity, latency, and reliability.
+In-flight concurrency is penalized to spread load across providers under
+burst traffic. Token headroom is the highest-weighted factor because
+exhausting tokens causes hard quarantine.
 
 ### Validation rules (enforced at save time)
 

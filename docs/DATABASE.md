@@ -69,8 +69,11 @@ first run of `seed_defaults_if_empty()`, which is called from `lifespan`.
 | `quarantined_until` | float | Epoch timestamp. 0 = not quarantined |
 | `last_error` | text | Human-readable last error message |
 | `last_error_kind` | `varchar(32)` | `ErrorKind.value` from the last failure |
-| `last_latency_ms` | int | |
-| `total_calls`, `total_failures` | int | Lifetime counters — used for dashboards |
+| `last_latency_ms` | int | Single most recent observed call |
+| `latency_ema_ms` | float | Exponential moving average (alpha=0.3). Computed atomically in SQL on each success. Used by `baseline_score()` for stable latency scoring. (migration 0011) |
+| `total_calls`, `total_failures` | int | Lifetime counters — used for dashboards and reliability penalty |
+| `tokens_today` | bigint | Incremental token counter. Updated atomically in SQL on each success. Replaces the `SUM()` query that ran on `usage_events` per ranking call. (migration 0011) |
+| `tokens_day_start` | float | Epoch timestamp of the current counter day. When `now - day_start >= 86400`, the counter resets. (migration 0011) |
 | `updated_at` | float | |
 
 This row is created lazily by `freeai_try_reserve` the first time a provider
@@ -152,6 +155,16 @@ you never need to put it in `alembic.ini`.
 0001 — initial schema: app_config, providers, provider_stats, rate_events,
        clients, plus the freeai_try_reserve plpgsql function.
 0002 — adds usage_events and strategies.
+0003 — fix quarantine heal logic.
+0004 — client_rate_events table + freeai_try_reserve_client plpgsql.
+0005 — admin_token_hash column on app_config.
+0006 — ttfb_ms column on usage_events + bigint IDs.
+0007 — fix reserve race condition in plpgsql.
+0008 — strategy DSL: definition JSONB column, drops tags.
+0009 — rename latency_p50_ms to last_latency_ms.
+0010 — tpd_limit column on providers.
+0011 — scoring optimizations: latency_ema_ms, tokens_today, tokens_day_start
+       on provider_stats.
 ```
 
 ### Running migrations

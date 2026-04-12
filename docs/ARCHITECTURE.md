@@ -112,8 +112,10 @@ The happy path for `POST /v1/chat/completions` (non-streaming):
   │     strategy │ — else load strategy row (tags)           │ │
   │              │                                           │ │
   │  2. rank     │ — list_providers (enabled + api_key)      │ │
-  │              │ — for each: snapshot (health+counts)      │ │
-  │              │ — score = tag match + weight + headroom   │ │
+  │              │ — snapshot_all (health+counts+EMA+tokens) │ │
+  │              │ — score = DSL + weight + headroom +       │ │
+  │              │   latency EMA + reliability - in_flight   │ │
+  │              │ — if images: filter to vision providers   │ │
   │              │ — sort desc, preferred gets +100          │ │
   │              │                                           │ │
   │  3. loop     │ — try_reserve (rpm,rpd) via plpgsql       │ │
@@ -277,9 +279,22 @@ Things that don't exist yet, mostly on purpose, so nobody goes looking:
   `rate_events` purge exist as methods but nothing calls them yet. Tables grow
   unbounded until an operator runs the cleanup manually. See
   [REVIEW.md § 3](REVIEW.md#3-scheduled-jobs-missing).
-- **No caching layer.** Every request hits Postgres for provider config,
-  strategy tags and provider snapshot. Workable for ~100 rps but will become
-  the first bottleneck.
+- **In-memory rate counters.** `RateCounterStore` keeps per-provider call
+  timestamps in a deque to avoid `COUNT(*)` over `rate_events` on every
+  ranking. The plpgsql reservation function remains the correctness gate.
+  These counters are per-pod and don't sync across instances.
+- **Latency EMA.** `baseline_score()` uses an exponential moving average
+  (alpha=0.3, stored in `provider_stats.latency_ema_ms`) instead of the
+  single-sample `last_latency_ms`. Computed atomically in SQL to avoid
+  read-then-write races.
+- **Incremental token counter.** `tokens_today` and `tokens_day_start` in
+  `provider_stats` replace the `SUM()` over `usage_events` that used to
+  run on every request. Also computed atomically in SQL.
+- **Concurrency-aware scoring.** The orchestrator tracks in-flight requests
+  per provider and penalizes busy providers in the scoring formula.
+- **Vision routing.** Requests with `image_url` content blocks are
+  automatically filtered to vision-capable providers (Gemini, OpenRouter).
+  Non-vision providers are excluded from the candidate pool.
 - **No multi-tenancy.** One installation is one logical tenant. Client keys
   limit access but don't namespace data.
 - **No cost tracking.** We count tokens but don't map them to dollars.
