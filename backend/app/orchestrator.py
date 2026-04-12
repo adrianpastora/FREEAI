@@ -135,36 +135,13 @@ class Orchestrator:
             return None
         return cls(api_key=dto.api_key, default_model=dto.default_model)
 
-    def _baseline_score(self, dto: ProviderConfigDTO, snap) -> float:
-        """The provider-intrinsic part of the ranking score.
-
-        Combines: admin weight, daily-quota headroom, and a latency bonus
-        based on the most recent observed latency. The DSL contribution
-        (from `prefer` clauses) is added on top of this.
-        """
-        score = dto.weight
-        if dto.rpd_limit:
-            remaining = max(0, dto.rpd_limit - snap.requests_today) / dto.rpd_limit
-            score += remaining * 1.5
-        else:
-            score += 1.5
-        last_ms = snap.last_latency_ms
-        if last_ms is not None:
-            if last_ms < 800:
-                score += 0.8
-            elif last_ms < 2000:
-                score += 0.3
-            else:
-                score -= 0.3
-        return score
-
     def _score(
         self,
         dto: ProviderConfigDTO,
         snap,
         definition: Optional[Definition],
     ) -> Optional[float]:
-        """Compute a provider's score for a given strategy definition.
+        """Compute a provider's total score for a given strategy definition.
 
         Returns:
             None  if the provider is excluded — either unhealthy or
@@ -173,13 +150,6 @@ class Orchestrator:
         """
         if not snap.healthy:
             return None
-        baseline = self._baseline_score(dto, snap)
-        if definition is None:
-            # `auto` reaches here only via _resolve_strategy redirecting to
-            # one of the named strategies; if a request hits this path with
-            # definition=None it means a strategy with no DSL rules — fine,
-            # baseline ranks it.
-            return baseline
         ctx = strategy_dsl.context_from_provider(
             name=dto.name,
             enabled=dto.enabled,
@@ -192,9 +162,11 @@ class Orchestrator:
             rpm_limit=dto.rpm_limit,
             total_failures=snap.total_failures,
         )
+        baseline = strategy_dsl.baseline_score(ctx)
+        if definition is None:
+            return baseline
         dsl_score = strategy_dsl.score(definition, ctx)
         if dsl_score is None:
-            # require clause excluded this provider entirely.
             return None
         return baseline + dsl_score
 
