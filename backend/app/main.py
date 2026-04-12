@@ -57,6 +57,7 @@ from .schemas import (
 from .security import require_admin, require_client
 from .settings import get_settings
 from .strategy_dsl import ParseError, parse_definition
+from .virtual_models import VIRTUAL_MODELS
 
 configure_logging()
 log = get_logger("freeai")
@@ -311,6 +312,31 @@ def _http_from_provider_error(e: ProviderError) -> HTTPException:
 
 def get_orchestrator(request: Request) -> Orchestrator:
     return request.app.state.orchestrator
+
+
+# ──────────────────────────── models (OpenAI-compatible) ────────────────────────────
+
+
+@app.get("/v1/models")
+async def list_models() -> dict:
+    """OpenAI-compatible /v1/models — lists FreeAI virtual models.
+
+    Each virtual model maps to an internal routing strategy.  Clients
+    can use any of these as the ``model`` parameter in chat completions.
+    """
+    return {
+        "object": "list",
+        "data": [
+            {
+                "id": vm.id,
+                "object": "model",
+                "created": 0,
+                "owned_by": "freeai",
+                "description": vm.description,
+            }
+            for vm in VIRTUAL_MODELS
+        ],
+    }
 
 
 # ──────────────────────────── chat completions ────────────────────────────

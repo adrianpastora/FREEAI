@@ -54,13 +54,14 @@ class ChatCompletionResponse(BaseModel):
     id: str
     object: str = "chat.completion"
     created: int
-    model: str
+    model: str                       # virtual model id (e.g. "freeai-fast") or real model
     provider: str
     strategy_used: str
     choices: list[Choice]
     usage: Usage
     latency_ms: int
     fallback_chain: list[str] = Field(default_factory=list)
+    real_model: Optional[str] = None  # actual provider model used (set when virtual)
 
 
 class ProviderStatus(BaseModel):
