@@ -1473,7 +1473,12 @@ document.getElementById("pgTranscribe").addEventListener("click", async () => {
     }
     const data = await res.json();
     out.innerHTML = `
-      <div class="output-meta"><span>provider: <b>groq</b></span><span>model: <b>whisper-large-v3-turbo</b></span></div>
+      <div class="output-meta">
+        <span>provider: <b>${escapeHtml(data.provider || "unknown")}</b></span>
+        <span>model: <b>${escapeHtml(data.model || "unknown")}</b></span>
+        <span>${data.latency_ms || 0} ms</span>
+        ${data.fallback_position > 1 ? `<span>fallback #${data.fallback_position}</span>` : ""}
+      </div>
       <div class="output-body">${escapeHtml(data.text)}</div>
     `;
   } catch (e) {
