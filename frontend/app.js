@@ -1603,12 +1603,53 @@ async function refreshAnalytics() {
   renderByOutcome(data);
   renderByStrategy(data);
   renderByClient(data);
+  updateSavingsBadge(data.total_tokens || 0);
 }
 
 // Chart rendering functions live in charts.js (loaded before this file).
 
 document.getElementById("analyticsRefresh").addEventListener("click", refreshAnalytics);
 analyticsWindowSel.addEventListener("change", refreshAnalytics);
+
+// ─────────────── savings estimator ───────────────
+
+// GPT-4o pricing (per 1K tokens, blended input/output estimate)
+const GPT4O_COST_PER_1K = 0.00375; // ~$2.50/1M input + $10/1M output, blended
+
+function updateSavingsBadge(totalTokens) {
+  const el = document.getElementById("savingsAmount");
+  const sub = document.getElementById("savingsSub");
+  const wrapper = document.getElementById("savingsValue");
+  if (!el) return;
+
+  const cost = (totalTokens / 1000) * GPT4O_COST_PER_1K;
+  const formatted = cost < 0.01 ? cost.toFixed(4)
+    : cost < 1 ? cost.toFixed(2)
+    : cost < 100 ? cost.toFixed(2)
+    : cost.toFixed(0);
+
+  // Animate glow on update
+  wrapper.classList.add("is-updating");
+  setTimeout(() => wrapper.classList.remove("is-updating"), 600);
+
+  el.textContent = formatted;
+
+  // Token count summary
+  const tkFmt = totalTokens >= 1_000_000 ? (totalTokens / 1_000_000).toFixed(1) + "M"
+    : totalTokens >= 1_000 ? (totalTokens / 1_000).toFixed(1) + "k"
+    : String(totalTokens);
+  sub.textContent = `${tkFmt} tokens routed free`;
+}
+
+// Fetch lifetime savings (max window = 7 days)
+async function refreshSavings() {
+  try {
+    const data = await adminApi("/api/analytics?window_seconds=604800&bucket_count=1");
+    updateSavingsBadge(data.total_tokens || 0);
+  } catch {
+    // silently fail — badge stays at last known value
+  }
+}
 
 // ─────────────── boot ───────────────
 
@@ -1629,7 +1670,7 @@ async function boot() {
       showAdminModal();
     }
   } catch {}
-  await Promise.all([refreshProviders(true), refreshConfig()]);
+  await Promise.all([refreshProviders(true), refreshConfig(), refreshSavings()]);
 }
 
 (async function start() {
@@ -1638,7 +1679,7 @@ async function boot() {
     const activePanel = document.querySelector('.panel--active');
     if (!activePanel) return;
     const panel = activePanel.dataset.panel;
-    if (panel === "providers") refreshProviders();
+    if (panel === "providers") { refreshProviders(); refreshSavings(); }
     if (panel === "analytics") refreshAnalytics();
   }, 8000);
 })();
