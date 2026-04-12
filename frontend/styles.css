@@ -145,7 +145,7 @@ body::before {
 
 .masthead__status {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr auto;
+  grid-template-columns: 1fr 1fr 1fr 1fr;
   gap: 8px;
   border: var(--line);
   background: var(--bone-2);
@@ -181,7 +181,6 @@ body::before {
   padding-left: 14px;
   padding-right: 0;
   position: relative;
-  min-width: 120px;
 }
 .status-block--savings .status-block__label {
   color: var(--amber);
@@ -1747,7 +1746,7 @@ body::before {
     font-size: clamp(28px, 7vw, 48px);
   }
   .masthead__status {
-    grid-template-columns: 1fr 1fr 1fr auto;
+    grid-template-columns: 1fr 1fr 1fr 1fr;
     gap: 6px;
     padding: 10px 12px;
   }
