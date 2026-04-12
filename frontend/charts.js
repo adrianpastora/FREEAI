@@ -102,16 +102,19 @@ function renderByProvider(data) {
     return;
   }
   const max = Math.max(...rows.map((r) => r.calls), 1);
-  const w = 280, rowH = 28;
+  const labelW = 75, valW = 70, gap = 6;
+  const barZone = 140;
+  const w = labelW + barZone + gap + valW;
+  const rowH = 28;
   const h = rows.length * rowH + 12;
   const bars = rows.map((r, i) => {
     const y = i * rowH + 8;
-    const barW = (r.calls / max) * (w - 100);
+    const barW = Math.max(2, (r.calls / max) * barZone);
     const successRate = r.calls ? Math.round((r.success / r.calls) * 100) : 0;
     return `
       <text class="svg-label" x="0" y="${y + 13}">${escapeSvg(r.provider)}</text>
-      <rect class="svg-bar" x="70" y="${y + 4}" width="${barW.toFixed(1)}" height="14" />
-      <text class="svg-label" x="${70 + barW + 4}" y="${y + 13}">${r.calls} · ${successRate}%</text>
+      <rect class="svg-bar" x="${labelW}" y="${y + 4}" width="${barW.toFixed(1)}" height="14" />
+      <text class="svg-label" x="${labelW + barZone + gap}" y="${y + 13}">${r.calls} · ${successRate}%</text>
     `;
   }).join("");
   el.innerHTML = `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="xMidYMid meet">${bars}</svg>`;
@@ -164,15 +167,18 @@ function renderByStrategy(data) {
     return;
   }
   const max = Math.max(...rows.map((r) => r.calls), 1);
-  const w = 280, rowH = 26;
+  const labelW = 90, valW = 40, gap = 6;
+  const barZone = 140;
+  const w = labelW + barZone + gap + valW;
+  const rowH = 26;
   const h = rows.length * rowH + 12;
   const bars = rows.map((r, i) => {
     const y = i * rowH + 8;
-    const barW = (r.calls / max) * (w - 110);
+    const barW = Math.max(2, (r.calls / max) * barZone);
     return `
       <text class="svg-label" x="0" y="${y + 13}">${escapeSvg(r.strategy)}</text>
-      <rect class="svg-bar" x="90" y="${y + 3}" width="${barW.toFixed(1)}" height="14" />
-      <text class="svg-label" x="${90 + barW + 4}" y="${y + 13}">${r.calls}</text>
+      <rect class="svg-bar" x="${labelW}" y="${y + 3}" width="${barW.toFixed(1)}" height="14" />
+      <text class="svg-label" x="${labelW + barZone + gap}" y="${y + 13}">${r.calls}</text>
     `;
   }).join("");
   el.innerHTML = `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="xMidYMid meet">${bars}</svg>`;
