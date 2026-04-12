@@ -45,6 +45,7 @@ from .repositories import (
     ClientRateRepository,
     ClientRepository,
     ConfigRepository,
+    ProviderConfigDTO,
     RateRepository,
     StrategyDTO,
     StrategyRepository,
@@ -390,18 +391,15 @@ async def chat_completions(
 
 # ──────────────────────────── audio transcriptions ────────────────────────────
 
-_WHISPER_MODELS = ["whisper-large-v3-turbo", "whisper-large-v3"]
-_GROQ_TRANSCRIPTION_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
-_AUDIO_MIMETYPES = {
-    "ogg": "audio/ogg",
-    "mp3": "audio/mpeg",
-    "wav": "audio/wav",
-    "webm": "audio/webm",
-    "m4a": "audio/m4a",
-    "flac": "audio/flac",
-    "mpeg": "audio/mpeg",
-    "mpga": "audio/mpeg",
-}
+from .transcription import (
+    TRANSCRIPTION_PROVIDERS,
+    AudioInput,
+    TranscriptionError,
+    TranscriptionResult,
+    resolve_content_type,
+    supports_transcription,
+    transcribe,
+)
 
 
 @app.post("/v1/audio/transcriptions")
@@ -414,120 +412,115 @@ async def audio_transcriptions(
     session: AsyncSession = Depends(get_session),
     client=Depends(require_client),
 ):
-    """OpenAI-compatible Whisper transcription endpoint.
+    """OpenAI-compatible audio transcription with multi-provider fallback.
 
-    Proxies to Groq's whisper-large-v3-turbo. The ``model`` field is
-    accepted for compatibility but ignored — FreeAI always uses Groq's
-    best available Whisper model.
+    Tries providers in priority order (Groq Whisper → Gemini). Each
+    provider is checked for: configured API key, enabled, and available
+    capacity. On transient failure the next provider is attempted.
+
+    The response always follows the OpenAI format: ``{"text": "..."}``
+    with additional ``provider`` and ``model`` fields.
     """
     config_repo = ConfigRepository(session)
     rate_repo = RateRepository(session)
     usage_repo = UsageRepository(session)
     client_hash = client.key_hash if client else None
 
-    # ── Find a provider with transcription support (Groq) ──
-    provider_name = "groq"
-    dto = await config_repo.get_provider(provider_name)
-    if not dto or not dto.api_key:
-        raise HTTPException(400, "Groq provider is not configured — add an API key first")
-    if not dto.enabled:
-        raise HTTPException(503, "Groq provider is disabled")
-
-    # ── Reserve capacity (same RPM/RPD limits as chat) ──
-    reservation = await rate_repo.try_reserve(
-        provider_name, dto.rpm_limit, dto.rpd_limit,
-    )
-    if reservation is None:
-        raise HTTPException(
-            503, f"Groq at capacity — try again later",
-            headers={"Retry-After": "60"},
-        )
-
-    # ── Pick the best Whisper model ──
-    whisper_model = _WHISPER_MODELS[0]
-
-    # ── Read uploaded file ──
+    # ── Prepare audio input (read once, reuse across attempts) ──
     file_bytes = await file.read()
-    ext = (file.filename or "audio.ogg").rsplit(".", 1)[-1].lower()
-    content_type = _AUDIO_MIMETYPES.get(ext, file.content_type or "application/octet-stream")
-
-    # ── Build multipart for Groq ──
-    files_payload = {
-        "file": (file.filename or "audio.ogg", file_bytes, content_type),
-    }
-    data_payload: dict[str, str] = {"model": whisper_model}
-    if language:
-        data_payload["language"] = language
-    if response_format:
-        data_payload["response_format"] = response_format
-
-    # ── Forward to Groq ──
-    started = time.perf_counter()
-    try:
-        async with httpx.AsyncClient() as http:
-            resp = await http.post(
-                _GROQ_TRANSCRIPTION_URL,
-                headers={"Authorization": f"Bearer {dto.api_key}"},
-                files=files_payload,
-                data=data_payload,
-                timeout=120.0,
-            )
-    except httpx.TimeoutException:
-        latency_ms = int((time.perf_counter() - started) * 1000)
-        await rate_repo.commit(reservation, latency_ms, ok=False,
-                               error="timeout", error_kind="network",
-                               quarantine_seconds=30)
-        await usage_repo.record(UsageEvent(
-            provider=provider_name, model=whisper_model,
-            strategy="transcription", outcome="network",
-            latency_ms=latency_ms, client_hash=client_hash,
-        ))
-        raise HTTPException(504, "Groq transcription timed out")
-    except httpx.HTTPError as exc:
-        latency_ms = int((time.perf_counter() - started) * 1000)
-        await rate_repo.commit(reservation, latency_ms, ok=False,
-                               error=str(exc), error_kind="network",
-                               quarantine_seconds=30)
-        await usage_repo.record(UsageEvent(
-            provider=provider_name, model=whisper_model,
-            strategy="transcription", outcome="network",
-            latency_ms=latency_ms, client_hash=client_hash,
-        ))
-        raise HTTPException(504, f"Groq transcription network error: {exc}")
-
-    latency_ms = int((time.perf_counter() - started) * 1000)
-
-    if resp.status_code >= 400:
-        error_body = resp.text[:500]
-        kind = ErrorKind.AUTH if resp.status_code in (401, 403) else (
-            ErrorKind.RATE_LIMITED if resp.status_code == 429 else ErrorKind.SERVER_ERROR
-        )
-        await rate_repo.commit(reservation, latency_ms, ok=False,
-                               error=error_body, error_kind=kind.value,
-                               quarantine_seconds=60 if kind == ErrorKind.SERVER_ERROR else None)
-        await usage_repo.record(UsageEvent(
-            provider=provider_name, model=whisper_model,
-            strategy="transcription", outcome=kind.value,
-            latency_ms=latency_ms, client_hash=client_hash,
-        ))
-        raise HTTPException(
-            _KIND_TO_STATUS.get(kind, 502),
-            {"provider": provider_name, "kind": kind.value, "message": error_body},
-        )
-
-    # ── Success ──
-    await rate_repo.commit(reservation, latency_ms, ok=True)
-    await usage_repo.record(UsageEvent(
-        provider=provider_name, model=whisper_model,
-        strategy="transcription", outcome="success",
-        latency_ms=latency_ms, client_hash=client_hash,
-    ))
-
-    return Response(
-        content=resp.content,
-        status_code=200,
-        media_type=resp.headers.get("content-type", "application/json"),
+    audio = AudioInput(
+        file_bytes=file_bytes,
+        filename=file.filename or "audio.ogg",
+        content_type=resolve_content_type(file.filename, file.content_type),
+        language=language,
     )
+
+    # ── Collect eligible providers ──
+    candidates: list[tuple[str, ProviderConfigDTO]] = []
+    for name in TRANSCRIPTION_PROVIDERS:
+        if not supports_transcription(name):
+            continue
+        dto = await config_repo.get_provider(name)
+        if dto and dto.api_key and dto.enabled:
+            candidates.append((name, dto))
+
+    if not candidates:
+        raise HTTPException(
+            400,
+            "No transcription provider configured — add an API key for Groq or Gemini",
+        )
+
+    # ── Fallback loop: try each provider in priority order ──
+    last_error: Optional[TranscriptionError] = None
+    fallback_position = 0
+
+    for provider_name, dto in candidates:
+        fallback_position += 1
+
+        # Reserve capacity
+        reservation = await rate_repo.try_reserve(
+            provider_name, dto.rpm_limit, dto.rpd_limit,
+        )
+        if reservation is None:
+            continue  # at capacity, try next
+
+        # Attempt transcription
+        result = await transcribe(provider_name, audio, dto.api_key)
+
+        if isinstance(result, TranscriptionResult):
+            # ── Success ──
+            await rate_repo.commit(reservation, result.latency_ms, ok=True)
+            await usage_repo.record(UsageEvent(
+                provider=result.provider, model=result.model,
+                strategy="transcription", outcome="success",
+                latency_ms=result.latency_ms, client_hash=client_hash,
+                fallback_position=fallback_position,
+            ))
+            return {
+                "text": result.text,
+                "provider": result.provider,
+                "model": result.model,
+                "latency_ms": result.latency_ms,
+                "fallback_position": fallback_position,
+            }
+
+        # ── Failure: commit error and decide whether to continue ──
+        err = result
+        last_error = err
+
+        quarantine_s = None
+        if err.kind == ErrorKind.SERVER_ERROR:
+            quarantine_s = 60
+        elif err.kind == ErrorKind.NETWORK:
+            quarantine_s = 30
+
+        await rate_repo.commit(
+            reservation, err.latency_ms, ok=False,
+            error=err.message, error_kind=err.kind.value,
+            quarantine_seconds=quarantine_s,
+        )
+        await usage_repo.record(UsageEvent(
+            provider=err.provider, model=err.model,
+            strategy="transcription", outcome=err.kind.value,
+            latency_ms=err.latency_ms, client_hash=client_hash,
+            fallback_position=fallback_position,
+        ))
+
+        # Auth/client errors won't be fixed by trying another provider
+        if err.kind in (ErrorKind.AUTH, ErrorKind.CLIENT_ERROR):
+            break
+
+        # Transient / rate-limit → try next provider
+
+    # ── All providers exhausted ──
+    if last_error:
+        status = _KIND_TO_STATUS.get(last_error.kind, 502)
+        raise HTTPException(status, {
+            "provider": last_error.provider,
+            "kind": last_error.kind.value,
+            "message": last_error.message,
+        })
+    raise HTTPException(503, "All transcription providers at capacity")
 
 
 # ──────────────────────────── provider admin ────────────────────────────
