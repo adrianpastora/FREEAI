@@ -586,8 +586,15 @@ function renderProvider(p) {
     }
   }
 
-  node.querySelector(".latency-value").textContent =
-    p.last_latency_ms != null ? `${p.last_latency_ms} ms` : "—";
+  // Show EMA if available, fall back to single sample
+  const latVal = node.querySelector(".latency-value");
+  if (p.latency_ema_ms != null) {
+    latVal.textContent = `${Math.round(p.latency_ema_ms)} ms (ema)`;
+  } else if (p.last_latency_ms != null) {
+    latVal.textContent = `${p.last_latency_ms} ms`;
+  } else {
+    latVal.textContent = "—";
+  }
 
   if (p.last_error) {
     const errRow = node.querySelector(".provider-row--error");
@@ -729,9 +736,15 @@ function updateProviderCard(node, p) {
     }
   }
 
-  // latency
-  node.querySelector(".latency-value").textContent =
-    p.last_latency_ms != null ? `${p.last_latency_ms} ms` : "—";
+  // latency — prefer EMA over single sample
+  const latUpd = node.querySelector(".latency-value");
+  if (p.latency_ema_ms != null) {
+    latUpd.textContent = `${Math.round(p.latency_ema_ms)} ms (ema)`;
+  } else if (p.last_latency_ms != null) {
+    latUpd.textContent = `${p.last_latency_ms} ms`;
+  } else {
+    latUpd.textContent = "—";
+  }
 
   // error
   const errRow = node.querySelector(".provider-row--error");
@@ -934,9 +947,10 @@ const DSL_FIELDS = {
   name:                 { type: "string" },
   weight:               { type: "number" },
   enabled:              { type: "bool" },
-  // Single most recent observed call latency, NOT a percentile.
-  // Named to match backend strategy_dsl.FIELD_TYPES.
   last_latency_ms:      { type: "number" },
+  // EMA of latency (alpha=0.3). More stable than last_latency_ms —
+  // prefer this for latency-based strategy rules.
+  latency_ema_ms:       { type: "number" },
   requests_today:       { type: "number" },
   requests_this_minute: { type: "number" },
   rpd_remaining:        { type: "number" },
