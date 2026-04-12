@@ -12,7 +12,7 @@ from .base import BaseProvider, ErrorKind, ProviderError, ProviderResponse, Stre
 
 class GeminiProvider(BaseProvider):
     name = "gemini"
-    BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
+    BASE_URL = "https://generativelanguage.googleapis.com/v1/models"
     supports_streaming = True
     request_timeout = 60.0
 
@@ -46,7 +46,7 @@ class GeminiProvider(BaseProvider):
         return payload
 
     def _resolve_model(self, model: Optional[str]) -> str:
-        return model or self.default_model or "gemini-2.0-flash"
+        return model or self.default_model or "gemini-2.5-flash"
 
     async def complete(
         self,
