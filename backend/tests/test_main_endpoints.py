@@ -102,25 +102,82 @@ async def test_set_strategy_unknown_returns_400(client: AsyncClient):
 # ──────────── strategies ────────────
 
 @pytest.mark.asyncio
-async def test_strategy_crud(client: AsyncClient):
+async def test_strategy_crud_with_definition(client: AsyncClient):
+    """Happy path on the new DSL shape: create with `definition`,
+    update it, then delete."""
+    create_def = {
+        "require": [],
+        "prefer": [
+            {"field": "tags", "op": "contains", "value": "fast", "weight": 5},
+        ],
+    }
     resp = await client.post(
         "/api/strategies",
         headers=AUTH_HEADERS,
-        json={"name": "test_e2e", "tags": ["fast"], "description": "e2e test"},
+        json={"name": "test_e2e", "definition": create_def, "description": "e2e test"},
     )
     assert resp.status_code == 200
-    assert resp.json()["name"] == "test_e2e"
+    body = resp.json()
+    assert body["name"] == "test_e2e"
+    assert body["definition"] == create_def
 
+    update_def = {
+        "require": [],
+        "prefer": [
+            {"field": "tags", "op": "contains", "value": "fast", "weight": 5},
+            {"field": "tags", "op": "contains", "value": "cheap", "weight": 3},
+        ],
+    }
     resp = await client.patch(
         "/api/strategies/test_e2e",
         headers=AUTH_HEADERS,
-        json={"name": "test_e2e", "tags": ["fast", "cheap"], "description": "updated"},
+        json={"name": "test_e2e", "definition": update_def, "description": "updated"},
     )
     assert resp.status_code == 200
-    assert "cheap" in resp.json()["tags"]
+    assert resp.json()["definition"] == update_def
 
     resp = await client.delete("/api/strategies/test_e2e", headers=AUTH_HEADERS)
     assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_strategy_legacy_tags_bridge(client: AsyncClient):
+    """Bridge: a payload still using the old `tags` field is accepted and
+    converted to a `prefer.contains` per tag with weight 5. Lossless
+    rewrite for clients that haven't migrated yet. Removed in commit 4."""
+    resp = await client.post(
+        "/api/strategies",
+        headers=AUTH_HEADERS,
+        json={"name": "legacy", "tags": ["fast", "cheap"], "description": "old shape"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["definition"] == {
+        "require": [],
+        "prefer": [
+            {"field": "tags", "op": "contains", "value": "fast", "weight": 5},
+            {"field": "tags", "op": "contains", "value": "cheap", "weight": 5},
+        ],
+    }
+    await client.delete("/api/strategies/legacy", headers=AUTH_HEADERS)
+
+
+@pytest.mark.asyncio
+async def test_strategy_create_rejects_invalid_definition(client: AsyncClient):
+    """A definition that fails the DSL parser should be rejected with 422
+    and a human-readable message — not stored as garbage."""
+    resp = await client.post(
+        "/api/strategies",
+        headers=AUTH_HEADERS,
+        json={
+            "name": "bad",
+            "definition": {
+                "require": [{"field": "creativity", "op": "==", "value": "high"}],
+            },
+        },
+    )
+    assert resp.status_code == 422
+    assert "unknown field" in resp.json()["detail"]
 
 
 # ──────────── clients ────────────

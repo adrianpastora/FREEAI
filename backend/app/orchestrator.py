@@ -20,6 +20,8 @@ import httpx
 
 from .auto_strategy import AutoSignal, detect_auto_strategy
 from .logging_config import get_logger
+from . import strategy_dsl
+from .strategy_dsl import Definition, parse_definition
 from .metrics import (
     orchestrator_fallbacks_total,
     provider_call_duration_seconds,
@@ -71,21 +73,34 @@ class _AttemptResult:
 
 
 class _StrategyCache:
-    """In-process TTL cache for strategy lookups (change rarely, read every request)."""
+    """In-process TTL cache for strategy lookups (change rarely, read every request).
+
+    Stores parsed `Definition` objects so we don't re-run the DSL parser
+    on every request. A cache miss for a strategy that doesn't exist
+    yields `_MISSING` (a sentinel) which the resolver translates into a
+    CLIENT_ERROR; we can't use None for that because None is the
+    legitimate definition for `auto`.
+    """
     _TTL = 5.0
+    _MISSING = object()
 
     def __init__(self):
-        self._data: dict[str, tuple[float, Optional[list[str]]]] = {}
+        self._data: dict[str, tuple[float, object]] = {}
 
-    async def get(self, name: str, repo: StrategyRepository) -> Optional[list[str]]:
+    async def get(self, name: str, repo: StrategyRepository) -> object:
         entry = self._data.get(name)
         now = time.monotonic()
         if entry and (now - entry[0]) < self._TTL:
             return entry[1]
         strat = await repo.get(name)
-        tags = strat.tags if strat else None
-        self._data[name] = (now, tags)
-        return tags
+        if strat is None:
+            value: object = self._MISSING
+        elif strat.definition is None:
+            value = None  # `auto` — no DSL rules, handled by detect_auto_strategy
+        else:
+            value = parse_definition(strat.definition)
+        self._data[name] = (now, value)
+        return value
 
     def invalidate(self, name: Optional[str] = None):
         if name:
@@ -120,14 +135,14 @@ class Orchestrator:
             return None
         return cls(api_key=dto.api_key, default_model=dto.default_model)
 
-    def _score(self, dto: ProviderConfigDTO, snap, wanted_tags: list[str]) -> float:
-        if not snap.healthy:
-            return -1.0
-        score = 0.0
-        for i, tag in enumerate(wanted_tags):
-            if tag in dto.tags:
-                score += 5.0 / (i + 1)
-        score += dto.weight
+    def _baseline_score(self, dto: ProviderConfigDTO, snap) -> float:
+        """The provider-intrinsic part of the ranking score.
+
+        Combines: admin weight, daily-quota headroom, and a latency bonus
+        based on the most recent observed latency. The DSL contribution
+        (from `prefer` clauses) is added on top of this.
+        """
+        score = dto.weight
         if dto.rpd_limit:
             remaining = max(0, dto.rpd_limit - snap.requests_today) / dto.rpd_limit
             score += remaining * 1.5
@@ -143,16 +158,60 @@ class Orchestrator:
                 score -= 0.3
         return score
 
+    def _score(
+        self,
+        dto: ProviderConfigDTO,
+        snap,
+        definition: Optional[Definition],
+    ) -> Optional[float]:
+        """Compute a provider's score for a given strategy definition.
+
+        Returns:
+            None  if the provider is excluded — either unhealthy or
+                  rejected by a `require` clause in the DSL.
+            float otherwise: baseline + DSL prefer contribution.
+        """
+        if not snap.healthy:
+            return None
+        baseline = self._baseline_score(dto, snap)
+        if definition is None:
+            # `auto` reaches here only via _resolve_strategy redirecting to
+            # one of the named strategies; if a request hits this path with
+            # definition=None it means a strategy with no DSL rules — fine,
+            # baseline ranks it.
+            return baseline
+        ctx = strategy_dsl.context_from_provider(
+            name=dto.name,
+            enabled=dto.enabled,
+            weight=dto.weight,
+            tags=dto.tags,
+            last_latency_ms=snap.last_latency_ms,
+            requests_today=snap.requests_today,
+            requests_this_minute=snap.requests_this_minute,
+            rpd_limit=dto.rpd_limit,
+            rpm_limit=dto.rpm_limit,
+            total_failures=snap.total_failures,
+        )
+        dsl_score = strategy_dsl.score(definition, ctx)
+        if dsl_score is None:
+            # require clause excluded this provider entirely.
+            return None
+        return baseline + dsl_score
+
     async def _resolve_strategy(
         self,
         req: ChatCompletionRequest,
         strategy_repo: StrategyRepository,
-    ) -> tuple[Strategy, list[str], Optional[AutoSignal]]:
-        """Returns (effective strategy name, its tag list, auto-detect signal if any).
+    ) -> tuple[Strategy, Optional[Definition], Optional[AutoSignal]]:
+        """Returns (effective strategy name, its parsed Definition, auto-detect signal if any).
 
         Raises ProviderError(CLIENT_ERROR) if the requested strategy doesn't
         exist. Uses an in-process TTL cache (5s) so strategies that rarely change
         don't require a DB lookup on every request.
+
+        The Definition can be None for strategies that have no DSL rules
+        (the seeded `auto` row, or a user-created strategy left empty).
+        Both cases mean: rank by baseline only.
         """
         if req.strategy == "auto":
             signal = detect_auto_strategy(req.messages)
@@ -160,20 +219,21 @@ class Orchestrator:
         else:
             signal = None
             effective = req.strategy
-        tags = await self._strategy_cache.get(effective, strategy_repo)
-        if tags is None:
+        cached = await self._strategy_cache.get(effective, strategy_repo)
+        if cached is _StrategyCache._MISSING:
             raise ProviderError(
                 "orchestrator",
                 f"unknown strategy '{effective}' — create it first via POST /api/strategies",
                 kind=ErrorKind.CLIENT_ERROR,
             )
-        return effective, tags, signal
+        # cached is either None (no DSL rules) or a parsed Definition.
+        return effective, cached, signal  # type: ignore[return-value]
 
     async def _rank(
         self,
         config_repo: ConfigRepository,
         rate_repo: RateRepository,
-        wanted_tags: list[str],
+        definition: Optional[Definition],
         preferred: Optional[str],
     ) -> list[_Candidate]:
         providers = await config_repo.list_providers()
@@ -189,7 +249,10 @@ class Orchestrator:
             provider = self._build_provider(dto)
             if not provider:
                 continue
-            score = self._score(dto, snap, wanted_tags)
+            score = self._score(dto, snap, definition)
+            if score is None:
+                # excluded by DSL require clause (or unhealthy — already filtered above)
+                continue
             if preferred and dto.name == preferred:
                 score += 100
             candidates.append(_Candidate(name=dto.name, provider=provider, score=score, config=dto))
@@ -300,7 +363,7 @@ class Orchestrator:
         client_hash: Optional[str] = None,
     ) -> ChatCompletionResponse:
         app_cfg = await config_repo.get_app_config()
-        strategy, wanted_tags, signal = await self._resolve_strategy(req, strategy_repo)
+        strategy, definition, signal = await self._resolve_strategy(req, strategy_repo)
         if signal:
             log.info(
                 "auto_strategy",
@@ -312,7 +375,7 @@ class Orchestrator:
                 has_vision=signal.has_vision,
             )
 
-        candidates = await self._rank(config_repo, rate_repo, wanted_tags, req.preferred_provider)
+        candidates = await self._rank(config_repo, rate_repo, definition, req.preferred_provider)
         if not candidates:
             raise ProviderError(
                 "orchestrator",
@@ -408,8 +471,8 @@ class Orchestrator:
         client_hash: Optional[str] = None,
     ) -> AsyncIterator[dict]:
         app_cfg = await config_repo.get_app_config()
-        strategy, wanted_tags, _ = await self._resolve_strategy(req, strategy_repo)
-        candidates = await self._rank(config_repo, rate_repo, wanted_tags, req.preferred_provider)
+        strategy, definition, _ = await self._resolve_strategy(req, strategy_repo)
+        candidates = await self._rank(config_repo, rate_repo, definition, req.preferred_provider)
         if not candidates:
             raise ProviderError(
                 "orchestrator",
