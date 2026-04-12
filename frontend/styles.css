@@ -398,7 +398,6 @@ body::before {
   padding: 22px 22px 18px;
   box-shadow: var(--shadow-hard-sm);
   transition: transform .18s, box-shadow .18s;
-  overflow: hidden;
   min-width: 0;
 }
 .provider-card:hover {
