@@ -21,6 +21,7 @@ import httpx
 from .auto_strategy import AutoSignal, detect_auto_strategy
 from .logging_config import get_logger
 from . import strategy_dsl
+from .virtual_models import DEFAULT_VIRTUAL_MODEL, is_virtual_model, resolve_virtual_model
 from .strategy_dsl import Definition, parse_definition
 from .metrics import (
     orchestrator_fallbacks_total,
@@ -174,23 +175,38 @@ class Orchestrator:
         self,
         req: ChatCompletionRequest,
         strategy_repo: StrategyRepository,
-    ) -> tuple[Strategy, Optional[Definition], Optional[AutoSignal]]:
-        """Returns (effective strategy name, its parsed Definition, auto-detect signal if any).
+    ) -> tuple[Strategy, Optional[Definition], Optional[AutoSignal], Optional[str], Optional[str]]:
+        """Returns (strategy, definition, auto_signal, virtual_model_id, provider_model).
 
-        Raises ProviderError(CLIENT_ERROR) if the requested strategy doesn't
-        exist. Uses an in-process TTL cache (5s) so strategies that rarely change
-        don't require a DB lookup on every request.
+        ``virtual_model_id``: the virtual model name if one was used, else None.
+        ``provider_model``: the model name to actually send to the provider.
+            - None when virtual (provider uses its own default_model).
+            - The original req.model when it's a real model passthrough.
 
-        The Definition can be None for strategies that have no DSL rules
-        (the seeded `auto` row, or a user-created strategy left empty).
-        Both cases mean: rank by baseline only.
+        This method never mutates ``req``.
         """
-        if req.strategy == "auto":
+        virtual_model_id: Optional[str] = None
+        provider_model: Optional[str] = req.model
+
+        if is_virtual_model(req.model):
+            vm = resolve_virtual_model(req.model)
+            virtual_model_id = vm.id
+            strategy_name = vm.strategy
+            provider_model = None  # provider picks its default
+        elif req.model is None and req.strategy == "auto":
+            virtual_model_id = DEFAULT_VIRTUAL_MODEL
+            strategy_name = "auto"
+            provider_model = None
+        else:
+            strategy_name = req.strategy
+
+        if strategy_name == "auto":
             signal = detect_auto_strategy(req.messages)
             effective = signal.strategy
         else:
             signal = None
-            effective = req.strategy
+            effective = strategy_name
+
         cached = await self._strategy_cache.get(effective, strategy_repo)
         if cached is _StrategyCache._MISSING:
             raise ProviderError(
@@ -198,8 +214,7 @@ class Orchestrator:
                 f"unknown strategy '{effective}' — create it first via POST /api/strategies",
                 kind=ErrorKind.CLIENT_ERROR,
             )
-        # cached is either None (no DSL rules) or a parsed Definition.
-        return effective, cached, signal  # type: ignore[return-value]
+        return effective, cached, signal, virtual_model_id, provider_model  # type: ignore[return-value]
 
     async def _rank(
         self,
@@ -233,21 +248,25 @@ class Orchestrator:
 
     # ──────────────── single-attempt helper ────────────────
 
-    async def _attempt(self, provider: BaseProvider, req: ChatCompletionRequest) -> ProviderResponse:
+    async def _attempt(
+        self, provider: BaseProvider, req: ChatCompletionRequest, provider_model: Optional[str],
+    ) -> ProviderResponse:
         return await provider.complete(
             req.messages,
-            model=req.model,
+            model=provider_model,
             temperature=req.temperature,
             max_tokens=req.max_tokens,
             client=self._client,
         )
 
-    async def _try_with_retry(self, cand: _Candidate, req: ChatCompletionRequest) -> _AttemptResult:
+    async def _try_with_retry(
+        self, cand: _Candidate, req: ChatCompletionRequest, provider_model: Optional[str],
+    ) -> _AttemptResult:
         started = time.perf_counter()
         last_error: Optional[ProviderError] = None
         for attempt in range(self._MAX_RETRIES + 1):
             try:
-                resp = await self._attempt(cand.provider, req)
+                resp = await self._attempt(cand.provider, req, provider_model)
                 latency_ms = int((time.perf_counter() - started) * 1000)
                 return _AttemptResult(response=resp, error=None, latency_ms=latency_ms)
             except ProviderError as e:
@@ -335,7 +354,7 @@ class Orchestrator:
         client_hash: Optional[str] = None,
     ) -> ChatCompletionResponse:
         app_cfg = await config_repo.get_app_config()
-        strategy, definition, signal = await self._resolve_strategy(req, strategy_repo)
+        strategy, definition, signal, virtual_model_id, provider_model = await self._resolve_strategy(req, strategy_repo)
         if signal:
             log.info(
                 "auto_strategy",
@@ -381,7 +400,7 @@ class Orchestrator:
                 strategy=strategy,
                 attempt=len(fallback_chain),
             )
-            result = await self._try_with_retry(cand, req)
+            result = await self._try_with_retry(cand, req, provider_model)
             await self._commit_attempt(
                 rate_repo, usage_repo, reservation, result,
                 strategy=strategy,
@@ -392,10 +411,16 @@ class Orchestrator:
             if result.response is not None:
                 resp = result.response
                 latency_ms = int((time.perf_counter() - started_total) * 1000)
+                # When a virtual model was requested, show it in the response
+                # so the client sees e.g. "freeai-fast" instead of the
+                # provider-specific model name.
+                response_model = virtual_model_id if virtual_model_id else resp.model
                 log.info(
                     "completed",
                     provider=resp.provider,
                     strategy=strategy,
+                    virtual_model=virtual_model_id,
+                    real_model=resp.model,
                     latency_ms=latency_ms,
                     tokens=resp.total_tokens,
                     chain=fallback_chain,
@@ -403,7 +428,7 @@ class Orchestrator:
                 return ChatCompletionResponse(
                     id=f"freeai-{uuid.uuid4().hex[:12]}",
                     created=int(time.time()),
-                    model=resp.model,
+                    model=response_model,
                     provider=resp.provider,
                     strategy_used=strategy,
                     choices=[Choice(message=ChoiceMessage(content=resp.content))],
@@ -414,6 +439,7 @@ class Orchestrator:
                     ),
                     latency_ms=latency_ms,
                     fallback_chain=fallback_chain,
+                    real_model=resp.model if virtual_model_id else None,
                 )
             last_error = result.error
             log.warning(
@@ -443,7 +469,7 @@ class Orchestrator:
         client_hash: Optional[str] = None,
     ) -> AsyncIterator[dict]:
         app_cfg = await config_repo.get_app_config()
-        strategy, definition, _ = await self._resolve_strategy(req, strategy_repo)
+        strategy, definition, _, virtual_model_id, provider_model = await self._resolve_strategy(req, strategy_repo)
         candidates = await self._rank(config_repo, rate_repo, definition, req.preferred_provider)
         if not candidates:
             raise ProviderError(
@@ -478,7 +504,7 @@ class Orchestrator:
             try:
                 stream_iter = cand.provider.stream(
                     req.messages,
-                    model=req.model,
+                    model=provider_model,
                     temperature=req.temperature,
                     max_tokens=req.max_tokens,
                     client=self._client,
@@ -492,6 +518,16 @@ class Orchestrator:
                         prompt_tokens = chunk.prompt_tokens
                     if chunk.completion_tokens:
                         completion_tokens = chunk.completion_tokens
+                    # Override model name in SSE chunks when using virtual models
+                    if virtual_model_id:
+                        chunk = StreamChunk(
+                            delta=chunk.delta,
+                            provider=chunk.provider,
+                            model=virtual_model_id,
+                            finish_reason=chunk.finish_reason,
+                            prompt_tokens=chunk.prompt_tokens,
+                            completion_tokens=chunk.completion_tokens,
+                        )
                     yield self._format_sse_chunk(chunk, completion_id, created, strategy)
                 latency_ms = int((time.perf_counter() - started) * 1000)
                 provider_call_duration_seconds.labels(provider=cand.name).observe(latency_ms / 1000.0)
