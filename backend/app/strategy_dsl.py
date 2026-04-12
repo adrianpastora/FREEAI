@@ -41,7 +41,13 @@ FIELD_TYPES: dict[str, str] = {
     "name":                "string",
     "weight":              "number",
     "enabled":             "bool",
-    "latency_p50_ms":      "number",
+    # The latency field is the most recent observed call latency, NOT a
+    # percentile. Named this way deliberately so a user writing
+    # `last_latency_ms < 1000` knows they are filtering on a single sample.
+    # A real p50 over a window would need aggregation across usage_events
+    # and is intentionally out of scope here — see docs/STRATEGY_DSL.md
+    # for the rationale.
+    "last_latency_ms":     "number",
     "requests_today":      "number",
     "requests_this_minute": "number",
     "rpd_remaining":       "number",
@@ -348,7 +354,7 @@ def context_from_provider(
         "enabled": enabled,
         "weight": weight,
         "tags": tags,
-        "latency_p50_ms": last_latency_ms,
+        "last_latency_ms": last_latency_ms,
         "requests_today": requests_today,
         "requests_this_minute": requests_this_minute,
         "rpd_remaining": rpd_remaining,

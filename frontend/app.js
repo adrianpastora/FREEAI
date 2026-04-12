@@ -632,7 +632,9 @@ const DSL_FIELDS = {
   name:                 { type: "string" },
   weight:               { type: "number" },
   enabled:              { type: "bool" },
-  latency_p50_ms:       { type: "number" },
+  // Single most recent observed call latency, NOT a percentile.
+  // Named to match backend strategy_dsl.FIELD_TYPES.
+  last_latency_ms:      { type: "number" },
   requests_today:       { type: "number" },
   requests_this_minute: { type: "number" },
   rpd_remaining:        { type: "number" },

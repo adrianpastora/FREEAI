@@ -58,7 +58,7 @@ BUILTIN_STRATEGIES: list[StrategyDTO] = [
             "require": [],
             "prefer": [
                 _tag_prefer("fast", 5),
-                {"field": "latency_p50_ms", "op": "<", "value": 1000, "weight": 3},
+                {"field": "last_latency_ms", "op": "<", "value": 1000, "weight": 3},
             ],
         },
         description="Lowest expected latency.",
@@ -94,7 +94,7 @@ BUILTIN_STRATEGIES: list[StrategyDTO] = [
             "require": [_tag_require("coding")],
             "prefer": [
                 _tag_prefer("reasoning", 5),
-                {"field": "latency_p50_ms", "op": "<", "value": 2000, "weight": 2},
+                {"field": "last_latency_ms", "op": "<", "value": 2000, "weight": 2},
             ],
         },
         description="Tuned for code, tracebacks, refactors.",
