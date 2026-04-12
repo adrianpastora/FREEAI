@@ -86,7 +86,7 @@ OpenAI-compatible. Accepts the standard chat payload plus FreeAI extras.
 
 | Field | Type | Notes |
 |---|---|---|
-| `messages` | `[{role, content, name?}]` | Required. `role ∈ {system, user, assistant, tool}`. |
+| `messages` | `[{role, content, name?}]` | Required. `role ∈ {system, user, assistant, tool}`. `content` can be a string or a list of content blocks for multimodal (vision) requests — see [Vision requests](#vision-requests) below. |
 | `model` | `string \| null` | Leave `null` to use the provider's `default_model`. If set, it's passed through as-is to whichever provider the router picks — careful mixing `model` with `preferred_provider`. |
 | `strategy` | `string` | Any strategy name from `GET /api/strategies`. `auto` runs the detector. |
 | `temperature` | `float` | Passed to the provider. Default 0.7. |
@@ -145,6 +145,81 @@ data: {"error":{"provider":"groq","kind":"server_error","message":"…"}}
 data: [DONE]
 ```
 
+### Vision requests
+
+FreeAI supports OpenAI-compatible multimodal messages. Send images using the
+standard content-block format:
+
+```json
+{
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {"type": "text", "text": "What's in this image?"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBOR..."}}
+      ]
+    }
+  ],
+  "model": "freeai-vision"
+}
+```
+
+**How it works:**
+
+- The orchestrator detects `image_url` blocks and automatically filters to
+  vision-capable providers (currently **Gemini** and **OpenRouter**).
+- If you use `strategy: "auto"`, image blocks are detected and the `vision`
+  strategy is selected automatically — you don't need to set `model: "freeai-vision"` explicitly.
+- **Gemini** receives images translated to its native format (`inlineData` for
+  base64, `fileData` for HTTP URLs).
+- **OpenRouter** receives the OpenAI multimodal format as-is (works with
+  vision models like Llama 3.2 Vision, etc.).
+- Providers without vision support (Groq, Mistral, Cohere, HuggingFace) are
+  excluded from the candidate pool when images are present.
+
+**Image formats supported:**
+
+| Format | Example | Provider handling |
+|---|---|---|
+| Base64 data URI | `data:image/png;base64,iVBOR…` | Gemini: `inlineData`; OpenRouter: as-is |
+| HTTP(S) URL | `https://example.com/photo.jpg` | Gemini: `fileData` (fetched server-side); OpenRouter: as-is |
+
+**Error when no vision provider is available:**
+
+If the request contains images but no vision-capable provider is configured
+or healthy, the orchestrator returns a clear error:
+
+```json
+{
+  "detail": {
+    "provider": "orchestrator",
+    "kind": "client_error",
+    "message": "this request contains images but no vision-capable provider is available. Configure a provider with vision support (Gemini, OpenRouter) and ensure it has an API key and the 'vision' tag."
+  }
+}
+```
+
+### Virtual models
+
+FreeAI exposes virtual model names that map to routing strategies. Use them
+in the `model` field as a shortcut:
+
+| Virtual model | Strategy | Use case |
+|---|---|---|
+| `freeai-auto` | `auto` | Language-aware auto-detection (default) |
+| `freeai-fast` | `fastest` | Lowest latency |
+| `freeai-quality` | `best_quality` | Highest capability |
+| `freeai-code` | `coding` | Code generation and analysis |
+| `freeai-reasoning` | `reasoning` | Multi-step thinking |
+| `freeai-cheap` | `cheapest` | Maximum quota remaining |
+| `freeai-vision` | `vision` | Image-capable providers only |
+| `freeai-long` | `long_context` | Large context windows |
+
+When a virtual model is used, the provider picks its own `default_model`
+(e.g. Groq uses `llama-3.3-70b-versatile`). The response shows the virtual
+model name in `model` and the real provider model in `real_model`.
+
 ### Drop-in OpenAI SDK example
 
 ```python
@@ -166,6 +241,23 @@ for chunk in client.chat.completions.create(
     extra_body={"strategy": "reasoning"},
 ):
     print(chunk.choices[0].delta.content or "", end="", flush=True)
+
+# vision — send an image
+import base64
+with open("photo.png", "rb") as f:
+    b64 = base64.b64encode(f.read()).decode()
+
+resp = client.chat.completions.create(
+    model="freeai-vision",
+    messages=[{
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "Describe this image"},
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}
+        ],
+    }],
+)
+print(resp.choices[0].message.content)
 ```
 
 ## Admin — providers
@@ -187,13 +279,21 @@ Returns live status for every registered provider:
     "requests_this_minute": 3,
     "rpm_limit": 30,
     "rpd_limit": 14400,
+    "tpd_limit": 500000,
+    "tokens_today": 12340,
+    "weight": 1.0,
     "last_error": null,
     "last_latency_ms": 420,
+    "latency_ema_ms": 385.2,
     "tags": ["fast", "cheap", "coding", "reasoning"],
     "default_model": "llama-3.3-70b-versatile"
   }
 ]
 ```
+
+New fields in Sprint 7: `tpd_limit` (tokens/day limit), `tokens_today`
+(incremental counter, no longer queries `usage_events`), `latency_ema_ms`
+(exponential moving average, alpha=0.3 — smoother than `last_latency_ms`).
 
 ### `PATCH /api/providers/{name}`
 

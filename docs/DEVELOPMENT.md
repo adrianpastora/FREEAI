@@ -121,11 +121,18 @@ from .openai_compat import OpenAICompatibleProvider
 class TogetherProvider(OpenAICompatibleProvider):
     name = "together"
     BASE_URL = "https://api.together.xyz/v1/chat/completions"
+    supports_vision = True   # set True if the provider accepts image_url content blocks
     request_timeout = 60.0
 ```
 
 If it needs extra headers (like OpenRouter wants a Referer), override
 `_extra_headers`. If its auth is different, override `_auth_headers`.
+
+**Vision support:** Set `supports_vision = True` on providers that accept
+`image_url` content blocks. OpenAI-compatible providers pass multimodal
+content as-is. For non-OpenAI providers (like Gemini), implement the
+translation from `image_url` to the provider's native image format in
+the adapter.
 
 If the wire format is **not** OpenAI-compatible (like Gemini or Cohere), look
 at [gemini_provider.py](../backend/app/providers/gemini_provider.py) or
