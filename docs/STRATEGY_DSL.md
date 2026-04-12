@@ -1,21 +1,21 @@
 # Strategy DSL — design doc
 
-> Status: **draft**, awaiting approval.
+> Status: **shipped** (commits 1–4 in `main`, finished 2026-04-12).
 > Author: collaborative session, 2026-04-12.
 > Replaces: ad-hoc tag matching in `orchestrator._score()`.
 
-## Why
+## Why (historical)
 
-Today, a strategy is `{name, tags: [str], description}`. The orchestrator
-matches strategy tags against provider tags with literal string equality.
-A user who creates a strategy `creative` with tags `["creative", "poetic"]`
-gets a strategy that **looks** custom but does nothing — no provider has
-those tags, so the scoring loop adds zero points and the ranking degrades
-to `weight + headroom + latency_bonus`.
+Before this rework, a strategy was `{name, tags: [str], description}`.
+The orchestrator matched strategy tags against provider tags with
+literal string equality. A user who created a strategy `creative` with
+tags `["creative", "poetic"]` got a strategy that **looked** custom but
+did nothing — no provider had those tags, so the scoring loop added
+zero points and the ranking degraded to `weight + headroom + latency_bonus`.
 
-The UI does not tell the user this. The text-input editor accepts any
-string. The result is a feature that's silently a no-op for any tag the
-user invents.
+The UI didn't tell the user this. The text-input editor accepted any
+string. The result was a feature that was silently a no-op for any tag
+the user invented.
 
 ## Goal
 
@@ -274,17 +274,17 @@ Breaking change: `tags` is gone from the strategy API. There is no
 backwards-compat shim. Migration 0008 rewrites everything in the DB
 in one go; clients that still send `tags` get a 422.
 
-## Open questions for review
+## Design decisions (resolved)
 
-1. **`latency_p50_ms`** — today the only source is `ProviderSnapshot.last_latency_ms`, which is the *single most recent* call's latency, not a real p50. For v1 we use it as a proxy and document the limitation. Real p50 requires aggregating `usage_events` and is a v2 task. Acceptable?
+1. **`latency_p50_ms`** — implemented as a proxy reading `ProviderSnapshot.last_latency_ms` (most recent call). Real p50 needs aggregation over `usage_events` and is left as a v2 follow-up.
 
-2. **Live preview cost** — `POST /api/strategies/preview` runs `_rank()` against the live snapshot. This is one extra ranking per editor keystroke if the UI is naive. Plan: debounce on the frontend (300ms), and the endpoint is admin-only so it's not abusable from the public side. Acceptable?
+2. **Live preview cost** — debounced to 300ms on the frontend, and the endpoint is admin-only. Not exposed to the public side.
 
-3. **What happens to user-created strategies during migration** — the rewrite-as-prefer-tags is lossless but produces strategies that score every matching provider with `weight: 5`, which is the same as the old behavior. Users don't need to do anything. But: if they later edit the strategy in the new UI, they'll see the auto-converted `prefer` clauses and may want to clean them up. Document in the migration notes.
+3. **User-created strategies during migration** — migration 0008 rewrites every existing tag list as a `prefer.contains` per tag with weight 5, lossless. Editors that open them after the migration see the auto-converted clauses.
 
-4. **`require` empty + `prefer` empty = baseline** — explicitly allowed (today's `auto` lookalike: a strategy that just lets the baseline scoring run). Or do we disallow it as a "useless strategy"? Recommend allow.
+4. **`require` empty + `prefer` empty = baseline** — allowed. The strategy ranks providers by baseline only. Useful for users who want a named alias for the default behavior.
 
-5. **Should `name`-based filters (`field: name, op: ==, value: groq`) be allowed?** It's expressive but tempts users to write per-provider strategies that break when providers are renamed. Recommend allow but document the foot-gun.
+5. **`name`-based filters** — allowed. Documented foot-gun in this doc: per-provider strategies break when providers are renamed.
 
 ## What this does NOT solve
 
@@ -305,17 +305,19 @@ in one go; clients that still send `tags` get a 422.
 | Frontend form builder + live preview             | +400                      |
 | Total                                            | ~1100 LOC delta           |
 
-This is real work. It is not a one-commit job. Plan: ship in 4 commits
-that each leave the system green:
+Shipped as 4 mergeable commits, the suite stayed green at every step:
 
-1. **DSL module + tests, no integration yet.** `strategy_dsl.py` exists,
-   has 35 passing tests, nothing else uses it.
-2. **Migration 0008 + repo/DTO swap + orchestrator wiring.** Backend now
-   uses the DSL. Frontend still works because it sends `definition` once
-   the next commit lands; in the meantime, the API accepts both shapes
-   for one commit window.
-3. **Frontend form builder.** Replaces the textarea editor.
-4. **Drop the `tags` accept-also shim and the `GET /api/tags` +
-   preview endpoint.** Final cleanup, single shape on the wire.
+1. ✅ **DSL module + tests + design doc.** `4228c71` —
+   `strategy_dsl.py` with 52 unit tests; not yet wired into anything.
+2. ✅ **Migration 0008 + repo/DTO swap + orchestrator wiring.**
+   `99fc2aa` — backend uses the DSL; the API accepts both `definition`
+   and the legacy `tags` shape during this commit so the frontend can
+   land in commit 3 without a breaking merge.
+3. ✅ **Frontend form builder + `/api/tags` + `/api/strategies/preview`.**
+   `fe9d003` — strategy editor becomes a structured form with live
+   preview. Strategy cards render rules with REQ/PREF prefixes.
+4. ✅ **Drop the legacy `tags` shim.** Final cleanup, single shape on
+   the wire. `StrategyUpsertIn`/`StrategyOut` now expose `definition`
+   only; `_resolve_definition` and `_derive_legacy_tags` are gone.
 
-Each commit is mergeable on its own and the test suite stays green.
+Final test count: 159 passing (up from 99 before the rework).

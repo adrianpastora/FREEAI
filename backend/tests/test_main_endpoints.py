@@ -141,28 +141,6 @@ async def test_strategy_crud_with_definition(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_strategy_legacy_tags_bridge(client: AsyncClient):
-    """Bridge: a payload still using the old `tags` field is accepted and
-    converted to a `prefer.contains` per tag with weight 5. Lossless
-    rewrite for clients that haven't migrated yet. Removed in commit 4."""
-    resp = await client.post(
-        "/api/strategies",
-        headers=AUTH_HEADERS,
-        json={"name": "legacy", "tags": ["fast", "cheap"], "description": "old shape"},
-    )
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["definition"] == {
-        "require": [],
-        "prefer": [
-            {"field": "tags", "op": "contains", "value": "fast", "weight": 5},
-            {"field": "tags", "op": "contains", "value": "cheap", "weight": 5},
-        ],
-    }
-    await client.delete("/api/strategies/legacy", headers=AUTH_HEADERS)
-
-
-@pytest.mark.asyncio
 async def test_strategy_create_rejects_invalid_definition(client: AsyncClient):
     """A definition that fails the DSL parser should be rejected with 422
     and a human-readable message — not stored as garbage."""
