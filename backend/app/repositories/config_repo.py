@@ -48,7 +48,7 @@ DEFAULT_PROVIDERS: dict[str, ProviderConfigDTO] = {
         name="gemini",
         rpm_limit=15, rpd_limit=1500, weight=0.9,
         tags=["quality", "vision", "long_context", "reasoning"],
-        default_model="gemini-2.0-flash",
+        default_model="gemini-2.5-flash",
     ),
     "mistral": ProviderConfigDTO(
         name="mistral",
