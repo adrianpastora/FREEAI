@@ -451,7 +451,7 @@ async def audio_transcriptions(
         )
 
     # ── Fallback loop: try each provider in priority order ──
-    last_error: Optional[TranscriptionError] = None
+    errors: list[dict] = []       # track every attempt for diagnostics
     fallback_position = 0
 
     for provider_name, dto in candidates:
@@ -462,7 +462,8 @@ async def audio_transcriptions(
             provider_name, dto.rpm_limit, dto.rpd_limit,
         )
         if reservation is None:
-            continue  # at capacity, try next
+            errors.append({"provider": provider_name, "skipped": "at capacity"})
+            continue
 
         # Attempt transcription
         result = await transcribe(provider_name, audio, dto.api_key)
@@ -486,7 +487,11 @@ async def audio_transcriptions(
 
         # ── Failure: commit error and decide whether to continue ──
         err = result
-        last_error = err
+        errors.append({
+            "provider": err.provider,
+            "kind": err.kind.value,
+            "message": err.message[:200],
+        })
 
         quarantine_s = None
         if err.kind == ErrorKind.SERVER_ERROR:
@@ -513,14 +518,12 @@ async def audio_transcriptions(
         # Transient / rate-limit → try next provider
 
     # ── All providers exhausted ──
-    if last_error:
-        status = _KIND_TO_STATUS.get(last_error.kind, 502)
-        raise HTTPException(status, {
-            "provider": last_error.provider,
-            "kind": last_error.kind.value,
-            "message": last_error.message,
-        })
-    raise HTTPException(503, "All transcription providers at capacity")
+    last = errors[-1] if errors else {}
+    status = _KIND_TO_STATUS.get(ErrorKind(last.get("kind", "unknown")), 502) if "kind" in last else 503
+    raise HTTPException(status, {
+        "message": "All transcription providers failed",
+        "attempts": errors,
+    })
 
 
 # ──────────────────────────── provider admin ────────────────────────────
