@@ -224,6 +224,27 @@
   </div>
 </div>
 
+<!-- ───────── PROVIDER SETUP WIZARD ───────── -->
+<div class="modal" id="wizardModal" hidden>
+  <div class="modal__backdrop"></div>
+  <div class="modal__card modal__card--wide">
+    <div class="modal__corner modal__corner--tl">┌</div>
+    <div class="modal__corner modal__corner--tr">┐</div>
+    <div class="modal__corner modal__corner--bl">└</div>
+    <div class="modal__corner modal__corner--br">┘</div>
+    <h3>SETUP&nbsp;GUIDE</h3>
+    <div class="wizard__header">
+      <span class="wizard__provider-name"></span>
+      <span class="wizard__free-tier"></span>
+    </div>
+    <ol class="wizard__steps"></ol>
+    <div class="wizard__links"></div>
+    <div class="modal__actions">
+      <button class="ghost-button ghost-button--small" id="wizardModalClose">CERRAR</button>
+    </div>
+  </div>
+</div>
+
 <main class="stage">
 
   <!-- ───────── PROVIDERS ───────── -->
@@ -575,7 +596,10 @@
           <span class="switch__off">OFF</span>
         </span>
       </label>
-      <button class="ghost-button ghost-button--small reset-btn">RESET</button>
+      <div class="provider-card__foot-actions">
+        <button class="ghost-button ghost-button--small wizard-btn" title="Guía de configuración">SETUP&nbsp;GUIDE</button>
+        <button class="ghost-button ghost-button--small reset-btn">RESET</button>
+      </div>
     </footer>
   </article>
 </template>

@@ -348,6 +348,107 @@ const tpl  = document.getElementById("providerCardTemplate");
 
 let providersCache = [];
 
+// ─── Provider setup wizard data ───
+const PROVIDER_GUIDES = {
+  groq: {
+    displayName: "Groq",
+    signupUrl: "https://console.groq.com/signup",
+    docsUrl: "https://console.groq.com/docs/quickstart",
+    freeTier: "Free: 30 req/min, 14.400 req/día, sin tarjeta de crédito",
+    steps: [
+      "Ve a <a href=\"https://console.groq.com/signup\" target=\"_blank\" rel=\"noopener\">console.groq.com/signup</a> y crea una cuenta (puedes usar Google/GitHub).",
+      "Una vez dentro, ve a <strong>API Keys</strong> en el menú lateral izquierdo.",
+      "Haz clic en <strong>Create API Key</strong>, ponle un nombre (p.ej. \"FreeAI\") y copia la clave generada.",
+      "Pega la clave en el campo <em>API KEY</em> de la tarjeta de Groq en FreeAI y haz clic en <strong>SAVE</strong>."
+    ]
+  },
+  gemini: {
+    displayName: "Google Gemini",
+    signupUrl: "https://aistudio.google.com/apikey",
+    docsUrl: "https://ai.google.dev/gemini-api/docs/quickstart",
+    freeTier: "Free: 15 req/min, 1.500 req/día, requiere cuenta de Google",
+    steps: [
+      "Ve a <a href=\"https://aistudio.google.com/apikey\" target=\"_blank\" rel=\"noopener\">aistudio.google.com/apikey</a> e inicia sesión con tu cuenta de Google.",
+      "Haz clic en <strong>Create API Key</strong> y selecciona un proyecto de Google Cloud (se crea uno automáticamente si no tienes).",
+      "Copia la clave API generada.",
+      "Pega la clave en el campo <em>API KEY</em> de la tarjeta de Gemini en FreeAI y haz clic en <strong>SAVE</strong>."
+    ]
+  },
+  mistral: {
+    displayName: "Mistral AI",
+    signupUrl: "https://console.mistral.ai/",
+    docsUrl: "https://docs.mistral.ai/getting-started/quickstart/",
+    freeTier: "Free: 60 req/min, plan experimental gratuito, requiere registro",
+    steps: [
+      "Ve a <a href=\"https://console.mistral.ai/\" target=\"_blank\" rel=\"noopener\">console.mistral.ai</a> y crea una cuenta.",
+      "En el dashboard, ve a <strong>API Keys</strong> en el menú lateral.",
+      "Haz clic en <strong>Create new key</strong>, dale un nombre y copia la clave.",
+      "Pega la clave en el campo <em>API KEY</em> de la tarjeta de Mistral en FreeAI y haz clic en <strong>SAVE</strong>."
+    ]
+  },
+  openrouter: {
+    displayName: "OpenRouter",
+    signupUrl: "https://openrouter.ai/",
+    docsUrl: "https://openrouter.ai/docs/quickstart",
+    freeTier: "Free: 20 req/min, 200 req/día, modelos gratuitos marcados con \":free\"",
+    steps: [
+      "Ve a <a href=\"https://openrouter.ai/\" target=\"_blank\" rel=\"noopener\">openrouter.ai</a> y regístrate (puedes usar Google/GitHub).",
+      "En tu perfil, ve a <strong>Keys</strong> (<a href=\"https://openrouter.ai/keys\" target=\"_blank\" rel=\"noopener\">openrouter.ai/keys</a>).",
+      "Haz clic en <strong>Create Key</strong>, ponle un nombre y copia la clave (empieza con <code>sk-or-</code>).",
+      "Pega la clave en el campo <em>API KEY</em> de la tarjeta de OpenRouter en FreeAI y haz clic en <strong>SAVE</strong>.",
+      "<strong>Nota:</strong> FreeAI usa modelos con sufijo <code>:free</code>. No necesitas añadir créditos."
+    ]
+  },
+  cohere: {
+    displayName: "Cohere",
+    signupUrl: "https://dashboard.cohere.com/welcome/register",
+    docsUrl: "https://docs.cohere.com/docs/the-cohere-platform",
+    freeTier: "Free (Trial): 20 req/min, 1.000 req/día, sin tarjeta de crédito",
+    steps: [
+      "Ve a <a href=\"https://dashboard.cohere.com/welcome/register\" target=\"_blank\" rel=\"noopener\">dashboard.cohere.com</a> y crea una cuenta.",
+      "En el dashboard, ve a <strong>API Keys</strong> en el menú lateral.",
+      "Encontrarás una <strong>Trial key</strong> ya generada. Si necesitas una nueva, haz clic en <strong>+ New Trial key</strong>.",
+      "Copia la clave y pégala en el campo <em>API KEY</em> de la tarjeta de Cohere en FreeAI y haz clic en <strong>SAVE</strong>."
+    ]
+  },
+  huggingface: {
+    displayName: "Hugging Face",
+    signupUrl: "https://huggingface.co/join",
+    docsUrl: "https://huggingface.co/docs/api-inference/",
+    freeTier: "Free: 30 req/min, 1.000 req/día, Inference API gratuita",
+    steps: [
+      "Ve a <a href=\"https://huggingface.co/join\" target=\"_blank\" rel=\"noopener\">huggingface.co/join</a> y crea una cuenta.",
+      "Ve a <strong>Settings → Access Tokens</strong> (<a href=\"https://huggingface.co/settings/tokens\" target=\"_blank\" rel=\"noopener\">huggingface.co/settings/tokens</a>).",
+      "Haz clic en <strong>Create new token</strong>, selecciona permisos de <strong>Read</strong> (o <em>Fine-grained</em> con acceso a Inference), ponle un nombre y genera el token.",
+      "Copia el token (empieza con <code>hf_</code>) y pégalo en el campo <em>API KEY</em> de la tarjeta de HuggingFace en FreeAI. Haz clic en <strong>SAVE</strong>."
+    ]
+  }
+};
+
+function openSetupWizard(providerName) {
+  const guide = PROVIDER_GUIDES[providerName];
+  if (!guide) return;
+  const modal = document.getElementById("wizardModal");
+  modal.querySelector(".wizard__provider-name").textContent = guide.displayName;
+  modal.querySelector(".wizard__free-tier").textContent = guide.freeTier;
+  const stepsList = modal.querySelector(".wizard__steps");
+  stepsList.innerHTML = guide.steps
+    .map((s, i) => `<li><span class="wizard__step-num">${i + 1}</span><span class="wizard__step-text">${s}</span></li>`)
+    .join("");
+  const linksRow = modal.querySelector(".wizard__links");
+  linksRow.innerHTML = `
+    <a href="${guide.signupUrl}" target="_blank" rel="noopener" class="ghost-button ghost-button--small">CREAR&nbsp;CUENTA ↗</a>
+    <a href="${guide.docsUrl}" target="_blank" rel="noopener" class="ghost-button ghost-button--small">DOCUMENTACIÓN ↗</a>
+  `;
+  modal.hidden = false;
+}
+
+document.addEventListener("click", (e) => {
+  if (e.target.closest("#wizardModalClose") || e.target.closest("#wizardModal > .modal__backdrop")) {
+    document.getElementById("wizardModal").hidden = true;
+  }
+});
+
 async function populateModelSelect(select, providerName, currentModel) {
   try {
     const data = await adminApi(`/api/providers/${providerName}/models`);
@@ -456,7 +557,7 @@ function renderProvider(p) {
         method: "PATCH",
         body: JSON.stringify({ enabled: e.target.checked }),
       });
-      refreshProviders();
+      refreshProviders(true);
     } catch (err) {
       if (err instanceof AuthError) showAdminModal();
     }
@@ -473,7 +574,7 @@ function renderProvider(p) {
       keyInput.value = "";
       // Show the model warning inline if the backend sent one
       showModelWarning(node, result?.model_warning, result?.model_suggestions, modelInput);
-      refreshProviders();
+      refreshProviders(true);
     } catch (err) {
       if (err instanceof AuthError) { showAdminModal(); return; }
       flashButton(node.querySelector(".save-key"), "ERROR");
@@ -483,21 +584,111 @@ function renderProvider(p) {
   node.querySelector(".reset-btn").addEventListener("click", async () => {
     try {
       await adminApi(`/api/providers/${p.name}/reset`, { method: "POST" });
-      refreshProviders();
+      refreshProviders(true);
     } catch (err) {
       if (err instanceof AuthError) showAdminModal();
     }
   });
 
+  const wizardBtn = node.querySelector(".wizard-btn");
+  if (wizardBtn && PROVIDER_GUIDES[p.name]) {
+    wizardBtn.addEventListener("click", () => openSetupWizard(p.name));
+  } else if (wizardBtn) {
+    wizardBtn.hidden = true;
+  }
+
   return node;
 }
 
-async function refreshProviders() {
+/**
+ * Lightweight status-only update for a single provider card.
+ * Patches meters, latency, error, status dot — skips model dropdown.
+ */
+function updateProviderCard(node, p) {
+  // status
+  const statusLabel = node.querySelector(".provider-card__status-label");
+  const statusDot   = node.querySelector(".provider-card__status .dot");
+  statusDot.className = "dot";
+  node.classList.remove("is-disabled", "is-error");
+  if (!p.has_key) {
+    statusLabel.textContent = "no key";
+    statusDot.classList.add("dot--idle");
+    node.classList.add("is-disabled");
+  } else if (!p.healthy) {
+    statusLabel.textContent = "quarantined";
+    statusDot.classList.add("dot--down");
+    node.classList.add("is-error");
+  } else if (!p.enabled) {
+    statusLabel.textContent = "disabled";
+    statusDot.classList.add("dot--idle");
+    node.classList.add("is-disabled");
+  } else {
+    statusLabel.textContent = "live";
+  }
+
+  // RPM meter
+  const rpmFill  = node.querySelector(".meter:nth-child(1) .meter__fill");
+  const rpmValue = node.querySelector(".rpm-value");
+  rpmFill.classList.remove("is-warn");
+  if (p.rpm_limit) {
+    const pct = Math.min(100, (p.requests_this_minute / p.rpm_limit) * 100);
+    rpmFill.style.right = `${100 - pct}%`;
+    if (pct > 80) rpmFill.classList.add("is-warn");
+    rpmValue.textContent = `${p.requests_this_minute}/${p.rpm_limit}`;
+  } else {
+    rpmFill.style.right = "100%";
+    rpmValue.textContent = `${p.requests_this_minute}/—`;
+  }
+
+  // RPD meter
+  const rpdFill  = node.querySelector(".meter:nth-child(2) .meter__fill");
+  const rpdValue = node.querySelector(".rpd-value");
+  rpdFill.classList.remove("is-warn");
+  if (p.rpd_limit) {
+    const pct = Math.min(100, (p.requests_today / p.rpd_limit) * 100);
+    rpdFill.style.right = `${100 - pct}%`;
+    if (pct > 80) rpdFill.classList.add("is-warn");
+    rpdValue.textContent = `${p.requests_today}/${p.rpd_limit}`;
+  } else {
+    rpdFill.style.right = "100%";
+    rpdValue.textContent = `${p.requests_today}/—`;
+  }
+
+  // latency
+  node.querySelector(".latency-value").textContent =
+    p.last_latency_ms != null ? `${p.last_latency_ms} ms` : "—";
+
+  // error
+  const errRow = node.querySelector(".provider-row--error");
+  if (p.last_error) {
+    errRow.hidden = false;
+    errRow.querySelector(".error-value").textContent = p.last_error;
+  } else {
+    errRow.hidden = true;
+  }
+
+  // enable toggle (sync without re-binding)
+  node.querySelector(".enable-toggle").checked = p.enabled;
+}
+
+async function refreshProviders(fullRender = false) {
   try {
     const data = await adminApi("/api/providers");
     providersCache = data;
-    grid.innerHTML = "";
-    data.forEach((p) => grid.appendChild(renderProvider(p)));
+
+    // If cards already exist and no structural change, patch in-place
+    const existingCards = grid.querySelectorAll(".provider-card");
+    if (!fullRender && existingCards.length === data.length) {
+      data.forEach((p) => {
+        const card = grid.querySelector(`.provider-card[data-name="${p.name}"]`);
+        if (card) updateProviderCard(card, p);
+      });
+    } else {
+      // Full render: rebuild cards + model dropdowns
+      grid.innerHTML = "";
+      data.forEach((p) => grid.appendChild(renderProvider(p)));
+    }
+
     updateUplink(true, data);
     updateProviderSelect(data);
   } catch (err) {
@@ -524,7 +715,7 @@ function updateUplink(ok, data) {
   document.getElementById("providersOnline").textContent = `${online} / ${data.length}`;
 }
 
-document.getElementById("refreshProviders").addEventListener("click", refreshProviders);
+document.getElementById("refreshProviders").addEventListener("click", () => refreshProviders(true));
 
 // ─────────────── strategy panel ───────────────
 
@@ -1291,7 +1482,7 @@ async function boot() {
       showAdminModal();
     }
   } catch {}
-  await Promise.all([refreshProviders(), refreshConfig()]);
+  await Promise.all([refreshProviders(true), refreshConfig()]);
 }
 
 (async function start() {

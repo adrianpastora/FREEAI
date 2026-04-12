@@ -124,7 +124,7 @@ async def _run_migrations(database_url: str) -> None:
         for line in stdout.decode().splitlines():
             log.info("alembic_stdout", line=line)
     if proc.returncode != 0:
-        err = stderr.decode()
+        err = stderr.decode(errors="replace")
         log.error("migration_failed", returncode=proc.returncode, stderr=err)
         raise RuntimeError(f"alembic upgrade failed (exit {proc.returncode}): {err}")
     log.info("migrations_done")
