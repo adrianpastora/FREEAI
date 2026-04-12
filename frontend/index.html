@@ -54,29 +54,37 @@
 </header>
 
 <nav class="ribbon">
-  <div class="ribbon__item ribbon__item--active" data-tab="providers">
-    <span class="ribbon__index">01</span>
-    <span class="ribbon__label">Providers</span>
-  </div>
-  <div class="ribbon__item" data-tab="strategy">
-    <span class="ribbon__index">02</span>
-    <span class="ribbon__label">Strategy</span>
-  </div>
-  <div class="ribbon__item" data-tab="playground">
-    <span class="ribbon__index">03</span>
-    <span class="ribbon__label">Playground</span>
-  </div>
-  <div class="ribbon__item" data-tab="clients">
-    <span class="ribbon__index">04</span>
-    <span class="ribbon__label">Clients</span>
-  </div>
-  <div class="ribbon__item" data-tab="analytics">
-    <span class="ribbon__index">05</span>
-    <span class="ribbon__label">Analytics</span>
-  </div>
-  <div class="ribbon__item" data-tab="api">
-    <span class="ribbon__index">06</span>
-    <span class="ribbon__label">API&nbsp;Docs</span>
+  <button class="ribbon__burger" id="ribbonBurger" aria-label="Menu">
+    <span class="ribbon__burger-line"></span>
+    <span class="ribbon__burger-line"></span>
+    <span class="ribbon__burger-line"></span>
+  </button>
+  <div class="ribbon__active-label" id="ribbonActiveLabel">01 Providers</div>
+  <div class="ribbon__items" id="ribbonItems">
+    <div class="ribbon__item ribbon__item--active" data-tab="providers">
+      <span class="ribbon__index">01</span>
+      <span class="ribbon__label">Providers</span>
+    </div>
+    <div class="ribbon__item" data-tab="strategy">
+      <span class="ribbon__index">02</span>
+      <span class="ribbon__label">Strategy</span>
+    </div>
+    <div class="ribbon__item" data-tab="playground">
+      <span class="ribbon__index">03</span>
+      <span class="ribbon__label">Playground</span>
+    </div>
+    <div class="ribbon__item" data-tab="clients">
+      <span class="ribbon__index">04</span>
+      <span class="ribbon__label">Clients</span>
+    </div>
+    <div class="ribbon__item" data-tab="analytics">
+      <span class="ribbon__index">05</span>
+      <span class="ribbon__label">Analytics</span>
+    </div>
+    <div class="ribbon__item" data-tab="api">
+      <span class="ribbon__index">06</span>
+      <span class="ribbon__label">API&nbsp;Docs</span>
+    </div>
   </div>
   <div class="ribbon__rule"></div>
   <button class="ribbon__lock" id="lockButton" title="admin token">

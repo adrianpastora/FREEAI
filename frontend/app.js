@@ -253,18 +253,34 @@ document.getElementById("setupRevealContinue").addEventListener("click", async (
 
 // ─────────────── tab switcher ───────────────
 
-const ribbon = document.querySelectorAll(".ribbon__item");
+const ribbonTabs = document.querySelectorAll(".ribbon__item");
 const panels = document.querySelectorAll(".panel");
-ribbon.forEach((tab) => {
+const ribbonBurger = document.getElementById("ribbonBurger");
+const ribbonItems = document.getElementById("ribbonItems");
+const ribbonActiveLabel = document.getElementById("ribbonActiveLabel");
+
+ribbonTabs.forEach((tab) => {
   tab.addEventListener("click", () => {
-    ribbon.forEach((t) => t.classList.remove("ribbon__item--active"));
+    ribbonTabs.forEach((t) => t.classList.remove("ribbon__item--active"));
     tab.classList.add("ribbon__item--active");
     panels.forEach((p) => p.classList.remove("panel--active"));
     document.querySelector(`[data-panel="${tab.dataset.tab}"]`).classList.add("panel--active");
     if (tab.dataset.tab === "clients") refreshClients();
     if (tab.dataset.tab === "analytics") refreshAnalytics();
     if (tab.dataset.tab === "strategy") refreshStrategies();
+    // mobile: close drawer & update active label
+    ribbonItems.classList.remove("ribbon__items--open");
+    ribbonBurger.classList.remove("ribbon__burger--open");
+    ribbonActiveLabel.textContent =
+      tab.querySelector(".ribbon__index").textContent + " " +
+      tab.querySelector(".ribbon__label").textContent;
   });
+});
+
+// mobile hamburger toggle
+ribbonBurger.addEventListener("click", () => {
+  ribbonItems.classList.toggle("ribbon__items--open");
+  ribbonBurger.classList.toggle("ribbon__burger--open");
 });
 
 // ─────────────── http helpers ───────────────
