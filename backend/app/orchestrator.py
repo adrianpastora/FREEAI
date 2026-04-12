@@ -428,6 +428,20 @@ class Orchestrator:
                 kind=ErrorKind.CLIENT_ERROR,
             )
 
+        # Filter to vision-capable providers when the request contains images
+        request_has_images = any(m.has_images for m in req.messages)
+        if request_has_images:
+            vision_candidates = [c for c in candidates if c.provider.supports_vision]
+            if not vision_candidates:
+                raise ProviderError(
+                    "orchestrator",
+                    "this request contains images but no vision-capable provider is "
+                    "available. Configure a provider with vision support (Gemini, "
+                    "OpenRouter) and ensure it has an API key and the 'vision' tag.",
+                    kind=ErrorKind.CLIENT_ERROR,
+                )
+            candidates = vision_candidates
+
         fallback_chain: list[str] = []
         last_error: Optional[ProviderError] = None
         use_fallback = req.fallback and app_cfg.enable_fallback
@@ -536,6 +550,20 @@ class Orchestrator:
                 "no provider configured/available — add an API key in settings",
                 kind=ErrorKind.CLIENT_ERROR,
             )
+
+        # Filter to vision-capable providers when the request contains images
+        request_has_images = any(m.has_images for m in req.messages)
+        if request_has_images:
+            vision_candidates = [c for c in candidates if c.provider.supports_vision]
+            if not vision_candidates:
+                raise ProviderError(
+                    "orchestrator",
+                    "this request contains images but no vision-capable provider is "
+                    "available. Configure a provider with vision support (Gemini, "
+                    "OpenRouter) and ensure it has an API key and the 'vision' tag.",
+                    kind=ErrorKind.CLIENT_ERROR,
+                )
+            candidates = vision_candidates
 
         use_fallback = req.fallback and app_cfg.enable_fallback
         attempts = candidates if use_fallback else candidates[:1]

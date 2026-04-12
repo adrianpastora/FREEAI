@@ -1,7 +1,13 @@
-"""Google Gemini — uses the v1beta generateContent / streamGenerateContent endpoints."""
+"""Google Gemini — uses the v1beta generateContent / streamGenerateContent endpoints.
+
+Supports multimodal (vision) requests: OpenAI-format ``image_url`` content
+blocks are translated to Gemini's ``inlineData`` part format.
+"""
 from __future__ import annotations
 
+import base64
 import json
+import re
 from typing import AsyncIterator, Optional
 
 import httpx
@@ -9,12 +15,55 @@ import httpx
 from ..schemas import ChatMessage
 from .base import BaseProvider, ErrorKind, ProviderError, ProviderResponse, StreamChunk
 
+# Matches data URIs: data:image/png;base64,iVBOR...
+_DATA_URI_RE = re.compile(r"^data:([^;]+);base64,(.+)$", re.DOTALL)
+
 
 class GeminiProvider(BaseProvider):
     name = "gemini"
     BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
     supports_streaming = True
+    supports_vision = True
     request_timeout = 60.0
+
+    def _content_to_parts(self, content) -> list[dict]:
+        """Convert ChatMessage.content (str or multimodal list) to Gemini parts."""
+        if isinstance(content, str):
+            return [{"text": content}]
+
+        parts: list[dict] = []
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            btype = block.get("type", "")
+            if btype == "text":
+                text = block.get("text", "")
+                if text:
+                    parts.append({"text": text})
+            elif btype == "image_url":
+                image_url_obj = block.get("image_url", {})
+                url = image_url_obj.get("url", "") if isinstance(image_url_obj, dict) else ""
+                if not url:
+                    continue
+                # data URI → inlineData
+                match = _DATA_URI_RE.match(url)
+                if match:
+                    mime_type, b64_data = match.group(1), match.group(2)
+                    parts.append({
+                        "inlineData": {
+                            "mimeType": mime_type,
+                            "data": b64_data,
+                        }
+                    })
+                else:
+                    # HTTP(S) URL → fileData (Gemini fetches it)
+                    parts.append({
+                        "fileData": {
+                            "mimeType": "image/jpeg",
+                            "fileUri": url,
+                        }
+                    })
+        return parts or [{"text": ""}]
 
     def _to_gemini_contents(self, messages: list[ChatMessage]) -> tuple[list[dict], Optional[str]]:
         # Gemini uses "user"/"model" roles and a separate systemInstruction.
@@ -22,10 +71,10 @@ class GeminiProvider(BaseProvider):
         contents: list[dict] = []
         for m in messages:
             if m.role == "system":
-                system_text = (system_text + "\n" if system_text else "") + m.content
+                system_text = (system_text + "\n" if system_text else "") + m.text_content
                 continue
             role = "model" if m.role == "assistant" else "user"
-            contents.append({"role": role, "parts": [{"text": m.content}]})
+            contents.append({"role": role, "parts": self._content_to_parts(m.content)})
         return contents, system_text
 
     def _build_payload(
