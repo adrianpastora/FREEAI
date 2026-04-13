@@ -917,16 +917,24 @@ function renderProvider(p) {
     statusLabel.textContent = "no key";
     statusDot.classList.add("dot--idle");
     node.classList.add("is-disabled");
+    // Add "no key" banner
+    const banner = document.createElement("div");
+    banner.className = "provider-card__nokey-banner";
+    banner.textContent = "⚠ API KEY NO CONFIGURADA — usa el Setup Wizard o pega tu clave abajo";
+    node.querySelector(".provider-card__head").after(banner);
   } else if (!p.healthy) {
     statusLabel.textContent = "quarantined";
     statusDot.classList.add("dot--down");
     node.classList.add("is-error");
+    node.classList.add("is-configured");
   } else if (!p.enabled) {
     statusLabel.textContent = "disabled";
     statusDot.classList.add("dot--idle");
     node.classList.add("is-disabled");
+    node.classList.add("is-configured");
   } else {
     statusLabel.textContent = "live";
+    node.classList.add("is-configured");
   }
 
   const tags = node.querySelector(".provider-card__tags");
@@ -1082,21 +1090,28 @@ function updateProviderCard(node, p) {
   const statusLabel = node.querySelector(".provider-card__status-label");
   const statusDot   = node.querySelector(".provider-card__status .dot");
   statusDot.className = "dot";
-  node.classList.remove("is-disabled", "is-error");
+  node.classList.remove("is-disabled", "is-error", "is-configured");
+  // Remove existing banner if any
+  node.querySelector(".provider-card__nokey-banner")?.remove();
   if (!p.has_key) {
     statusLabel.textContent = "no key";
     statusDot.classList.add("dot--idle");
     node.classList.add("is-disabled");
+    const banner = document.createElement("div");
+    banner.className = "provider-card__nokey-banner";
+    banner.textContent = "⚠ API KEY NO CONFIGURADA — usa el Setup Wizard o pega tu clave abajo";
+    node.querySelector(".provider-card__head").after(banner);
   } else if (!p.healthy) {
     statusLabel.textContent = "quarantined";
     statusDot.classList.add("dot--down");
-    node.classList.add("is-error");
+    node.classList.add("is-error", "is-configured");
   } else if (!p.enabled) {
     statusLabel.textContent = "disabled";
     statusDot.classList.add("dot--idle");
-    node.classList.add("is-disabled");
+    node.classList.add("is-disabled", "is-configured");
   } else {
     statusLabel.textContent = "live";
+    node.classList.add("is-configured");
   }
 
   // RPM meter
