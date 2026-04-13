@@ -630,6 +630,253 @@ document.addEventListener("click", (e) => {
   }
 });
 
+// ─────────────── multi-step provider setup wizard ───────────────
+
+const _pwProviderOrder = ["groq", "gemini", "mistral", "openrouter", "cohere", "huggingface"];
+let _pwStep = 0; // 0..N-1 = providers, N = summary
+let _pwConfigured = {}; // { providerName: bool }
+
+function _pwTotalSteps() { return _pwProviderOrder.length + 1; } // providers + summary
+
+async function openProviderWizard() {
+  // Fetch current state from backend
+  try {
+    const myProviders = await adminApi("/api/me/providers");
+    _pwConfigured = {};
+    _pwProviderOrder.forEach(n => { _pwConfigured[n] = false; });
+    myProviders.forEach(p => {
+      if (p.has_key) _pwConfigured[p.provider_name] = true;
+    });
+  } catch {
+    _pwProviderOrder.forEach(n => { _pwConfigured[n] = false; });
+  }
+
+  // Check if ALL providers are configured
+  const allDone = _pwProviderOrder.every(n => _pwConfigured[n]);
+
+  // Find first unconfigured provider, or go to summary
+  if (allDone) {
+    _pwStep = _pwProviderOrder.length; // summary
+  } else {
+    _pwStep = _pwProviderOrder.findIndex(n => !_pwConfigured[n]);
+    if (_pwStep === -1) _pwStep = 0;
+  }
+
+  _pwRender();
+  document.getElementById("providerWizardModal").hidden = false;
+}
+
+function _pwRender() {
+  const total = _pwTotalSteps();
+  const isSummary = _pwStep >= _pwProviderOrder.length;
+
+  // Counter
+  document.getElementById("pwCounter").textContent = `${_pwStep + 1} / ${total}`;
+
+  // Progress bar
+  const pct = (((_pwStep + 1) / total) * 100).toFixed(1);
+  document.getElementById("pwProgressFill").style.width = `${pct}%`;
+
+  // Track dots
+  const track = document.getElementById("pwTrack");
+  track.innerHTML = _pwProviderOrder.map((name, i) => {
+    const active = i === _pwStep ? "is-active" : "";
+    const done = _pwConfigured[name] ? "is-done" : "";
+    const cls = active || done;
+    const abbr = name.slice(0, 2).toUpperCase();
+    return `<div class="pw__track-dot ${cls}" data-pw-goto="${i}" title="${name}">${_pwConfigured[name] ? "✓" : abbr}</div>`;
+  }).join("") + `<div class="pw__track-dot is-summary ${isSummary ? "is-active" : ""}" data-pw-goto="${_pwProviderOrder.length}">FIN</div>`;
+
+  // Click handlers for track dots
+  track.querySelectorAll("[data-pw-goto]").forEach(dot => {
+    dot.addEventListener("click", () => {
+      _pwStep = parseInt(dot.dataset.pwGoto, 10);
+      _pwRender();
+    });
+  });
+
+  // Body
+  const body = document.getElementById("pwBody");
+  if (isSummary) {
+    _pwRenderSummary(body);
+  } else {
+    _pwRenderProviderStep(body, _pwProviderOrder[_pwStep]);
+  }
+
+  // Nav buttons
+  document.getElementById("pwPrev").style.visibility = _pwStep > 0 ? "visible" : "hidden";
+  document.getElementById("pwSkip").style.display = isSummary ? "none" : "";
+  document.getElementById("pwNext").textContent = isSummary ? "CERRAR" : "SIGUIENTE →";
+}
+
+function _pwRenderProviderStep(body, name) {
+  const guide = PROVIDER_GUIDES[name];
+  if (!guide) { body.innerHTML = ""; return; }
+  const isConfigured = _pwConfigured[name];
+
+  body.innerHTML = `
+    <div class="pw__provider-step">
+      <div class="pw__provider-name">${escapeHtml(guide.displayName)}</div>
+      <div class="pw__provider-status">
+        <span class="pw__status-badge ${isConfigured ? "is-configured" : "is-pending"}">
+          ${isConfigured ? "✓ CONFIGURADO" : "⚠ PENDIENTE"}
+        </span>
+      </div>
+      <div class="pw__free-tier">${escapeHtml(guide.freeTier)}</div>
+
+      ${isConfigured ? `
+        <div class="pw__configured-msg">
+          <div class="pw__configured-check">✓</div>
+          <div class="pw__configured-text">Este proveedor ya tiene una API key configurada.</div>
+          <button class="ghost-button ghost-button--small pw__reconfigure-btn" id="pwReconfigure">RECONFIGURAR</button>
+        </div>
+        <div id="pwGuideSection" hidden>
+          ${_pwGuideHtml(guide, name)}
+        </div>
+      ` : _pwGuideHtml(guide, name)}
+    </div>
+  `;
+
+  // Reconfigure button
+  const reconf = body.querySelector("#pwReconfigure");
+  if (reconf) {
+    reconf.addEventListener("click", () => {
+      body.querySelector(".pw__configured-msg").hidden = true;
+      body.querySelector("#pwGuideSection").hidden = false;
+    });
+  }
+
+  // Save button
+  const saveBtn = body.querySelector("#pwSaveKey");
+  if (saveBtn) {
+    saveBtn.addEventListener("click", () => _pwSaveKey(name));
+  }
+
+  // Enter on input
+  const keyInput = body.querySelector("#pwKeyInput");
+  if (keyInput) {
+    keyInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") _pwSaveKey(name);
+    });
+    if (!isConfigured) setTimeout(() => keyInput.focus(), 100);
+  }
+}
+
+function _pwGuideHtml(guide, name) {
+  return `
+    <ol class="pw__guide-steps">
+      ${guide.steps.map((s, i) => `<li><span class="pw__step-num">${i + 1}</span><span class="pw__step-text">${s}</span></li>`).join("")}
+    </ol>
+    <div class="pw__links">
+      <a href="${guide.signupUrl}" target="_blank" rel="noopener" class="ghost-button ghost-button--small">CREAR CUENTA ↗</a>
+      <a href="${guide.docsUrl}" target="_blank" rel="noopener" class="ghost-button ghost-button--small">DOCS ↗</a>
+    </div>
+    <div class="pw__key-section">
+      <div class="pw__key-label">API KEY — ${escapeHtml(guide.displayName)}</div>
+      <div class="pw__key-row">
+        <input type="password" id="pwKeyInput" placeholder="pega tu clave aqui..." autocomplete="off" />
+        <button class="primary-button" id="pwSaveKey" style="padding:10px 16px">GUARDAR</button>
+      </div>
+      <div class="pw__key-saved" id="pwKeySaved">✓ Clave guardada correctamente</div>
+      <div class="pw__key-error" id="pwKeyError"></div>
+    </div>
+  `;
+}
+
+async function _pwSaveKey(providerName) {
+  const input = document.getElementById("pwKeyInput");
+  const savedEl = document.getElementById("pwKeySaved");
+  const errorEl = document.getElementById("pwKeyError");
+  const key = input?.value.trim();
+  if (!key) return;
+
+  savedEl.classList.remove("is-visible");
+  errorEl.classList.remove("is-visible");
+
+  try {
+    await adminApi(`/api/me/providers/${providerName}`, {
+      method: "PATCH",
+      body: JSON.stringify({ api_key: key }),
+    });
+    _pwConfigured[providerName] = true;
+    savedEl.classList.add("is-visible");
+    input.value = "";
+    // Update track dot
+    _pwRender();
+    // Re-show the saved message after re-render
+    setTimeout(() => {
+      const s = document.getElementById("pwKeySaved");
+      if (s) s.classList.add("is-visible");
+    }, 50);
+  } catch (e) {
+    errorEl.textContent = e.message || "Error al guardar";
+    errorEl.classList.add("is-visible");
+  }
+}
+
+function _pwRenderSummary(body) {
+  const allDone = _pwProviderOrder.every(n => _pwConfigured[n]);
+  const configured = _pwProviderOrder.filter(n => _pwConfigured[n]).length;
+
+  if (allDone) {
+    body.innerHTML = `
+      <div class="pw__all-done">
+        <div class="pw__all-done-icon">◆</div>
+        <div class="pw__all-done-text">Todos los proveedores configurados</div>
+        <div class="pw__all-done-sub">${configured} / ${_pwProviderOrder.length} proveedores con API key — FreeAI enrutara automaticamente tus requests.</div>
+      </div>
+    `;
+  } else {
+    body.innerHTML = `
+      <div class="pw__summary">
+        <div class="pw__summary-title">Resumen de configuracion</div>
+        <div class="pw__summary-grid">
+          ${_pwProviderOrder.map(name => {
+            const guide = PROVIDER_GUIDES[name];
+            const ok = _pwConfigured[name];
+            return `
+              <div class="pw__summary-row">
+                <span class="pw__summary-provider">${guide?.displayName || name}</span>
+                <span class="pw__summary-status ${ok ? "is-ok" : "is-missing"}">${ok ? "✓ OK" : "SIN KEY"}</span>
+              </div>
+            `;
+          }).join("")}
+        </div>
+        <div class="pw__all-done-sub" style="text-align:center">${configured} / ${_pwProviderOrder.length} configurados — puedes volver a este wizard en cualquier momento.</div>
+      </div>
+    `;
+  }
+}
+
+// Wizard nav event listeners
+document.getElementById("pwPrev")?.addEventListener("click", () => {
+  if (_pwStep > 0) { _pwStep--; _pwRender(); }
+});
+document.getElementById("pwNext")?.addEventListener("click", () => {
+  if (_pwStep >= _pwProviderOrder.length) {
+    // Close wizard
+    document.getElementById("providerWizardModal").hidden = true;
+    refreshProviders(true);
+    return;
+  }
+  _pwStep++;
+  _pwRender();
+});
+document.getElementById("pwSkip")?.addEventListener("click", () => {
+  if (_pwStep < _pwProviderOrder.length) { _pwStep++; _pwRender(); }
+});
+
+// Open wizard button
+document.getElementById("openProviderWizard")?.addEventListener("click", openProviderWizard);
+
+// Close on backdrop click
+document.addEventListener("click", (e) => {
+  if (e.target.closest("#providerWizardModal > .modal__backdrop")) {
+    document.getElementById("providerWizardModal").hidden = true;
+    refreshProviders(true);
+  }
+});
+
 async function populateModelSelect(select, providerName, currentModel) {
   try {
     const data = await adminApi(`/api/providers/${providerName}/models`);
