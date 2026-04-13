@@ -67,17 +67,28 @@ class UsageRepository:
         # We don't flush/commit here — the caller's session commit batches this
         # alongside the rate_repo.commit() for the same request.
 
-    async def summary(self, window_seconds: int = 24 * 3600, bucket_count: int = 24) -> AnalyticsSummary:
+    async def summary(
+        self,
+        window_seconds: int = 24 * 3600,
+        bucket_count: int = 24,
+        user_id: Optional[int] = None,
+    ) -> AnalyticsSummary:
         """Compute a single analytics snapshot covering the last N seconds.
 
         One method, several SQL queries — cheaper and clearer than a giant union.
+        When user_id is given, only that user's events are included.
         """
         now = time.time()
         since = now - window_seconds
 
+        user_filter = "AND user_id = :uid" if user_id is not None else ""
+        params = {"since": since}
+        if user_id is not None:
+            params["uid"] = user_id
+
         # Totals + latency percentiles in one shot using percentile_cont.
         totals = await self.session.execute(
-            text("""
+            text(f"""
                 SELECT
                     COUNT(*) AS total,
                     COUNT(*) FILTER (WHERE outcome = 'success') AS success,
@@ -85,8 +96,8 @@ class UsageRepository:
                     COALESCE(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY latency_ms), 0) AS p95,
                     COALESCE(SUM(prompt_tokens + completion_tokens), 0) AS tokens
                 FROM usage_events
-                WHERE occurred_at >= :since
-            """).bindparams(since=since)
+                WHERE occurred_at >= :since {user_filter}
+            """).bindparams(**params)
         )
         row = totals.one()
         total, success, p50, p95, tokens = row
@@ -95,17 +106,17 @@ class UsageRepository:
 
         # Per-provider
         by_provider_result = await self.session.execute(
-            text("""
+            text(f"""
                 SELECT provider_name,
                        COUNT(*) AS calls,
                        COUNT(*) FILTER (WHERE outcome = 'success') AS success,
                        COALESCE(AVG(latency_ms), 0)::int AS avg_latency,
                        COALESCE(SUM(prompt_tokens + completion_tokens), 0) AS tokens
                 FROM usage_events
-                WHERE occurred_at >= :since
+                WHERE occurred_at >= :since {user_filter}
                 GROUP BY provider_name
                 ORDER BY calls DESC
-            """).bindparams(since=since)
+            """).bindparams(**params)
         )
         by_provider = [
             {
@@ -119,36 +130,37 @@ class UsageRepository:
         ]
 
         by_strategy_result = await self.session.execute(
-            text("""
+            text(f"""
                 SELECT strategy, COUNT(*) AS calls
-                FROM usage_events WHERE occurred_at >= :since
+                FROM usage_events WHERE occurred_at >= :since {user_filter}
                 GROUP BY strategy ORDER BY calls DESC
-            """).bindparams(since=since)
+            """).bindparams(**params)
         )
         by_strategy = [{"strategy": r[0], "calls": int(r[1])} for r in by_strategy_result.all()]
 
         by_outcome_result = await self.session.execute(
-            text("""
+            text(f"""
                 SELECT outcome, COUNT(*) AS calls
-                FROM usage_events WHERE occurred_at >= :since
+                FROM usage_events WHERE occurred_at >= :since {user_filter}
                 GROUP BY outcome ORDER BY calls DESC
-            """).bindparams(since=since)
+            """).bindparams(**params)
         )
         by_outcome = [{"outcome": r[0], "calls": int(r[1])} for r in by_outcome_result.all()]
 
         # Per-client (join clients table to get human name)
+        ue_user_filter = "AND ue.user_id = :uid" if user_id is not None else ""
         by_client_result = await self.session.execute(
-            text("""
+            text(f"""
                 SELECT COALESCE(c.name, 'unknown') AS client_name,
                        COUNT(*) AS calls,
                        COUNT(*) FILTER (WHERE ue.outcome = 'success') AS success,
                        COALESCE(SUM(ue.prompt_tokens + ue.completion_tokens), 0) AS tokens
                 FROM usage_events ue
                 LEFT JOIN clients c ON ue.client_hash = c.key_hash
-                WHERE ue.occurred_at >= :since
+                WHERE ue.occurred_at >= :since {ue_user_filter}
                 GROUP BY c.name
                 ORDER BY calls DESC
-            """).bindparams(since=since)
+            """).bindparams(**params)
         )
         by_client = [
             {
@@ -162,17 +174,18 @@ class UsageRepository:
 
         # Time bucket series — divide the window into N equal buckets and count.
         bucket_width = window_seconds / bucket_count
+        bucket_params = {**params, "width": bucket_width}
         buckets_result = await self.session.execute(
-            text("""
+            text(f"""
                 SELECT
                     FLOOR((occurred_at - :since) / :width)::int AS bucket,
                     COUNT(*) AS calls,
                     COUNT(*) FILTER (WHERE outcome = 'success') AS success
                 FROM usage_events
-                WHERE occurred_at >= :since
+                WHERE occurred_at >= :since {user_filter}
                 GROUP BY bucket
                 ORDER BY bucket
-            """).bindparams(since=since, width=bucket_width)
+            """).bindparams(**bucket_params)
         )
         raw_buckets = {int(r[0]): (int(r[1]), int(r[2])) for r in buckets_result.all()}
         # Fill empty buckets with zeros so the frontend gets a dense series

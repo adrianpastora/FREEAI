@@ -930,45 +930,40 @@ function _isAdmin() {
 }
 
 function _providerEndpoint(name) {
-  // Admin edits the catalog; regular users edit their own config
-  return _isAdmin() ? `/api/providers/${name}` : `/api/me/providers/${name}`;
+  // Every user edits their own provider config
+  return `/api/me/providers/${name}`;
 }
 
 async function refreshProviders(fullRender = false) {
   try {
-    let data;
-    if (_isAdmin()) {
-      data = await adminApi("/api/providers");
-    } else {
-      // Regular user: fetch catalog + merge with their own config
-      const [catalog, myProviders] = await Promise.all([
-        adminApi("/api/me/providers/catalog"),
-        adminApi("/api/me/providers"),
-      ]);
-      const myMap = {};
-      myProviders.forEach(p => { myMap[p.provider_name] = p; });
-      data = catalog.map(c => {
-        const my = myMap[c.name] || {};
-        return {
-          name: c.name,
-          enabled: my.enabled ?? c.enabled,
-          has_key: my.has_key || false,
-          healthy: true,
-          requests_today: 0,
-          requests_this_minute: 0,
-          rpm_limit: my.rpm_limit ?? c.rpm_limit,
-          rpd_limit: my.rpd_limit ?? c.rpd_limit,
-          tpd_limit: my.tpd_limit ?? c.tpd_limit,
-          tokens_today: 0,
-          weight: my.weight ?? c.weight,
-          last_error: null,
-          last_latency_ms: null,
-          latency_ema_ms: null,
-          tags: c.tags || [],
-          default_model: my.default_model ?? c.default_model,
-        };
-      });
-    }
+    // All users see their own providers (catalog + their config merged)
+    const [catalog, myProviders] = await Promise.all([
+      adminApi("/api/me/providers/catalog"),
+      adminApi("/api/me/providers"),
+    ]);
+    const myMap = {};
+    myProviders.forEach(p => { myMap[p.provider_name] = p; });
+    const data = catalog.map(c => {
+      const my = myMap[c.name] || {};
+      return {
+        name: c.name,
+        enabled: my.enabled ?? c.enabled,
+        has_key: my.has_key || false,
+        healthy: true,
+        requests_today: 0,
+        requests_this_minute: 0,
+        rpm_limit: my.rpm_limit ?? c.rpm_limit,
+        rpd_limit: my.rpd_limit ?? c.rpd_limit,
+        tpd_limit: my.tpd_limit ?? c.tpd_limit,
+        tokens_today: 0,
+        weight: my.weight ?? c.weight,
+        last_error: null,
+        last_latency_ms: null,
+        latency_ema_ms: null,
+        tags: c.tags || [],
+        default_model: my.default_model ?? c.default_model,
+      };
+    });
     providersCache = data;
 
     // If cards already exist and no structural change, patch in-place
