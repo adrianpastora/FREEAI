@@ -336,8 +336,16 @@ async def auth_status(session: AsyncSession = Depends(get_session)) -> dict:
     """Check if the system needs user migration or first-time registration."""
     user_repo = UserRepository(session)
     user_count = await user_repo.count()
+
+    # Check if the only user is the migration placeholder
+    if user_count == 1:
+        placeholder = await user_repo.find_by_username("admin")
+        if placeholder and placeholder.password_hash == "__placeholder_needs_migration__":
+            return {"status": "needs_migration", "user_count": 0}
+
     if user_count > 0:
         return {"status": "ready", "user_count": user_count}
+
     # Check if there's a legacy admin token to migrate from
     row = await session.get(AppConfigRow, 1)
     has_legacy = bool(row and row.admin_token_hash)
@@ -442,26 +450,46 @@ async def migrate_token(
     body: MigrateTokenBody,
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """One-time migration: verify legacy admin token and create admin user.
+    """One-time migration: verify legacy admin token and create/update admin user.
 
     Used when upgrading from single-admin-token to multi-user. The caller
-    proves they own the old token; the system creates a proper user account.
+    proves they own the old token; the system creates a proper user account
+    (or updates the placeholder created by migration 0013).
     """
     from .security import verify_admin_credentials
 
     user_repo = UserRepository(session)
-    if await user_repo.count() > 0:
+
+    # Check if a real (non-placeholder) user already exists
+    placeholder = await user_repo.find_by_username("admin")
+    is_placeholder = placeholder and placeholder.password_hash == "__placeholder_needs_migration__"
+    real_user_count = await user_repo.count()
+    if not is_placeholder and real_user_count > 0:
         raise HTTPException(400, "migration already completed — users exist")
 
     if not await verify_admin_credentials(session, body.admin_token):
         raise HTTPException(401, "invalid admin token")
 
-    existing = await user_repo.find_by_username(body.username)
-    if existing:
-        raise HTTPException(409, f"username '{body.username}' is already taken")
-
     pwd_hash = hash_password(body.password)
-    user_dto = await user_repo.create(body.username, pwd_hash, role="admin")
+
+    if is_placeholder:
+        # Update the placeholder with real credentials
+        from sqlalchemy import update
+        from .db.models import UserRow
+        await session.execute(
+            update(UserRow).where(UserRow.id == placeholder.id).values(
+                username=body.username,
+                password_hash=pwd_hash,
+                updated_at=time.time(),
+            )
+        )
+        await session.flush()
+        user_dto = await user_repo.find_by_id(placeholder.id)
+    else:
+        existing = await user_repo.find_by_username(body.username)
+        if existing:
+            raise HTTPException(409, f"username '{body.username}' is already taken")
+        user_dto = await user_repo.create(body.username, pwd_hash, role="admin")
 
     log.info("admin_migrated", username=body.username, user_id=user_dto.id)
     return await _issue_tokens(user_dto.id, user_dto.username, user_dto.role, session)
