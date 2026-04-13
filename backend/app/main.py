@@ -1023,7 +1023,7 @@ async def reset_provider_health(
 @app.get("/api/providers/{name}/models")
 async def list_provider_models(
     name: str,
-    _admin=Depends(require_admin),
+    _user: CurrentUser = Depends(get_current_user),
 ) -> dict:
     if name not in KNOWN_MODELS:
         raise HTTPException(404, f"unknown provider '{name}'")
@@ -1055,7 +1055,7 @@ class FallbackUpdate(BaseModel):
 @app.get("/api/config")
 async def get_config(
     session: AsyncSession = Depends(get_session),
-    _admin=Depends(require_admin),
+    _user: CurrentUser = Depends(get_current_user),
 ) -> dict:
     config_repo = ConfigRepository(session)
     strategy_repo = StrategyRepository(session)
@@ -1129,7 +1129,7 @@ def _strategy_to_out(dto: StrategyDTO) -> StrategyOut:
 @app.get("/api/strategies", response_model=list[StrategyOut])
 async def list_strategies(
     session: AsyncSession = Depends(get_session),
-    _admin=Depends(require_admin),
+    _user: CurrentUser = Depends(get_current_user),
 ) -> list[StrategyOut]:
     repo = StrategyRepository(session)
     return [_strategy_to_out(s) for s in await repo.list_all()]
@@ -1222,7 +1222,7 @@ class TagInfo(BaseModel):
 @app.get("/api/tags", response_model=list[TagInfo])
 async def list_tags(
     session: AsyncSession = Depends(get_session),
-    _admin=Depends(require_admin),
+    _user: CurrentUser = Depends(get_current_user),
 ) -> list[TagInfo]:
     """Vocabulary discovery for the strategy editor.
 
@@ -1380,7 +1380,7 @@ async def analytics(
     window_seconds: int = 24 * 3600,
     bucket_count: int = 24,
     session: AsyncSession = Depends(get_session),
-    _admin=Depends(require_admin),
+    _user: CurrentUser = Depends(get_current_user),
 ) -> dict:
     """Aggregated usage summary. `window_seconds` and `bucket_count` let the
     frontend switch between "last hour / 12 buckets" and "last 24h / 24 buckets"
