@@ -44,11 +44,16 @@ def upgrade() -> None:
     )
     op.create_index("ix_clients_user_id", "clients", ["user_id"])
 
-    # ── 2. usage_events: add user_id (nullable — old events won't have it) ──
+    # ── 2. usage_events: add user_id ──
     op.add_column(
         "usage_events",
         sa.Column("user_id", sa.Integer, nullable=True),
     )
+    # Backfill existing events to the admin user
+    if admin_id is not None:
+        conn.execute(sa.text(
+            "UPDATE usage_events SET user_id = :uid WHERE user_id IS NULL"
+        ), {"uid": admin_id})
     op.create_index("ix_usage_events_user_id", "usage_events", ["user_id"])
 
     # ── 3. rate_events: add user_id ──
