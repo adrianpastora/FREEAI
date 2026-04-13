@@ -1390,7 +1390,11 @@ async def analytics(
     if bucket_count < 1 or bucket_count > 168:
         raise HTTPException(400, "bucket_count must be between 1 and 168")
     repo = UsageRepository(session)
-    summary = await repo.summary(window_seconds=window_seconds, bucket_count=bucket_count)
+    # Every user sees only their own analytics
+    summary = await repo.summary(
+        window_seconds=window_seconds, bucket_count=bucket_count,
+        user_id=_user.id,
+    )
     return asdict(summary)
 
 
@@ -1415,15 +1419,13 @@ async def list_clients(
     user: CurrentUser = Depends(get_current_user),
 ) -> list[dict]:
     repo = ClientRepository(session)
-    # Admin sees all, regular user sees only their own
-    uid = None if user.is_admin else user.id
+    # Every user sees only their own clients
     return [
         {
             "name": c.name, "key_hash": c.key_hash,
             "rpm_limit": c.rpm_limit, "enabled": c.enabled,
-            "user_id": c.user_id,
         }
-        for c in await repo.list_all(user_id=uid)
+        for c in await repo.list_all(user_id=user.id)
     ]
 
 
@@ -1450,9 +1452,8 @@ async def revoke_client(
     user: CurrentUser = Depends(get_current_user),
 ) -> dict:
     repo = ClientRepository(session)
-    # Admin can revoke any; regular user only their own
-    uid = None if user.is_admin else user.id
-    if not await repo.revoke(key_hash, user_id=uid):
+    # Every user can only revoke their own clients
+    if not await repo.revoke(key_hash, user_id=user.id):
         raise HTTPException(status_code=404, detail="client not found")
     return {"ok": True}
 
