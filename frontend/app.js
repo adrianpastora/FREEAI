@@ -151,19 +151,24 @@ document.getElementById("loginSubmit").addEventListener("click", async () => {
   const password = document.getElementById("loginPassword").value;
   const errEl = document.getElementById("loginError");
   if (!username || !password) return;
+  errEl.style.display = "none";
   try {
+    console.log("[login] attempting", API_BASE + "/api/auth/login", username);
     const res = await fetch(`${API_BASE}/api/auth/login`, {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({ username, password }),
     });
+    console.log("[login] response status", res.status);
     if (!res.ok) {
       const detail = await res.json().catch(() => ({}));
+      console.log("[login] error detail", detail);
       errEl.textContent = detail.detail || "Login failed";
       errEl.style.display = "block";
       return;
     }
     const data = await res.json();
+    console.log("[login] success, user:", data.user, "token length:", data.access_token?.length);
     saveSession(data);
     hideLoginModal();
     document.getElementById("loginUsername").value = "";
