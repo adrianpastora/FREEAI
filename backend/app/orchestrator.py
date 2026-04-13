@@ -120,6 +120,7 @@ class Orchestrator:
     def __init__(self):
         self._client = httpx.AsyncClient(
             limits=httpx.Limits(max_keepalive_connections=20, max_connections=100),
+            timeout=httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0),
         )
         self._strategy_cache = _StrategyCache()
         # Per-provider in-flight request counters for concurrency-aware scoring.

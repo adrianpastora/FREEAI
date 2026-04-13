@@ -150,7 +150,7 @@ class GeminiProvider(BaseProvider):
         payload = self._build_payload(messages, temperature, max_tokens)
         url = f"{self.BASE_URL}/{chosen}:streamGenerateContent?alt=sse&key={self.api_key}"
         try:
-            async with client.stream("POST", url, json=payload, timeout=self.request_timeout) as resp:
+            async with client.stream("POST", url, json=payload, timeout=httpx.Timeout(self.request_timeout, read=None)) as resp:
                 if resp.status_code >= 400:
                     body = await resp.aread()
                     fake = httpx.Response(
