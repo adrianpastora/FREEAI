@@ -26,14 +26,17 @@ def upgrade() -> None:
         "clients",
         sa.Column("user_id", sa.Integer, nullable=True),
     )
-    # Assign existing clients to user_id=1 (bootstrap admin)
+    # Assign existing clients to the bootstrap admin (created in 0013 if keys existed)
     conn = op.get_bind()
-    conn.execute(sa.text("""
-        UPDATE clients SET user_id = COALESCE(
-            (SELECT id FROM users WHERE role = 'admin' ORDER BY id LIMIT 1),
-            1
-        )
-    """))
+    admin_id = conn.execute(sa.text(
+        "SELECT id FROM users WHERE role = 'admin' ORDER BY id LIMIT 1"
+    )).scalar_one_or_none()
+    if admin_id is not None:
+        conn.execute(sa.text(
+            "UPDATE clients SET user_id = :uid WHERE user_id IS NULL"
+        ), {"uid": admin_id})
+    # Delete orphan clients that have no user (shouldn't happen, but be safe)
+    conn.execute(sa.text("DELETE FROM clients WHERE user_id IS NULL"))
     op.alter_column("clients", "user_id", nullable=False)
     op.create_foreign_key(
         "fk_clients_user_id", "clients", "users",
@@ -54,12 +57,11 @@ def upgrade() -> None:
         sa.Column("user_id", sa.Integer, nullable=True),
     )
     # Backfill existing events
-    conn.execute(sa.text("""
-        UPDATE rate_events SET user_id = COALESCE(
-            (SELECT id FROM users WHERE role = 'admin' ORDER BY id LIMIT 1),
-            1
-        )
-    """))
+    if admin_id is not None:
+        conn.execute(sa.text(
+            "UPDATE rate_events SET user_id = :uid WHERE user_id IS NULL"
+        ), {"uid": admin_id})
+    conn.execute(sa.text("DELETE FROM rate_events WHERE user_id IS NULL"))
     op.alter_column("rate_events", "user_id", nullable=False)
     # Replace old index with user-scoped one
     op.drop_index("ix_rate_events_provider_time", table_name="rate_events")
@@ -98,25 +100,23 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("user_id", "provider_name"),
     )
 
-    # Migrate existing data (assign to bootstrap admin)
-    conn.execute(sa.text("""
-        INSERT INTO provider_stats (
-            user_id, provider_name, healthy, consecutive_failures,
-            quarantined_until, last_error, last_error_kind, last_latency_ms,
-            latency_ema_ms, total_calls, total_failures,
-            tokens_today, tokens_day_start, updated_at
-        )
-        SELECT
-            COALESCE(
-                (SELECT id FROM users WHERE role = 'admin' ORDER BY id LIMIT 1),
-                1
-            ),
-            provider_name, healthy, consecutive_failures,
-            quarantined_until, last_error, last_error_kind, last_latency_ms,
-            latency_ema_ms, total_calls, total_failures,
-            tokens_today, tokens_day_start, updated_at
-        FROM provider_stats_old
-    """))
+    # Migrate existing data (assign to bootstrap admin if one exists)
+    if admin_id is not None:
+        conn.execute(sa.text("""
+            INSERT INTO provider_stats (
+                user_id, provider_name, healthy, consecutive_failures,
+                quarantined_until, last_error, last_error_kind, last_latency_ms,
+                latency_ema_ms, total_calls, total_failures,
+                tokens_today, tokens_day_start, updated_at
+            )
+            SELECT
+                :uid,
+                provider_name, healthy, consecutive_failures,
+                quarantined_until, last_error, last_error_kind, last_latency_ms,
+                latency_ema_ms, total_calls, total_failures,
+                tokens_today, tokens_day_start, updated_at
+            FROM provider_stats_old
+        """), {"uid": admin_id})
     op.drop_table("provider_stats_old")
 
     # ── 5. Rewrite plpgsql function with user_id parameter ──

@@ -60,24 +60,43 @@ def upgrade() -> None:
     )
 
     # ── Data migration ──
-    # Move existing provider API keys to user_providers for placeholder user_id=1.
-    # This works even if no user exists yet — the migrate-token wizard will
-    # create the admin user with id=1 and the FK will be satisfied.
-    # If users table already has rows (fresh setup), use the first admin.
+    # Move existing provider API keys to user_providers.
+    # If no admin user exists yet, create a placeholder one so the FK is satisfied.
+    # The migrate-token wizard will let the real admin claim this account.
     conn = op.get_bind()
-    conn.execute(sa.text("""
-        INSERT INTO user_providers (user_id, provider_name, api_key_encrypted, enabled,
-                                     rpm_limit, rpd_limit, tpd_limit, weight, default_model)
-        SELECT COALESCE(
-                   (SELECT id FROM users WHERE role = 'admin' ORDER BY id LIMIT 1),
-                   1
-               ),
-               p.name, p.api_key_encrypted, p.enabled,
-               p.rpm_limit, p.rpd_limit, p.tpd_limit, p.weight, p.default_model
-        FROM providers p
-        WHERE p.api_key_encrypted IS NOT NULL
-          AND p.api_key_encrypted != ''
-    """))
+
+    # Check if there are keys to migrate
+    has_keys = conn.execute(sa.text(
+        "SELECT 1 FROM providers WHERE api_key_encrypted IS NOT NULL AND api_key_encrypted != '' LIMIT 1"
+    )).scalar_one_or_none()
+
+    if has_keys:
+        # Ensure at least one user exists for the FK
+        admin_id = conn.execute(sa.text(
+            "SELECT id FROM users WHERE role = 'admin' ORDER BY id LIMIT 1"
+        )).scalar_one_or_none()
+
+        if admin_id is None:
+            # Create a placeholder admin — the migrate-token wizard will set real credentials
+            conn.execute(sa.text("""
+                INSERT INTO users (username, password_hash, role, max_clients, created_at, updated_at)
+                VALUES ('admin', '__placeholder_needs_migration__', 'admin', 5,
+                        EXTRACT(EPOCH FROM NOW()), EXTRACT(EPOCH FROM NOW()))
+            """))
+            admin_id = conn.execute(sa.text(
+                "SELECT id FROM users WHERE username = 'admin'"
+            )).scalar_one()
+
+        conn.execute(sa.text("""
+            INSERT INTO user_providers (user_id, provider_name, api_key_encrypted, enabled,
+                                         rpm_limit, rpd_limit, tpd_limit, weight, default_model)
+            SELECT :uid,
+                   p.name, p.api_key_encrypted, p.enabled,
+                   p.rpm_limit, p.rpd_limit, p.tpd_limit, p.weight, p.default_model
+            FROM providers p
+            WHERE p.api_key_encrypted IS NOT NULL
+              AND p.api_key_encrypted != ''
+        """), {"uid": admin_id})
 
     # Clear keys from the catalog (providers table becomes key-less)
     conn.execute(sa.text("""
