@@ -173,6 +173,9 @@ document.getElementById("loginSubmit").addEventListener("click", async () => {
   }
 });
 
+document.getElementById("loginUsername").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") document.getElementById("loginPassword").focus();
+});
 document.getElementById("loginPassword").addEventListener("keydown", (e) => {
   if (e.key === "Enter") document.getElementById("loginSubmit").click();
 });
