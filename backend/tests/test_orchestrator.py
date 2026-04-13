@@ -48,20 +48,37 @@ def _make_error(provider: str, kind: ErrorKind, message: str = "boom") -> Provid
 
 
 async def _setup_two_providers(session, primary_provider, secondary_provider):
-    """Insert two providers + seed strategies, return an orchestrator that
-    builds them as our fakes via a patched _build_provider."""
+    """Insert two providers + seed strategies + admin user + user_providers,
+    return an orchestrator that builds them as our fakes via a patched _build_provider."""
+    from app.auth import hash_password
+    from app.repositories.user_repo import UserRepository
+    from app.repositories.user_provider_repo import UserProviderRepository
+
     config_repo = ConfigRepository(session)
     strategy_repo = StrategyRepository(session)
+    # Seed catalog providers (without keys — keys go in user_providers)
     await config_repo.upsert_provider(ProviderConfigDTO(
-        name="primary", api_key="x", enabled=True,
+        name="primary", enabled=True,
         tags=["fast", "coding"], rpm_limit=100, rpd_limit=1000, weight=1.0,
     ))
     await config_repo.upsert_provider(ProviderConfigDTO(
-        name="secondary", api_key="x", enabled=True,
+        name="secondary", enabled=True,
         tags=["fast", "coding"], rpm_limit=100, rpd_limit=1000, weight=0.5,
     ))
     await config_repo.get_app_config()
     await strategy_repo.seed_builtins_if_missing()
+
+    # Create admin user
+    user_repo = UserRepository(session)
+    if await user_repo.count() == 0:
+        await user_repo.create("testadmin", hash_password("testpass"), role="admin")
+
+    # Create user_providers
+    up_repo = UserProviderRepository(session)
+    await up_repo.upsert(1, "primary", api_key="x", enabled=True,
+                          rpm_limit=100, rpd_limit=1000, weight=1.0)
+    await up_repo.upsert(1, "secondary", api_key="x", enabled=True,
+                          rpm_limit=100, rpd_limit=1000, weight=0.5)
     await session.commit()
 
     orch = Orchestrator()
@@ -71,12 +88,15 @@ async def _setup_two_providers(session, primary_provider, secondary_provider):
 
 
 async def _run_chat(orch, session, req):
+    from app.repositories.user_provider_repo import UserProviderRepository
     return await orch.chat(
         req,
-        ConfigRepository(session),
-        RateRepository(session),
-        UsageRepository(session),
-        StrategyRepository(session),
+        user_id=1,
+        user_provider_repo=UserProviderRepository(session),
+        config_repo=ConfigRepository(session),
+        rate_repo=RateRepository(session),
+        usage_repo=UsageRepository(session),
+        strategy_repo=StrategyRepository(session),
     )
 
 

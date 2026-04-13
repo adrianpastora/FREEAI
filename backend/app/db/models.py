@@ -61,15 +61,15 @@ class ProviderConfigRow(Base):
         Float, default=time.time, onupdate=time.time, nullable=False
     )
 
-    stats: Mapped[Optional["ProviderStatsRow"]] = relationship(
-        back_populates="provider", uselist=False, cascade="all, delete-orphan"
-    )
+    # stats relationship removed — provider_stats now has composite PK
+    # (user_id, provider_name); queried directly with user_id filter.
 
 
 class ProviderStatsRow(Base):
-    """Rolling per-provider state. Updated on every call commit/reset."""
+    """Rolling per-user-provider state. Updated on every call commit/reset."""
     __tablename__ = "provider_stats"
 
+    user_id: Mapped[int] = mapped_column(Integer, primary_key=True)
     provider_name: Mapped[str] = mapped_column(
         String(64), ForeignKey("providers.name", ondelete="CASCADE"), primary_key=True
     )
@@ -88,7 +88,8 @@ class ProviderStatsRow(Base):
         Float, default=time.time, onupdate=time.time, nullable=False
     )
 
-    provider: Mapped[ProviderConfigRow] = relationship(back_populates="stats")
+    # Relationship removed — composite PK (user_id, provider_name) breaks
+    # the simple backpopulate. Stats are now queried directly with user_id.
 
 
 class RateEventRow(Base):
@@ -100,10 +101,11 @@ class RateEventRow(Base):
     __tablename__ = "rate_events"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False)
     provider_name: Mapped[str] = mapped_column(
-        String(64), ForeignKey("providers.name", ondelete="CASCADE"), nullable=False, index=True
+        String(64), ForeignKey("providers.name", ondelete="CASCADE"), nullable=False,
     )
-    occurred_at: Mapped[float] = mapped_column(Float, nullable=False, index=True)
+    occurred_at: Mapped[float] = mapped_column(Float, nullable=False)
 
 
 class ClientRow(Base):
@@ -111,6 +113,9 @@ class ClientRow(Base):
     __tablename__ = "clients"
 
     key_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     rpm_limit: Mapped[int] = mapped_column(Integer, default=60, nullable=False)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
@@ -151,7 +156,60 @@ class UsageEventRow(Base):
     completion_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     fallback_position: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     client_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    user_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     ttfb_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+
+class UserRow(Base):
+    """Registered user account."""
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    username: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    password_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    role: Mapped[str] = mapped_column(String(16), default="user", nullable=False)
+    max_clients: Mapped[int] = mapped_column(Integer, default=5, nullable=False)
+    created_at: Mapped[float] = mapped_column(Float, default=time.time, nullable=False)
+    updated_at: Mapped[float] = mapped_column(
+        Float, default=time.time, onupdate=time.time, nullable=False
+    )
+
+
+class RefreshTokenRow(Base):
+    """JWT refresh tokens — hash stored, raw given to client once."""
+    __tablename__ = "refresh_tokens"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    expires_at: Mapped[float] = mapped_column(Float, nullable=False)
+    created_at: Mapped[float] = mapped_column(Float, default=time.time, nullable=False)
+
+
+class UserProviderRow(Base):
+    """Per-user provider credentials. Overrides catalog defaults."""
+    __tablename__ = "user_providers"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    provider_name: Mapped[str] = mapped_column(
+        String(64), ForeignKey("providers.name", ondelete="CASCADE"), nullable=False
+    )
+    api_key_encrypted: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    rpm_limit: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    rpd_limit: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    tpd_limit: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    weight: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    default_model: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    created_at: Mapped[float] = mapped_column(Float, default=time.time, nullable=False)
+    updated_at: Mapped[float] = mapped_column(
+        Float, default=time.time, onupdate=time.time, nullable=False
+    )
 
 
 class StrategyRow(Base):

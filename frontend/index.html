@@ -89,8 +89,12 @@
       <span class="ribbon__index">05</span>
       <span class="ribbon__label">Analytics</span>
     </div>
-    <div class="ribbon__item" data-tab="api">
+    <div class="ribbon__item" data-tab="users" id="usersTab" style="display:none">
       <span class="ribbon__index">06</span>
+      <span class="ribbon__label">Users</span>
+    </div>
+    <div class="ribbon__item" data-tab="api">
+      <span class="ribbon__index">07</span>
       <span class="ribbon__label">API&nbsp;Docs</span>
     </div>
   </div>
@@ -103,7 +107,7 @@
   </button>
 </nav>
 
-<!-- ───────── ADMIN AUTH MODAL ───────── -->
+<!-- ───────── LOGIN MODAL ───────── -->
 <div class="modal" id="adminModal" hidden>
   <div class="modal__backdrop"></div>
   <div class="modal__card">
@@ -111,13 +115,36 @@
     <div class="modal__corner modal__corner--tr">┐</div>
     <div class="modal__corner modal__corner--bl">└</div>
     <div class="modal__corner modal__corner--br">┘</div>
-    <h3>ACCESO&nbsp;ADMINISTRADOR</h3>
-    <p>Introduce tu contraseña de administrador para gestionar proveedores, estrategias y clientes.</p>
-    <input type="password" id="adminTokenInput" placeholder="contraseña" />
+    <h3 id="loginTitle">INICIAR&nbsp;SESION</h3>
+    <p id="loginSubtitle">Introduce tus credenciales para acceder al panel de control.</p>
+    <input type="text" id="loginUsername" placeholder="usuario" autocomplete="username" />
+    <input type="password" id="loginPassword" placeholder="contraseña" autocomplete="current-password" />
+    <div id="loginError" style="color:#ff4444;font-size:.85rem;margin-top:.5rem;display:none"></div>
     <div class="modal__actions">
-      <button class="primary-button" id="adminTokenSave">ENTRAR</button>
+      <button class="primary-button" id="loginSubmit">ENTRAR</button>
     </div>
-    <p class="modal__hint">Se guarda en tu navegador. Haz clic en el candado (arriba a la derecha) para cerrar sesión.</p>
+    <p class="modal__hint">Se guarda en tu navegador. Haz clic en el candado para cerrar sesion.</p>
+  </div>
+</div>
+
+<!-- ───────── MIGRATION MODAL (legacy admin token → user) ───────── -->
+<div class="modal" id="migrateModal" hidden>
+  <div class="modal__backdrop"></div>
+  <div class="modal__card modal__card--wide">
+    <div class="modal__corner modal__corner--tl">┌</div>
+    <div class="modal__corner modal__corner--tr">┐</div>
+    <div class="modal__corner modal__corner--bl">└</div>
+    <div class="modal__corner modal__corner--br">┘</div>
+    <h3>MIGRACION A MULTI-USUARIO</h3>
+    <p>El sistema se ha actualizado. Introduce tu token de admin actual y elige un usuario y contraseña nuevos.</p>
+    <input type="password" id="migrateOldToken" placeholder="token admin actual" />
+    <input type="text" id="migrateUsername" placeholder="nuevo usuario" autocomplete="username" />
+    <input type="password" id="migratePassword" placeholder="nueva contraseña (min 8 chars)" autocomplete="new-password" />
+    <input type="password" id="migratePassword2" placeholder="confirmar contraseña" autocomplete="new-password" />
+    <div id="migrateError" style="color:#ff4444;font-size:.85rem;margin-top:.5rem;display:none"></div>
+    <div class="modal__actions">
+      <button class="primary-button" id="migrateSubmit">MIGRAR</button>
+    </div>
   </div>
 </div>
 
@@ -512,6 +539,26 @@
     <div class="client-flash" id="clientFlash" hidden></div>
 
     <div class="client-list" id="clientList"></div>
+  </section>
+
+  <!-- ───────── USERS (admin only) ───────── -->
+  <section class="panel" data-panel="users" style="display:none">
+    <div class="panel__head">
+      <div class="panel__head-left">
+        <div class="ascii-arrow">└──▶</div>
+        <h2 class="panel__title">USER&nbsp;MANAGEMENT</h2>
+      </div>
+      <button class="refresh-button" id="refreshUsers">REFRESH</button>
+    </div>
+    <p class="panel__lede">Manage user accounts (max 5). Each user has their own provider keys and API clients.</p>
+
+    <div class="form-row" style="margin-bottom:1rem">
+      <input type="text" id="newUsername" placeholder="username" style="width:10rem" />
+      <input type="password" id="newPassword" placeholder="password (min 8)" style="width:12rem" />
+      <button class="primary-button" id="userCreate">ADD USER</button>
+    </div>
+
+    <div id="userList"></div>
   </section>
 
   <!-- ───────── API ───────── -->

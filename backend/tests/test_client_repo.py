@@ -16,7 +16,7 @@ async def test_no_clients_initially(session):
 @pytest.mark.asyncio
 async def test_create_and_find(session):
     repo = ClientRepository(session)
-    client, raw = await repo.create("test", rpm_limit=10)
+    client, raw = await repo.create("test", user_id=1, rpm_limit=10)
     await session.commit()
 
     found = await repo.find_by_raw_key(raw)
@@ -33,7 +33,7 @@ async def test_raw_key_not_in_db(session):
     from app.db.models import ClientRow
 
     repo = ClientRepository(session)
-    _, raw = await repo.create("test", rpm_limit=10)
+    _, raw = await repo.create("test", user_id=1, rpm_limit=10)
     await session.commit()
 
     result = await session.execute(select(ClientRow))
@@ -46,7 +46,7 @@ async def test_raw_key_not_in_db(session):
 @pytest.mark.asyncio
 async def test_revoke(session):
     repo = ClientRepository(session)
-    client, raw = await repo.create("doomed", rpm_limit=10)
+    client, raw = await repo.create("doomed", user_id=1, rpm_limit=10)
     await session.commit()
 
     assert await repo.find_by_raw_key(raw) is not None

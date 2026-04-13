@@ -46,6 +46,7 @@ from .repositories import (
     UsageEvent,
     UsageRepository,
 )
+from .repositories.user_provider_repo import UserProviderDTO, UserProviderRepository
 from .schemas import (
     ChatCompletionRequest,
     ChatCompletionResponse,
@@ -144,6 +145,21 @@ class Orchestrator:
 
     # ──────────────── candidate selection ────────────────
 
+    @staticmethod
+    def _user_provider_to_config(dto: UserProviderDTO) -> ProviderConfigDTO:
+        """Convert a UserProviderDTO to a ProviderConfigDTO for scoring."""
+        return ProviderConfigDTO(
+            name=dto.provider_name,
+            enabled=dto.enabled,
+            api_key=dto.api_key,
+            rpm_limit=dto.rpm_limit,
+            rpd_limit=dto.rpd_limit,
+            tpd_limit=dto.tpd_limit,
+            weight=dto.weight,
+            tags=dto.tags,
+            default_model=dto.default_model,
+        )
+
     def _build_provider(self, dto: ProviderConfigDTO) -> Optional[BaseProvider]:
         cls = PROVIDER_REGISTRY.get(dto.name)
         if not cls:
@@ -241,23 +257,26 @@ class Orchestrator:
 
     async def _rank(
         self,
-        config_repo: ConfigRepository,
+        user_id: int,
+        user_provider_repo: UserProviderRepository,
         rate_repo: RateRepository,
         definition: Optional[Definition],
         preferred: Optional[str],
-        usage_repo: Optional[UsageRepository] = None,
     ) -> list[_Candidate]:
-        providers = await config_repo.list_providers()
-        eligible = [dto for dto in providers if dto.enabled and dto.api_key]
+        user_providers = await user_provider_repo.list_for_user(user_id)
+        eligible = [dto for dto in user_providers if dto.enabled and dto.api_key]
         if not eligible:
             return []
+        # Convert UserProviderDTO to ProviderConfigDTO for scoring compatibility
+        provider_dtos = [self._user_provider_to_config(dto) for dto in eligible]
         snapshots = await rate_repo.snapshot_all(
-            [dto.name for dto in eligible],
+            user_id,
+            [dto.name for dto in provider_dtos],
             counter_store=self._counter_store,
         )
 
         candidates: list[_Candidate] = []
-        for dto in eligible:
+        for dto in provider_dtos:
             snap = snapshots.get(dto.name)
             if not snap or not snap.healthy:
                 continue
@@ -318,6 +337,7 @@ class Orchestrator:
         strategy: str,
         fallback_position: int,
         client_hash: Optional[str],
+        user_id: Optional[int] = None,
     ) -> None:
         """Record the outcome of a provider attempt. Never raises — a DB
         error during commit must not mask a successful provider response."""
@@ -327,7 +347,7 @@ class Orchestrator:
         try:
             await self._commit_attempt_inner(
                 rate_repo, usage_repo, reservation, result,
-                strategy, fallback_position, client_hash,
+                strategy, fallback_position, client_hash, user_id,
             )
         except Exception:  # noqa: BLE001
             log.error(
@@ -345,6 +365,7 @@ class Orchestrator:
         strategy: str,
         fallback_position: int,
         client_hash: Optional[str],
+        user_id: Optional[int] = None,
     ) -> None:
         outcome: str
         if result.response is not None:
@@ -366,6 +387,7 @@ class Orchestrator:
                     completion_tokens=result.response.completion_tokens,
                     fallback_position=fallback_position,
                     client_hash=client_hash,
+                    user_id=user_id,
                 )
             )
             return
@@ -394,6 +416,7 @@ class Orchestrator:
                 latency_ms=result.latency_ms,
                 fallback_position=fallback_position,
                 client_hash=client_hash,
+                user_id=user_id,
             )
         )
 
@@ -402,6 +425,8 @@ class Orchestrator:
     async def chat(
         self,
         req: ChatCompletionRequest,
+        user_id: int,
+        user_provider_repo: UserProviderRepository,
         config_repo: ConfigRepository,
         rate_repo: RateRepository,
         usage_repo: UsageRepository,
@@ -421,7 +446,7 @@ class Orchestrator:
                 has_vision=signal.has_vision,
             )
 
-        candidates = await self._rank(config_repo, rate_repo, definition, req.preferred_provider, usage_repo)
+        candidates = await self._rank(user_id, user_provider_repo, rate_repo, definition, req.preferred_provider)
         if not candidates:
             raise ProviderError(
                 "orchestrator",
@@ -451,12 +476,12 @@ class Orchestrator:
 
         for cand in attempts:
             reservation = await rate_repo.try_reserve(
-                cand.name, cand.config.rpm_limit, cand.config.rpd_limit
+                user_id, cand.name, cand.config.rpm_limit, cand.config.rpd_limit
             )
             if reservation is None:
                 log.info("provider over capacity, skipping", provider=cand.name)
                 continue
-            self._counter_store.record(cand.name)
+            self._counter_store.record(user_id, cand.name)
 
             if fallback_chain:
                 orchestrator_fallbacks_total.labels(
@@ -480,6 +505,7 @@ class Orchestrator:
                 strategy=strategy,
                 fallback_position=len(fallback_chain),
                 client_hash=client_hash,
+                user_id=user_id,
             )
 
             if result.response is not None:
@@ -536,6 +562,8 @@ class Orchestrator:
     async def stream(
         self,
         req: ChatCompletionRequest,
+        user_id: int,
+        user_provider_repo: UserProviderRepository,
         config_repo: ConfigRepository,
         rate_repo: RateRepository,
         usage_repo: UsageRepository,
@@ -544,7 +572,7 @@ class Orchestrator:
     ) -> AsyncIterator[dict]:
         app_cfg = await config_repo.get_app_config()
         strategy, definition, _, virtual_model_id, provider_model = await self._resolve_strategy(req, strategy_repo)
-        candidates = await self._rank(config_repo, rate_repo, definition, req.preferred_provider, usage_repo)
+        candidates = await self._rank(user_id, user_provider_repo, rate_repo, definition, req.preferred_provider)
         if not candidates:
             raise ProviderError(
                 "orchestrator",
@@ -577,11 +605,11 @@ class Orchestrator:
             if not cand.provider.supports_streaming:
                 continue
             reservation = await rate_repo.try_reserve(
-                cand.name, cand.config.rpm_limit, cand.config.rpd_limit
+                user_id, cand.name, cand.config.rpm_limit, cand.config.rpd_limit
             )
             if reservation is None:
                 continue
-            self._counter_store.record(cand.name)
+            self._counter_store.record(user_id, cand.name)
             fallback_position += 1
             self._in_flight[cand.name] = self._in_flight.get(cand.name, 0) + 1
 
@@ -639,6 +667,7 @@ class Orchestrator:
                         ttfb_ms=ttfb_ms,
                         fallback_position=fallback_position,
                         client_hash=client_hash,
+                        user_id=user_id,
                     )
                 )
                 self._dec_in_flight(cand.name)
@@ -665,6 +694,7 @@ class Orchestrator:
                         latency_ms=latency_ms,
                         fallback_position=fallback_position,
                         client_hash=client_hash,
+                        user_id=user_id,
                     )
                 )
                 last_error = e

@@ -5,6 +5,8 @@ from .config_repo import ConfigRepository, ProviderConfigDTO
 from .rate_repo import RateRepository, ReservationToken
 from .strategy_repo import StrategyDTO, StrategyRepository
 from .usage_repo import AnalyticsSummary, UsageEvent, UsageRepository
+from .user_provider_repo import UserProviderDTO, UserProviderRepository
+from .user_repo import RefreshTokenRepository, UserDTO, UserRepository
 
 __all__ = [
     "ClientRateRepository",
@@ -13,10 +15,15 @@ __all__ = [
     "ConfigRepository",
     "ProviderConfigDTO",
     "RateRepository",
+    "RefreshTokenRepository",
     "ReservationToken",
     "StrategyDTO",
     "StrategyRepository",
     "UsageEvent",
     "UsageRepository",
+    "UserDTO",
+    "UserProviderDTO",
+    "UserProviderRepository",
+    "UserRepository",
     "AnalyticsSummary",
 ]

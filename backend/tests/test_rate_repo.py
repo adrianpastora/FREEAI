@@ -14,10 +14,10 @@ from app.repositories import ConfigRepository, RateRepository
 @pytest.mark.asyncio
 async def test_try_reserve_seeds_stats_row(seeded_session):
     rate = RateRepository(seeded_session)
-    res = await rate.try_reserve("groq", rpm_limit=5, rpd_limit=100)
+    res = await rate.try_reserve(1, "groq", rpm_limit=5, rpd_limit=100)
     await seeded_session.commit()
     assert res is not None
-    snap = await rate.snapshot("groq")
+    snap = await rate.snapshot(1, "groq")
     assert snap.requests_this_minute == 1
     assert snap.requests_today == 1
 
@@ -26,9 +26,9 @@ async def test_try_reserve_seeds_stats_row(seeded_session):
 async def test_try_reserve_blocks_when_rpm_exhausted(seeded_session):
     rate = RateRepository(seeded_session)
     for _ in range(3):
-        assert await rate.try_reserve("groq", rpm_limit=3, rpd_limit=100) is not None
+        assert await rate.try_reserve(1, "groq", rpm_limit=3, rpd_limit=100) is not None
         await seeded_session.commit()
-    blocked = await rate.try_reserve("groq", rpm_limit=3, rpd_limit=100)
+    blocked = await rate.try_reserve(1, "groq", rpm_limit=3, rpd_limit=100)
     assert blocked is None
 
 
@@ -36,22 +36,22 @@ async def test_try_reserve_blocks_when_rpm_exhausted(seeded_session):
 async def test_try_reserve_blocks_when_rpd_exhausted(seeded_session):
     rate = RateRepository(seeded_session)
     for _ in range(2):
-        assert await rate.try_reserve("groq", rpm_limit=100, rpd_limit=2) is not None
+        assert await rate.try_reserve(1, "groq", rpm_limit=100, rpd_limit=2) is not None
         await seeded_session.commit()
-    assert await rate.try_reserve("groq", rpm_limit=100, rpd_limit=2) is None
+    assert await rate.try_reserve(1, "groq", rpm_limit=100, rpd_limit=2) is None
 
 
 @pytest.mark.asyncio
 async def test_rollback_releases_slot(seeded_session):
     rate = RateRepository(seeded_session)
-    res = await rate.try_reserve("groq", rpm_limit=1, rpd_limit=100)
+    res = await rate.try_reserve(1, "groq", rpm_limit=1, rpd_limit=100)
     await seeded_session.commit()
     assert res is not None
-    blocked = await rate.try_reserve("groq", rpm_limit=1, rpd_limit=100)
+    blocked = await rate.try_reserve(1, "groq", rpm_limit=1, rpd_limit=100)
     assert blocked is None
     await rate.rollback(res)
     await seeded_session.commit()
-    granted = await rate.try_reserve("groq", rpm_limit=1, rpd_limit=100)
+    granted = await rate.try_reserve(1, "groq", rpm_limit=1, rpd_limit=100)
     assert granted is not None
 
 
@@ -60,10 +60,10 @@ async def test_rate_limited_does_not_quarantine(seeded_session):
     """429 must be treated as benign — provider stays healthy."""
     rate = RateRepository(seeded_session)
     for _ in range(5):
-        res = await rate.try_reserve("groq", rpm_limit=10, rpd_limit=100)
+        res = await rate.try_reserve(1, "groq", rpm_limit=10, rpd_limit=100)
         await rate.commit(res, latency_ms=50, ok=False, error="429", error_kind="rate_limited")
         await seeded_session.commit()
-    snap = await rate.snapshot("groq")
+    snap = await rate.snapshot(1, "groq")
     assert snap.healthy is True
 
 
@@ -71,10 +71,10 @@ async def test_rate_limited_does_not_quarantine(seeded_session):
 async def test_server_error_quarantines_after_three_failures(seeded_session):
     rate = RateRepository(seeded_session)
     for _ in range(3):
-        res = await rate.try_reserve("groq", rpm_limit=10, rpd_limit=100)
+        res = await rate.try_reserve(1, "groq", rpm_limit=10, rpd_limit=100)
         await rate.commit(res, latency_ms=50, ok=False, error="500", error_kind="server_error")
         await seeded_session.commit()
-    snap = await rate.snapshot("groq")
+    snap = await rate.snapshot(1, "groq")
     assert snap.healthy is False
 
 
@@ -82,30 +82,30 @@ async def test_server_error_quarantines_after_three_failures(seeded_session):
 async def test_quarantine_lifts_after_window(seeded_session):
     rate = RateRepository(seeded_session)
     for _ in range(3):
-        res = await rate.try_reserve("groq", rpm_limit=10, rpd_limit=100)
+        res = await rate.try_reserve(1, "groq", rpm_limit=10, rpd_limit=100)
         await rate.commit(res, latency_ms=50, ok=False, error="boom", error_kind="server_error")
         await seeded_session.commit()
     # Force-expire the quarantine window
     await seeded_session.execute(
         update(ProviderStatsRow)
-        .where(ProviderStatsRow.provider_name == "groq")
+        .where(ProviderStatsRow.user_id == 1, ProviderStatsRow.provider_name == "groq")
         .values(quarantined_until=time.time() - 1)
     )
     await seeded_session.commit()
-    granted = await rate.try_reserve("groq", rpm_limit=10, rpd_limit=100)
+    granted = await rate.try_reserve(1, "groq", rpm_limit=10, rpd_limit=100)
     assert granted is not None
 
 
 @pytest.mark.asyncio
 async def test_success_after_failures_clears_health(seeded_session):
     rate = RateRepository(seeded_session)
-    res = await rate.try_reserve("groq", rpm_limit=10, rpd_limit=100)
+    res = await rate.try_reserve(1, "groq", rpm_limit=10, rpd_limit=100)
     await rate.commit(res, latency_ms=50, ok=False, error="boom", error_kind="server_error")
     await seeded_session.commit()
-    res = await rate.try_reserve("groq", rpm_limit=10, rpd_limit=100)
+    res = await rate.try_reserve(1, "groq", rpm_limit=10, rpd_limit=100)
     await rate.commit(res, latency_ms=50, ok=True)
     await seeded_session.commit()
-    snap = await rate.snapshot("groq")
+    snap = await rate.snapshot(1, "groq")
     assert snap.healthy is True
 
 
@@ -118,22 +118,22 @@ async def test_snapshot_reports_healthy_after_quarantine_expires(seeded_session)
     rate = RateRepository(seeded_session)
     # Trip the streak
     for _ in range(3):
-        res = await rate.try_reserve("groq", rpm_limit=10, rpd_limit=100)
+        res = await rate.try_reserve(1, "groq", rpm_limit=10, rpd_limit=100)
         await rate.commit(res, latency_ms=50, ok=False, error="boom", error_kind="server_error")
         await seeded_session.commit()
     # Confirm the snapshot shows unhealthy while the window is active
-    assert (await rate.snapshot("groq")).healthy is False
+    assert (await rate.snapshot(1, "groq")).healthy is False
 
     # Fast-forward: force quarantined_until into the past
     await seeded_session.execute(
         update(ProviderStatsRow)
-        .where(ProviderStatsRow.provider_name == "groq")
+        .where(ProviderStatsRow.user_id == 1, ProviderStatsRow.provider_name == "groq")
         .values(quarantined_until=time.time() - 1)
     )
     await seeded_session.commit()
 
     # Snapshot must now report healthy=True — the window has elapsed
-    snap = await rate.snapshot("groq")
+    snap = await rate.snapshot(1, "groq")
     assert snap.healthy is True
     assert snap.quarantined_until is None
 
@@ -147,19 +147,19 @@ async def test_success_commit_clears_quarantine_field(seeded_session):
     rate = RateRepository(seeded_session)
     # Trip the streak
     for _ in range(3):
-        res = await rate.try_reserve("groq", rpm_limit=10, rpd_limit=100)
+        res = await rate.try_reserve(1, "groq", rpm_limit=10, rpd_limit=100)
         await rate.commit(res, latency_ms=50, ok=False, error="x", error_kind="server_error")
         await seeded_session.commit()
     # Expire quarantine manually so try_reserve can proceed
     await seeded_session.execute(
         update(ProviderStatsRow)
-        .where(ProviderStatsRow.provider_name == "groq")
+        .where(ProviderStatsRow.user_id == 1, ProviderStatsRow.provider_name == "groq")
         .values(quarantined_until=time.time() - 1)
     )
     await seeded_session.commit()
 
     # One successful call
-    res = await rate.try_reserve("groq", rpm_limit=10, rpd_limit=100)
+    res = await rate.try_reserve(1, "groq", rpm_limit=10, rpd_limit=100)
     await rate.commit(res, latency_ms=50, ok=True)
     await seeded_session.commit()
 
@@ -180,24 +180,24 @@ async def test_try_reserve_heals_unhealthy_provider(seeded_session):
     # already expired. Before 0003 the plpgsql function early-returned NULL.
     await seeded_session.execute(
         update(ProviderStatsRow)
-        .where(ProviderStatsRow.provider_name == "groq")
+        .where(ProviderStatsRow.user_id == 1, ProviderStatsRow.provider_name == "groq")
         .values(healthy=False, quarantined_until=time.time() - 1, consecutive_failures=5)
     )
     # Touch provider_stats into existence first (only works if a prior call
     # seeded it)
-    res_seed = await rate.try_reserve("groq", rpm_limit=10, rpd_limit=100)
+    res_seed = await rate.try_reserve(1, "groq", rpm_limit=10, rpd_limit=100)
     assert res_seed is not None
     await seeded_session.commit()
     # Now set it to the bad state
     await seeded_session.execute(
         update(ProviderStatsRow)
-        .where(ProviderStatsRow.provider_name == "groq")
+        .where(ProviderStatsRow.user_id == 1, ProviderStatsRow.provider_name == "groq")
         .values(healthy=False, quarantined_until=time.time() - 1, consecutive_failures=5)
     )
     await seeded_session.commit()
 
     # try_reserve must heal the row AND grant the reservation
-    granted = await rate.try_reserve("groq", rpm_limit=10, rpd_limit=100)
+    granted = await rate.try_reserve(1, "groq", rpm_limit=10, rpd_limit=100)
     assert granted is not None
     await seeded_session.commit()
 
@@ -221,7 +221,7 @@ async def test_concurrent_reservations_respect_limit(sessionmaker):
     async def try_one():
         async with sessionmaker() as s:
             rate = RateRepository(s)
-            r = await rate.try_reserve("groq", rpm_limit=LIMIT, rpd_limit=10_000)
+            r = await rate.try_reserve(1, "groq", rpm_limit=LIMIT, rpd_limit=10_000)
             await s.commit()
             return r
 

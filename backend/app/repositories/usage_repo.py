@@ -22,6 +22,7 @@ class UsageEvent:
     completion_tokens: int = 0
     fallback_position: int = 1
     client_hash: Optional[str] = None
+    user_id: Optional[int] = None
     ttfb_ms: Optional[int] = None
 
 
@@ -59,6 +60,7 @@ class UsageRepository:
                 completion_tokens=event.completion_tokens,
                 fallback_position=event.fallback_position,
                 client_hash=event.client_hash,
+                user_id=event.user_id,
                 ttfb_ms=event.ttfb_ms,
             )
         )

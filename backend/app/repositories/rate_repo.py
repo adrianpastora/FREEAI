@@ -1,13 +1,7 @@
 """Rate repository — atomic reservation backed by Postgres.
 
-Uses the `freeai_try_reserve(name, rpm, rpd)` plpgsql function created in
-migration 0001. The function does the count + insert in one statement under
-row locks, so multiple pods reserving against the same provider see consistent
-counters.
-
-Reservation is committed (no-op for the counters — they were already incremented
-at reserve time) or rolled back (deletes the rate_event row) by the orchestrator
-once the HTTP call comes back.
+Uses the `freeai_try_reserve(user_id, name, rpm, rpd)` plpgsql function.
+All operations are scoped to a specific user_id for multi-user isolation.
 """
 from __future__ import annotations
 
@@ -28,6 +22,7 @@ _BENIGN_ERRORS = {"rate_limited", "client_error"}
 @dataclass
 class ReservationToken:
     event_id: int
+    user_id: int
     provider: str
     timestamp: float
 
@@ -55,6 +50,7 @@ class RateRepository:
 
     async def try_reserve(
         self,
+        user_id: int,
         provider: str,
         rpm_limit: Optional[int],
         rpd_limit: Optional[int],
@@ -62,7 +58,8 @@ class RateRepository:
         """Atomically check capacity and insert a rate event. Returns None if
         the provider is at capacity / quarantined."""
         result = await self.session.execute(
-            text("SELECT freeai_try_reserve(:p, :rpm, :rpd)").bindparams(
+            text("SELECT freeai_try_reserve(:uid, :p, :rpm, :rpd)").bindparams(
+                bindparam("uid", value=user_id),
                 bindparam("p", value=provider),
                 bindparam("rpm", value=rpm_limit),
                 bindparam("rpd", value=rpd_limit),
@@ -71,7 +68,10 @@ class RateRepository:
         event_id = result.scalar_one_or_none()
         if event_id is None:
             return None
-        return ReservationToken(event_id=event_id, provider=provider, timestamp=time.time())
+        return ReservationToken(
+            event_id=event_id, user_id=user_id,
+            provider=provider, timestamp=time.time(),
+        )
 
     async def commit(
         self,
@@ -84,26 +84,24 @@ class RateRepository:
         prompt_tokens: int = 0,
         completion_tokens: int = 0,
     ) -> None:
-        # Update stats row (always exists — try_reserve created it)
-        if ok:
-            # A successful call fully heals the provider: clear the streak,
-            # mark healthy, AND clear any lingering quarantine timestamp so
-            # snapshot() doesn't have to reason about "expired but not cleared".
+        uid = reservation.user_id
+        pname = reservation.provider
+        pk_filter = (
+            (ProviderStatsRow.user_id == uid)
+            & (ProviderStatsRow.provider_name == pname)
+        )
 
-            # EMA and token counter computed atomically in SQL to avoid
-            # read-then-write races under concurrent requests.
+        if ok:
             _EMA_ALPHA = 0.3
             now = time.time()
             tokens_added = prompt_tokens + completion_tokens
 
-            # EMA: COALESCE handles NULL (first call) → seed with current latency
             ema_col = ProviderStatsRow.latency_ema_ms
             new_ema = case(
                 (ema_col.is_(None), float(latency_ms)),
                 else_=_EMA_ALPHA * latency_ms + (1 - _EMA_ALPHA) * ema_col,
             )
 
-            # Token counter: reset when day rolled over (day_start + 86400 < now)
             day_col = ProviderStatsRow.tokens_day_start
             tok_col = ProviderStatsRow.tokens_today
             day_rolled = (now - day_col) >= 86400
@@ -118,7 +116,7 @@ class RateRepository:
 
             await self.session.execute(
                 update(ProviderStatsRow)
-                .where(ProviderStatsRow.provider_name == reservation.provider)
+                .where(pk_filter)
                 .values(
                     last_latency_ms=latency_ms,
                     latency_ema_ms=new_ema,
@@ -147,20 +145,19 @@ class RateRepository:
                 "total_failures": ProviderStatsRow.total_failures + 1,
             }
             if new_quarantine is not None:
-                # don't lower an existing longer quarantine
                 values["quarantined_until"] = func_greatest(
                     ProviderStatsRow.quarantined_until, new_quarantine
                 )
             await self.session.execute(
-                update(ProviderStatsRow)
-                .where(ProviderStatsRow.provider_name == reservation.provider)
-                .values(**values)
+                update(ProviderStatsRow).where(pk_filter).values(**values)
             )
             return
 
-        # non-benign failure — increment streak, possibly quarantine
-        # Pull current streak/quarantine to decide backoff
-        row = await self.session.get(ProviderStatsRow, reservation.provider)
+        # non-benign failure
+        result = await self.session.execute(
+            select(ProviderStatsRow).where(pk_filter)
+        )
+        row = result.scalar_one_or_none()
         new_streak = (row.consecutive_failures if row else 0) + 1
         values = {
             "last_latency_ms": latency_ms,
@@ -177,111 +174,78 @@ class RateRepository:
             if current_quarantine <= now:
                 values["quarantined_until"] = now + 30
             else:
-                # double the existing window, capped at 10 min
                 extra = min(600, max(60, (current_quarantine - now) * 2))
                 values["quarantined_until"] = now + extra
 
         await self.session.execute(
-            update(ProviderStatsRow)
-            .where(ProviderStatsRow.provider_name == reservation.provider)
-            .values(**values)
+            update(ProviderStatsRow).where(pk_filter).values(**values)
         )
 
     async def rollback(self, reservation: ReservationToken) -> None:
-        """Release a reservation we never used. Deletes the rate_event row."""
         await self.session.execute(
             delete(RateEventRow).where(RateEventRow.id == reservation.event_id)
         )
 
     # ──────────────── reads ────────────────
 
-    async def snapshot(self, provider: str) -> ProviderSnapshot:
-        """Read-only view of a provider's current state.
-
-        `healthy` in the returned snapshot means "usable for the next request".
-        We derive it from two inputs:
-          - the stored `healthy` flag (flipped to false after a streak of 3+
-            non-benign failures)
-          - the `quarantined_until` timestamp (epoch)
-
-        A provider becomes usable again when its quarantine window has elapsed.
-        The previous version tried to compute this but ANDed back against the
-        stale `stats.healthy` at the end, keeping quarantined providers dead
-        forever. See REVIEW § 1.2 for the incident report.
-        """
+    async def snapshot(self, user_id: int, provider: str) -> ProviderSnapshot:
         now = time.time()
         result = await self.session.execute(
             text("""
                 SELECT
                   COUNT(*) FILTER (WHERE occurred_at >= :now - 60)    AS rpm,
                   COUNT(*) FILTER (WHERE occurred_at >= :now - 86400) AS rpd
-                FROM rate_events WHERE provider_name = :p
-            """).bindparams(now=now, p=provider)
+                FROM rate_events
+                WHERE user_id = :uid AND provider_name = :p
+            """).bindparams(now=now, uid=user_id, p=provider)
         )
         rpm, rpd = result.one()
 
-        stats = await self.session.get(ProviderStatsRow, provider)
+        stats_result = await self.session.execute(
+            select(ProviderStatsRow).where(
+                ProviderStatsRow.user_id == user_id,
+                ProviderStatsRow.provider_name == provider,
+            )
+        )
+        stats = stats_result.scalar_one_or_none()
         if not stats:
             return ProviderSnapshot(
                 requests_today=int(rpd or 0),
                 requests_this_minute=int(rpm or 0),
-                last_error=None,
-                last_error_kind=None,
-                last_latency_ms=None,
-                latency_ema_ms=None,
-                healthy=True,
-                quarantined_until=None,
-                total_calls=0,
-                total_failures=0,
-                tokens_today=0,
+                last_error=None, last_error_kind=None,
+                last_latency_ms=None, latency_ema_ms=None,
+                healthy=True, quarantined_until=None,
+                total_calls=0, total_failures=0, tokens_today=0,
             )
 
-        # Effective health: if we're inside an active quarantine window, we're
-        # unusable regardless of what `healthy` says. Otherwise, quarantine is
-        # over (or never was) and we trust `healthy`. If quarantine expired we
-        # also treat `healthy` as true — the snapshot shouldn't be the reason a
-        # provider stays dead after its window.
         quarantine_active = stats.quarantined_until > now
         effective_healthy = not quarantine_active and (stats.healthy or stats.quarantined_until > 0)
-        # quarantine field returned to callers: None once expired
         quarantine_display = stats.quarantined_until if quarantine_active else None
-
-        # Token counter: reset if day rolled over
-        tokens_today = stats.tokens_today
-        if now - stats.tokens_day_start >= 86400:
-            tokens_today = 0
+        tokens_today = stats.tokens_today if (now - stats.tokens_day_start < 86400) else 0
 
         return ProviderSnapshot(
             requests_today=int(rpd or 0),
             requests_this_minute=int(rpm or 0),
-            last_error=stats.last_error,
-            last_error_kind=stats.last_error_kind,
+            last_error=stats.last_error, last_error_kind=stats.last_error_kind,
             last_latency_ms=stats.last_latency_ms,
             latency_ema_ms=stats.latency_ema_ms,
-            healthy=effective_healthy,
-            quarantined_until=quarantine_display,
-            total_calls=stats.total_calls,
-            total_failures=stats.total_failures,
+            healthy=effective_healthy, quarantined_until=quarantine_display,
+            total_calls=stats.total_calls, total_failures=stats.total_failures,
             tokens_today=tokens_today,
         )
 
     async def snapshot_all(
         self,
+        user_id: int,
         providers: list[str],
         counter_store=None,
     ) -> dict[str, ProviderSnapshot]:
-        """Batched version of snapshot() — 2 queries instead of 2×N.
-
-        If ``counter_store`` (a ``RateCounterStore``) is provided, rpm/rpd
-        are read from in-memory counters instead of a SQL COUNT over
-        rate_events, eliminating the heaviest query from the hot path.
-        """
         if not providers:
             return {}
         now = time.time()
 
         if counter_store is not None:
-            counts = {name: counter_store.counts(name) for name in providers}
+            counts = {name: counter_store.counts(user_id, name) for name in providers}
         else:
             counts_result = await self.session.execute(
                 text("""
@@ -289,17 +253,21 @@ class RateRepository:
                            COUNT(*) FILTER (WHERE occurred_at >= :now - 60)    AS rpm,
                            COUNT(*) FILTER (WHERE occurred_at >= :now - 86400) AS rpd
                     FROM rate_events
-                    WHERE provider_name = ANY(:names)
+                    WHERE user_id = :uid AND provider_name = ANY(:names)
                     GROUP BY provider_name
                 """).bindparams(
                     bindparam("now", value=now),
+                    bindparam("uid", value=user_id),
                     bindparam("names", value=providers),
                 )
             )
             counts = {r[0]: (int(r[1]), int(r[2])) for r in counts_result.all()}
 
         stats_result = await self.session.execute(
-            select(ProviderStatsRow).where(ProviderStatsRow.provider_name.in_(providers))
+            select(ProviderStatsRow).where(
+                ProviderStatsRow.user_id == user_id,
+                ProviderStatsRow.provider_name.in_(providers),
+            )
         )
         stats_map = {s.provider_name: s for s in stats_result.scalars().all()}
 
@@ -331,10 +299,13 @@ class RateRepository:
             )
         return snapshots
 
-    async def reset_health(self, provider: str) -> None:
+    async def reset_health(self, user_id: int, provider: str) -> None:
         await self.session.execute(
             update(ProviderStatsRow)
-            .where(ProviderStatsRow.provider_name == provider)
+            .where(
+                ProviderStatsRow.user_id == user_id,
+                ProviderStatsRow.provider_name == provider,
+            )
             .values(
                 healthy=True,
                 consecutive_failures=0,
@@ -345,7 +316,6 @@ class RateRepository:
         )
 
     async def purge_old_events(self, older_than_seconds: float = 86400 * 2) -> int:
-        """Bound the rate_events table. Call from a periodic task."""
         cutoff = time.time() - older_than_seconds
         result = await self.session.execute(
             delete(RateEventRow).where(RateEventRow.occurred_at < cutoff)
@@ -354,6 +324,5 @@ class RateRepository:
 
 
 def func_greatest(a, b):
-    """SQLAlchemy helper for postgres GREATEST(...)."""
     from sqlalchemy import func
     return func.greatest(a, b)

@@ -16,61 +16,212 @@ const STRATEGY_DESCRIPTIONS = {
   long_context: "Large context windows.",
 };
 
+// ─────────────── JWT auth ───────────────
+
+const ACCESS_KEY = "freeai_access_token";
+const REFRESH_KEY = "freeai_refresh_token";
+const USER_KEY = "freeai_user";
+
+// Legacy compat — still read old admin token for migration flow
 const TOKEN_KEY = "freeai_admin_token";
 
-// ─────────────── admin token gate ───────────────
+function getAccessToken() { return localStorage.getItem(ACCESS_KEY) || ""; }
+function getRefreshToken() { return localStorage.getItem(REFRESH_KEY) || ""; }
+function getCurrentUser() {
+  try { return JSON.parse(localStorage.getItem(USER_KEY) || "null"); } catch { return null; }
+}
 
+function saveSession(data) {
+  localStorage.setItem(ACCESS_KEY, data.access_token);
+  localStorage.setItem(REFRESH_KEY, data.refresh_token);
+  localStorage.setItem(USER_KEY, JSON.stringify(data.user));
+  // Clear legacy token if present
+  localStorage.removeItem(TOKEN_KEY);
+  updateLockUI();
+}
+
+function clearSession() {
+  const refresh = getRefreshToken();
+  if (refresh) {
+    // Best-effort logout — don't await
+    fetch(`${API_BASE}/api/auth/logout`, {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ refresh_token: refresh }),
+    }).catch(() => {});
+  }
+  localStorage.removeItem(ACCESS_KEY);
+  localStorage.removeItem(REFRESH_KEY);
+  localStorage.removeItem(USER_KEY);
+  localStorage.removeItem(TOKEN_KEY);
+  updateLockUI();
+}
+
+function isLoggedIn() { return !!getAccessToken(); }
+
+async function refreshAccessToken() {
+  const refresh = getRefreshToken();
+  if (!refresh) return false;
+  try {
+    const res = await fetch(`${API_BASE}/api/auth/refresh`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ refresh_token: refresh }),
+    });
+    if (!res.ok) { clearSession(); return false; }
+    const data = await res.json();
+    saveSession(data);
+    return true;
+  } catch { clearSession(); return false; }
+}
+
+// Check if access token is about to expire (< 2 min left)
+function tokenNeedsRefresh() {
+  const token = getAccessToken();
+  if (!token) return true;
+  try {
+    const payload = JSON.parse(atob(token.split(".")[1]));
+    return (payload.exp - Date.now() / 1000) < 120;
+  } catch { return true; }
+}
+
+async function ensureValidToken() {
+  if (tokenNeedsRefresh()) {
+    return await refreshAccessToken();
+  }
+  return true;
+}
+
+// Legacy admin token getter (for backwards compat during migration)
 function getAdminToken() {
   return localStorage.getItem(TOKEN_KEY) || "";
 }
-
 function setAdminToken(token) {
   if (token) localStorage.setItem(TOKEN_KEY, token);
   else localStorage.removeItem(TOKEN_KEY);
-  updateLockUI();
 }
 
 function updateLockUI() {
   const btn = document.getElementById("lockButton");
   const icon = document.getElementById("lockIcon");
-  if (getAdminToken()) {
+  const user = getCurrentUser();
+  if (user) {
     btn.classList.remove("is-locked");
     icon.textContent = "⛓";
-    btn.title = "admin token saved (click to clear)";
+    btn.title = `${user.username} (${user.role}) — click to logout`;
+    // Show users tab only for admins
+    const usersTab = document.getElementById("usersTab");
+    if (usersTab) usersTab.style.display = user.role === "admin" ? "" : "none";
   } else {
     btn.classList.add("is-locked");
     icon.textContent = "⛒";
-    btn.title = "admin token not set (click to enter)";
+    btn.title = "not logged in (click to login)";
+    const usersTab = document.getElementById("usersTab");
+    if (usersTab) usersTab.style.display = "none";
   }
 }
 
-function showAdminModal() {
+function showLoginModal() {
   document.getElementById("adminModal").hidden = false;
-  setTimeout(() => document.getElementById("adminTokenInput").focus(), 50);
+  document.getElementById("loginError").style.display = "none";
+  setTimeout(() => document.getElementById("loginUsername").focus(), 50);
 }
-function hideAdminModal() {
+function hideLoginModal() {
   document.getElementById("adminModal").hidden = true;
 }
 
 document.getElementById("lockButton").addEventListener("click", () => {
-  if (getAdminToken()) {
-    if (confirm("Clear admin token from this browser?")) setAdminToken("");
+  if (isLoggedIn()) {
+    if (confirm("Cerrar sesion?")) { clearSession(); boot(); }
     return;
   }
-  showAdminModal();
+  showLoginModal();
 });
 
-document.getElementById("adminTokenSave").addEventListener("click", async () => {
-  const token = document.getElementById("adminTokenInput").value.trim();
-  if (!token) return;
-  setAdminToken(token);
-  hideAdminModal();
-  document.getElementById("adminTokenInput").value = "";
-  await boot();
+document.getElementById("loginSubmit").addEventListener("click", async () => {
+  const username = document.getElementById("loginUsername").value.trim();
+  const password = document.getElementById("loginPassword").value;
+  const errEl = document.getElementById("loginError");
+  if (!username || !password) return;
+  try {
+    const res = await fetch(`${API_BASE}/api/auth/login`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ username, password }),
+    });
+    if (!res.ok) {
+      const detail = await res.json().catch(() => ({}));
+      errEl.textContent = detail.detail || "Login failed";
+      errEl.style.display = "block";
+      return;
+    }
+    const data = await res.json();
+    saveSession(data);
+    hideLoginModal();
+    document.getElementById("loginUsername").value = "";
+    document.getElementById("loginPassword").value = "";
+    errEl.style.display = "none";
+    await boot();
+  } catch (e) {
+    errEl.textContent = e.message;
+    errEl.style.display = "block";
+  }
 });
 
-document.getElementById("adminTokenInput").addEventListener("keydown", (e) => {
-  if (e.key === "Enter") document.getElementById("adminTokenSave").click();
+document.getElementById("loginPassword").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") document.getElementById("loginSubmit").click();
+});
+
+// ─────────────── migration modal ───────────────
+
+function showMigrateModal() {
+  document.getElementById("migrateModal").hidden = false;
+  document.getElementById("migrateError").style.display = "none";
+  setTimeout(() => document.getElementById("migrateOldToken").focus(), 50);
+}
+
+document.getElementById("migrateSubmit").addEventListener("click", async () => {
+  const oldToken = document.getElementById("migrateOldToken").value.trim();
+  const username = document.getElementById("migrateUsername").value.trim();
+  const password = document.getElementById("migratePassword").value;
+  const password2 = document.getElementById("migratePassword2").value;
+  const errEl = document.getElementById("migrateError");
+
+  if (!oldToken || !username || !password) return;
+  if (password !== password2) {
+    errEl.textContent = "Las contraseñas no coinciden";
+    errEl.style.display = "block";
+    return;
+  }
+  if (password.length < 8) {
+    errEl.textContent = "La contraseña debe tener al menos 8 caracteres";
+    errEl.style.display = "block";
+    return;
+  }
+
+  try {
+    const res = await fetch(`${API_BASE}/api/auth/migrate-token`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        admin_token: oldToken,
+        username, password,
+        password_confirm: password,
+      }),
+    });
+    if (!res.ok) {
+      const detail = await res.json().catch(() => ({}));
+      errEl.textContent = detail.detail || "Migration failed";
+      errEl.style.display = "block";
+      return;
+    }
+    const data = await res.json();
+    saveSession(data);
+    document.getElementById("migrateModal").hidden = true;
+    await boot();
+  } catch (e) {
+    errEl.textContent = e.message;
+    errEl.style.display = "block";
+  }
 });
 
 // ─────────────── first-run setup (configuración inicial) ───────────────
@@ -268,6 +419,7 @@ ribbonTabs.forEach((tab) => {
     if (tab.dataset.tab === "clients") refreshClients();
     if (tab.dataset.tab === "analytics") refreshAnalytics();
     if (tab.dataset.tab === "strategy") refreshStrategies();
+    if (tab.dataset.tab === "users") refreshUsers();
     // mobile: close drawer & update active label
     ribbonItems.classList.remove("ribbon__items--open");
     ribbonBurger.classList.remove("ribbon__burger--open");
@@ -288,14 +440,27 @@ ribbonBurger.addEventListener("click", () => {
 class AuthError extends Error {}
 
 async function adminApi(path, opts = {}) {
-  const token = getAdminToken();
+  // Ensure token is fresh
+  await ensureValidToken();
+  const token = getAccessToken();
   const headers = {
     "Content-Type": "application/json",
     ...(opts.headers || {}),
   };
-  if (token) headers["X-Admin-Token"] = token;
+  if (token) headers["Authorization"] = `Bearer ${token}`;
   const res = await fetch(`${API_BASE}${path}`, { ...opts, headers });
-  if (res.status === 401) throw new AuthError("admin auth required");
+  if (res.status === 401) {
+    // Try refresh once
+    if (await refreshAccessToken()) {
+      headers["Authorization"] = `Bearer ${getAccessToken()}`;
+      const retry = await fetch(`${API_BASE}${path}`, { ...opts, headers });
+      if (retry.status === 401) throw new AuthError("session expired");
+      if (!retry.ok) throw new Error(`${retry.status} ${await retry.text()}`);
+      if (retry.status === 204) return null;
+      return retry.json();
+    }
+    throw new AuthError("session expired");
+  }
   if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
   if (res.status === 204) return null;
   return res.json();
@@ -1319,7 +1484,7 @@ const pgSend = document.getElementById("pgSend");
 
 function getPlaygroundHeaders(extra = {}) {
   const headers = { "Content-Type": "application/json", ...extra };
-  const token = getAdminToken();
+  const token = getAccessToken();
   if (token) headers["X-Admin-Token"] = token;
   return headers;
 }
@@ -1689,23 +1854,136 @@ async function refreshSavings() {
 
 // ─────────────── boot ───────────────
 
+// ─────────────── user management (admin) ───────────────
+
+async function refreshUsers() {
+  const list = document.getElementById("userList");
+  if (!list) return;
+  try {
+    const users = await adminApi("/api/users");
+    list.innerHTML = users.map(u => `
+      <div class="client-card" style="display:flex;align-items:center;gap:1rem;padding:.5rem 1rem">
+        <span style="font-weight:600;min-width:10rem">${escapeHtml(u.username)}</span>
+        <span class="tag">${u.role}</span>
+        <span style="opacity:.6;font-size:.85rem">ID: ${u.id}</span>
+        <span style="flex:1"></span>
+        ${u.id !== getCurrentUser()?.id ? `<button class="danger-button" data-delete="${u.id}" style="font-size:.75rem">DELETE</button>` : '<span style="opacity:.5;font-size:.75rem">(you)</span>'}
+      </div>
+    `).join("");
+    list.querySelectorAll("[data-delete]").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        if (!confirm(`Delete user ${btn.closest(".client-card").querySelector("span").textContent}?`)) return;
+        await adminApi(`/api/users/${btn.dataset.delete}`, { method: "DELETE" });
+        refreshUsers();
+      });
+    });
+  } catch (e) {
+    list.innerHTML = `<p style="color:#ff4444">${escapeHtml(e.message)}</p>`;
+  }
+}
+
+document.getElementById("refreshUsers")?.addEventListener("click", refreshUsers);
+
+document.getElementById("userCreate")?.addEventListener("click", async () => {
+  const username = document.getElementById("newUsername").value.trim();
+  const password = document.getElementById("newPassword").value;
+  if (!username || !password) return;
+  if (password.length < 8) { alert("Password must be at least 8 characters"); return; }
+  try {
+    await adminApi("/api/auth/register", {
+      method: "POST",
+      body: JSON.stringify({ username, password, password_confirm: password }),
+    });
+    document.getElementById("newUsername").value = "";
+    document.getElementById("newPassword").value = "";
+    refreshUsers();
+  } catch (e) {
+    alert(e.message);
+  }
+});
+
+
 async function boot() {
   updateLockUI();
+
+  // Check auth status — determines if we need setup, migration, or login
   try {
-    const st = await publicApi("/api/setup/status");
-    if (st.needs_initial_setup) {
-      openFirstRunSetup(st.provider_names);
-      return;
+    const authStatus = await publicApi("/api/auth/status");
+
+    if (authStatus.status === "needs_setup") {
+      // Fresh install — check old setup wizard
+      const st = await publicApi("/api/setup/status");
+      if (st.needs_initial_setup) {
+        openFirstRunSetup(st.provider_names);
+        return;
+      }
+      // No legacy setup needed either — show registration
+      if (!isLoggedIn()) {
+        document.getElementById("loginTitle").textContent = "CREAR ADMIN";
+        document.getElementById("loginSubtitle").textContent = "Crea la primera cuenta de administrador.";
+        showLoginModal();
+        // Override login to register instead for first user
+        const origHandler = document.getElementById("loginSubmit").onclick;
+        document.getElementById("loginSubmit").onclick = async () => {
+          const username = document.getElementById("loginUsername").value.trim();
+          const password = document.getElementById("loginPassword").value;
+          const errEl = document.getElementById("loginError");
+          if (!username || !password) return;
+          if (password.length < 8) {
+            errEl.textContent = "La contraseña debe tener al menos 8 caracteres";
+            errEl.style.display = "block";
+            return;
+          }
+          try {
+            const res = await fetch(`${API_BASE}/api/auth/register`, {
+              method: "POST",
+              headers: {"Content-Type": "application/json"},
+              body: JSON.stringify({ username, password, password_confirm: password }),
+            });
+            if (!res.ok) {
+              const d = await res.json().catch(() => ({}));
+              errEl.textContent = d.detail || "Registration failed";
+              errEl.style.display = "block";
+              return;
+            }
+            saveSession(await res.json());
+            hideLoginModal();
+            document.getElementById("loginTitle").textContent = "INICIAR SESION";
+            document.getElementById("loginSubtitle").textContent = "Introduce tus credenciales para acceder al panel de control.";
+            await boot();
+          } catch (e) {
+            errEl.textContent = e.message;
+            errEl.style.display = "block";
+          }
+        };
+        return;
+      }
+    } else if (authStatus.status === "needs_migration") {
+      // Legacy admin token exists but no users — show migration wizard
+      if (!isLoggedIn()) {
+        showMigrateModal();
+        return;
+      }
+    } else {
+      // Ready — users exist
+      if (!isLoggedIn()) {
+        showLoginModal();
+        return;
+      }
+      // Validate current session
+      if (tokenNeedsRefresh() && !(await refreshAccessToken())) {
+        showLoginModal();
+        return;
+      }
     }
   } catch {
-    /* uplink down — sigue e intenta el resto */
-  }
-  try {
-    const h = await publicApi("/api/health");
-    if (h.auth_required && !getAdminToken()) {
-      showAdminModal();
+    // Backend down — try anyway if logged in
+    if (!isLoggedIn()) {
+      showLoginModal();
+      return;
     }
-  } catch {}
+  }
+
   await Promise.all([refreshProviders(true), refreshConfig(), refreshSavings()]);
 }
 
@@ -1717,5 +1995,6 @@ async function boot() {
     const panel = activePanel.dataset.panel;
     if (panel === "providers") { refreshProviders(); refreshSavings(); }
     if (panel === "analytics") refreshAnalytics();
+    if (panel === "users") refreshUsers();
   }, 8000);
 })();
