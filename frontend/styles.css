@@ -557,17 +557,55 @@ body::before {
   transform: translate(-3px, -3px);
   box-shadow: 7px 7px 0 var(--char);
 }
+/* Configured: left accent bar + subtle green border */
+.provider-card.is-configured {
+  border-left: 4px solid var(--moss);
+}
+.provider-card.is-configured .provider-card__corner--tl,
+.provider-card.is-configured .provider-card__corner--bl {
+  color: var(--moss);
+}
+
+/* Not configured: dashed border, dimmed content, visible CTA */
 .provider-card.is-disabled {
   opacity: 1;
+  border-style: dashed;
+  border-color: var(--char-3);
+  box-shadow: none;
+}
+.provider-card.is-disabled:hover {
+  box-shadow: none;
+  transform: none;
 }
 .provider-card.is-disabled .provider-card__head,
-.provider-card.is-disabled .provider-card__tags,
+.provider-card.is-disabled .provider-card__tags {
+  opacity: 0.4;
+}
 .provider-card.is-disabled .provider-card__rows {
-  opacity: 0.45;
+  opacity: 0.55;
 }
 .provider-card.is-disabled .provider-card__foot .switch {
-  opacity: 0.45;
+  opacity: 0.4;
 }
+.provider-card.is-disabled .provider-card__foot-actions {
+  opacity: 1;
+}
+
+/* "no key" banner inside disabled cards */
+.provider-card__nokey-banner {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--amber);
+  background: rgba(198,155,68,0.10);
+  border: 1px dashed rgba(198,155,68,0.35);
+  padding: 8px 12px;
+  margin-bottom: 14px;
+  text-align: center;
+}
+
 .provider-card.is-error { border-color: var(--rose); }
 
 .provider-card__corner {
