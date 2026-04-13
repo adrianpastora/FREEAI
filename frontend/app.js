@@ -1220,14 +1220,18 @@ async function refreshProviders(fullRender = false) {
       adminApi("/api/me/providers/catalog"),
       adminApi("/api/me/providers"),
     ]);
+    console.log("[providers] catalog:", catalog?.length, "myProviders:", myProviders?.length, myProviders);
     const myMap = {};
     myProviders.forEach(p => { myMap[p.provider_name] = p; });
+    console.log("[providers] myMap keys:", Object.keys(myMap), "catalog names:", catalog.map(c => c.name));
     const data = catalog.map(c => {
       const my = myMap[c.name] || {};
+      const hasKey = my.has_key || false;
+      if (!hasKey && my.provider_name) console.warn("[providers] has_key is false for", c.name, "but my object is:", my);
       return {
         name: c.name,
         enabled: my.enabled ?? c.enabled,
-        has_key: my.has_key || false,
+        has_key: hasKey,
         healthy: true,
         requests_today: 0,
         requests_this_minute: 0,
