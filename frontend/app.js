@@ -1,7 +1,10 @@
 // FreeAI control room — talks to FastAPI backend at API_BASE
-const API_BASE = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"
+// Local dev: frontend on any port → backend on :8000
+// Production: reverse proxy serves both frontend and API on the same origin
+const _isLocal = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
+const API_BASE = _isLocal
   ? `http://${window.location.hostname}:8000`
-  : window.location.origin.replace(/:\d+$/, ":8000");
+  : window.location.origin;
 
 document.getElementById("apiBase").textContent = API_BASE;
 
