@@ -1,4 +1,4 @@
-"""Client repository — inbound API key registry."""
+"""Client repository — inbound API key registry, scoped per user."""
 from __future__ import annotations
 
 import hashlib
@@ -21,6 +21,7 @@ def _hash_key(raw: str) -> str:
 class ClientDTO:
     name: str
     key_hash: str
+    user_id: int
     rpm_limit: int
     enabled: bool
     created_at: float
@@ -30,8 +31,11 @@ class ClientRepository:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    async def list_all(self) -> list[ClientDTO]:
-        result = await self.session.execute(select(ClientRow).order_by(ClientRow.created_at))
+    async def list_all(self, user_id: Optional[int] = None) -> list[ClientDTO]:
+        stmt = select(ClientRow).order_by(ClientRow.created_at)
+        if user_id is not None:
+            stmt = stmt.where(ClientRow.user_id == user_id)
+        result = await self.session.execute(stmt)
         return [self._to_dto(r) for r in result.scalars().all()]
 
     async def has_any(self) -> bool:
@@ -43,10 +47,11 @@ class ClientRepository:
         row = await self.session.get(ClientRow, h)
         return self._to_dto(row) if row else None
 
-    async def create(self, name: str, rpm_limit: int = 60) -> tuple[ClientDTO, str]:
+    async def create(self, name: str, user_id: int, rpm_limit: int = 60) -> tuple[ClientDTO, str]:
         raw = "fai_" + secrets.token_urlsafe(28)
         row = ClientRow(
             key_hash=_hash_key(raw),
+            user_id=user_id,
             name=name,
             rpm_limit=rpm_limit,
             enabled=True,
@@ -56,10 +61,11 @@ class ClientRepository:
         await self.session.flush()
         return self._to_dto(row), raw
 
-    async def revoke(self, key_hash: str) -> bool:
-        result = await self.session.execute(
-            delete(ClientRow).where(ClientRow.key_hash == key_hash)
-        )
+    async def revoke(self, key_hash: str, user_id: Optional[int] = None) -> bool:
+        stmt = delete(ClientRow).where(ClientRow.key_hash == key_hash)
+        if user_id is not None:
+            stmt = stmt.where(ClientRow.user_id == user_id)
+        result = await self.session.execute(stmt)
         return result.rowcount > 0
 
     @staticmethod
@@ -67,6 +73,7 @@ class ClientRepository:
         return ClientDTO(
             name=row.name,
             key_hash=row.key_hash,
+            user_id=row.user_id,
             rpm_limit=row.rpm_limit,
             enabled=row.enabled,
             created_at=row.created_at,

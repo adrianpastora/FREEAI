@@ -46,18 +46,28 @@ from .repositories import (
     ConfigRepository,
     ProviderConfigDTO,
     RateRepository,
+    RefreshTokenRepository,
     StrategyDTO,
     StrategyRepository,
     UsageRepository,
+    UserRepository,
 )
 from .repositories.usage_repo import UsageEvent
 from .repositories.config_repo import DEFAULT_PROVIDERS
+from .repositories.user_provider_repo import UserProviderRepository
 from .schemas import (
     ChatCompletionRequest,
     ChatCompletionResponse,
     ProviderStatus,
 )
-from .security import require_admin, require_client
+from .auth import (
+    CurrentUser,
+    create_access_token,
+    create_refresh_token,
+    hash_password,
+    verify_password,
+)
+from .security import get_current_user, require_admin, require_admin_user, require_client
 from .settings import get_settings
 from .strategy_dsl import ParseError, parse_definition
 from .virtual_models import VIRTUAL_MODELS
@@ -258,6 +268,327 @@ async def setup_initial(
     }
 
 
+# ──────────────────────────── auth endpoints ────────────────────────────
+
+
+class RegisterBody(BaseModel):
+    username: str = Field(..., min_length=3, max_length=64, pattern=r"^[a-zA-Z0-9_.-]+$")
+    password: str = Field(..., min_length=8, max_length=512)
+    password_confirm: str = Field(..., min_length=8, max_length=512)
+
+    @model_validator(mode="after")
+    def _passwords_match(self) -> Self:
+        if self.password != self.password_confirm:
+            raise ValueError("passwords do not match")
+        return self
+
+
+class LoginBody(BaseModel):
+    username: str
+    password: str
+
+
+class RefreshBody(BaseModel):
+    refresh_token: str
+
+
+class LogoutBody(BaseModel):
+    refresh_token: str
+
+
+class MigrateTokenBody(BaseModel):
+    """One-time migration: verify legacy admin token, create admin user."""
+    admin_token: str = Field(..., min_length=1)
+    username: str = Field(..., min_length=3, max_length=64, pattern=r"^[a-zA-Z0-9_.-]+$")
+    password: str = Field(..., min_length=8, max_length=512)
+    password_confirm: str = Field(..., min_length=8, max_length=512)
+
+    @model_validator(mode="after")
+    def _passwords_match(self) -> Self:
+        if self.password != self.password_confirm:
+            raise ValueError("passwords do not match")
+        return self
+
+
+async def _issue_tokens(
+    user_id: int, username: str, role: str, session: AsyncSession,
+) -> dict:
+    """Create access + refresh tokens and persist the refresh hash."""
+    settings = get_settings()
+    access = create_access_token(user_id, username, role)
+    raw_refresh, refresh_hash = create_refresh_token()
+    expires_at = time.time() + settings.jwt_refresh_expire_days * 86400
+
+    refresh_repo = RefreshTokenRepository(session)
+    await refresh_repo.store(user_id, refresh_hash, expires_at)
+
+    return {
+        "access_token": access,
+        "refresh_token": raw_refresh,
+        "token_type": "bearer",
+        "expires_in": settings.jwt_access_expire_minutes * 60,
+        "user": {"id": user_id, "username": username, "role": role},
+    }
+
+
+@app.get("/api/auth/status")
+async def auth_status(session: AsyncSession = Depends(get_session)) -> dict:
+    """Check if the system needs user migration or first-time registration."""
+    user_repo = UserRepository(session)
+    user_count = await user_repo.count()
+    if user_count > 0:
+        return {"status": "ready", "user_count": user_count}
+    # Check if there's a legacy admin token to migrate from
+    row = await session.get(AppConfigRow, 1)
+    has_legacy = bool(row and row.admin_token_hash)
+    settings = get_settings()
+    has_legacy = has_legacy or bool(settings.admin_token) or settings.admin_token_path.exists()
+    return {
+        "status": "needs_migration" if has_legacy else "needs_setup",
+        "user_count": 0,
+    }
+
+
+@app.post("/api/auth/register", status_code=201)
+async def register(
+    body: RegisterBody,
+    session: AsyncSession = Depends(get_session),
+    authorization: Optional[str] = Header(default=None),
+) -> dict:
+    """Register a new user.
+
+    The first user becomes admin automatically. Subsequent users require
+    a valid admin JWT.
+    """
+    user_repo = UserRepository(session)
+    count = await user_repo.count()
+
+    if count > 0:
+        # Require admin JWT for creating additional users
+        user = None
+        from .auth import decode_access_token
+        token = None
+        if authorization:
+            parts = authorization.split(None, 1)
+            if len(parts) == 2 and parts[0].lower() == "bearer":
+                token = parts[1].strip()
+        if token:
+            payload = decode_access_token(token)
+            if payload and payload.get("role") == "admin":
+                user = CurrentUser(
+                    id=int(payload["sub"]),
+                    username=payload["username"],
+                    role=payload["role"],
+                )
+        if not user:
+            raise HTTPException(403, "only admins can register new users")
+        if count >= 5:
+            raise HTTPException(400, "maximum number of users reached (5)")
+
+    # Check uniqueness
+    existing = await user_repo.find_by_username(body.username)
+    if existing:
+        raise HTTPException(409, f"username '{body.username}' is already taken")
+
+    role = "admin" if count == 0 else "user"
+    pwd_hash = hash_password(body.password)
+    user_dto = await user_repo.create(body.username, pwd_hash, role=role)
+
+    return await _issue_tokens(user_dto.id, user_dto.username, user_dto.role, session)
+
+
+@app.post("/api/auth/login")
+async def login(body: LoginBody, session: AsyncSession = Depends(get_session)) -> dict:
+    user_repo = UserRepository(session)
+    user = await user_repo.find_by_username(body.username)
+    if not user or not verify_password(body.password, user.password_hash):
+        raise HTTPException(401, "invalid username or password")
+    return await _issue_tokens(user.id, user.username, user.role, session)
+
+
+@app.post("/api/auth/refresh")
+async def refresh(body: RefreshBody, session: AsyncSession = Depends(get_session)) -> dict:
+    refresh_repo = RefreshTokenRepository(session)
+    token_hash = refresh_repo.hash_token(body.refresh_token)
+    row = await refresh_repo.find_by_hash(token_hash)
+    if not row or row.expires_at < time.time():
+        raise HTTPException(401, "invalid or expired refresh token")
+
+    user_repo = UserRepository(session)
+    user = await user_repo.find_by_id(row.user_id)
+    if not user:
+        raise HTTPException(401, "user not found")
+
+    # Rotate: delete old, issue new
+    await refresh_repo.delete_by_hash(token_hash)
+    return await _issue_tokens(user.id, user.username, user.role, session)
+
+
+@app.post("/api/auth/logout")
+async def logout(body: LogoutBody, session: AsyncSession = Depends(get_session)) -> dict:
+    refresh_repo = RefreshTokenRepository(session)
+    token_hash = refresh_repo.hash_token(body.refresh_token)
+    await refresh_repo.delete_by_hash(token_hash)
+    return {"ok": True}
+
+
+@app.get("/api/auth/me")
+async def auth_me(user: CurrentUser = Depends(get_current_user)) -> dict:
+    return {"id": user.id, "username": user.username, "role": user.role}
+
+
+@app.post("/api/auth/migrate-token", status_code=201)
+async def migrate_token(
+    body: MigrateTokenBody,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """One-time migration: verify legacy admin token and create admin user.
+
+    Used when upgrading from single-admin-token to multi-user. The caller
+    proves they own the old token; the system creates a proper user account.
+    """
+    from .security import verify_admin_credentials
+
+    user_repo = UserRepository(session)
+    if await user_repo.count() > 0:
+        raise HTTPException(400, "migration already completed — users exist")
+
+    if not await verify_admin_credentials(session, body.admin_token):
+        raise HTTPException(401, "invalid admin token")
+
+    existing = await user_repo.find_by_username(body.username)
+    if existing:
+        raise HTTPException(409, f"username '{body.username}' is already taken")
+
+    pwd_hash = hash_password(body.password)
+    user_dto = await user_repo.create(body.username, pwd_hash, role="admin")
+
+    log.info("admin_migrated", username=body.username, user_id=user_dto.id)
+    return await _issue_tokens(user_dto.id, user_dto.username, user_dto.role, session)
+
+
+# ──────────────────────────── user management (admin) ────────────────────────────
+
+
+@app.get("/api/users")
+async def list_users(
+    session: AsyncSession = Depends(get_session),
+    admin: CurrentUser = Depends(require_admin_user),
+) -> list[dict]:
+    user_repo = UserRepository(session)
+    users = await user_repo.list_all()
+    return [
+        {
+            "id": u.id,
+            "username": u.username,
+            "role": u.role,
+            "max_clients": u.max_clients,
+            "created_at": u.created_at,
+        }
+        for u in users
+    ]
+
+
+@app.delete("/api/users/{user_id}")
+async def delete_user(
+    user_id: int,
+    session: AsyncSession = Depends(get_session),
+    admin: CurrentUser = Depends(require_admin_user),
+) -> dict:
+    if user_id == admin.id:
+        raise HTTPException(400, "cannot delete yourself")
+    user_repo = UserRepository(session)
+    if not await user_repo.delete(user_id):
+        raise HTTPException(404, "user not found")
+    return {"ok": True}
+
+
+class ResetPasswordBody(BaseModel):
+    password: str = Field(..., min_length=8, max_length=512)
+
+
+@app.post("/api/users/{user_id}/reset-password")
+async def reset_user_password(
+    user_id: int,
+    body: ResetPasswordBody,
+    session: AsyncSession = Depends(get_session),
+    admin: CurrentUser = Depends(require_admin_user),
+) -> dict:
+    user_repo = UserRepository(session)
+    pwd_hash = hash_password(body.password)
+    if not await user_repo.update_password(user_id, pwd_hash):
+        raise HTTPException(404, "user not found")
+    # Invalidate all refresh tokens for that user
+    refresh_repo = RefreshTokenRepository(session)
+    await refresh_repo.delete_all_for_user(user_id)
+    return {"ok": True}
+
+
+# ──────────────────────────── per-user provider credentials ────────────────────────────
+
+
+class UserProviderUpdate(BaseModel):
+    api_key: Optional[str] = None
+    enabled: Optional[bool] = None
+    rpm_limit: Optional[int] = None
+    rpd_limit: Optional[int] = None
+    tpd_limit: Optional[int] = None
+    weight: Optional[float] = None
+    default_model: Optional[str] = None
+
+
+@app.get("/api/me/providers")
+async def list_my_providers(
+    session: AsyncSession = Depends(get_session),
+    user: CurrentUser = Depends(get_current_user),
+) -> list[dict]:
+    """List the current user's provider configs (keys masked)."""
+    repo = UserProviderRepository(session)
+    dtos = await repo.list_for_user(user.id)
+    return [repo.mask_dto(d) for d in dtos]
+
+
+@app.get("/api/me/providers/catalog")
+async def provider_catalog(
+    session: AsyncSession = Depends(get_session),
+    user: CurrentUser = Depends(get_current_user),
+) -> list[dict]:
+    """List all available providers (catalog) without keys."""
+    repo = UserProviderRepository(session)
+    return await repo.list_catalog()
+
+
+@app.patch("/api/me/providers/{name}")
+async def update_my_provider(
+    name: str,
+    patch: UserProviderUpdate,
+    session: AsyncSession = Depends(get_session),
+    user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    """Upsert the current user's credentials/config for a provider."""
+    repo = UserProviderRepository(session)
+    fields = patch.model_dump(exclude_unset=True)
+    if "api_key" in fields and fields["api_key"] == "":
+        fields["api_key"] = None
+    try:
+        dto = await repo.upsert(user.id, name, **fields)
+    except KeyError as e:
+        raise HTTPException(404, str(e))
+    return repo.mask_dto(dto)
+
+
+@app.delete("/api/me/providers/{name}")
+async def delete_my_provider(
+    name: str,
+    session: AsyncSession = Depends(get_session),
+    user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    repo = UserProviderRepository(session)
+    if not await repo.delete(user.id, name):
+        raise HTTPException(404, f"no configuration for provider '{name}'")
+    return {"ok": True}
+
+
 # ──────────────────────────── middleware ────────────────────────────
 
 
@@ -357,13 +688,19 @@ async def chat_completions(
     rate_repo = RateRepository(session)
     usage_repo = UsageRepository(session)
     strategy_repo = StrategyRepository(session)
+    user_provider_repo = UserProviderRepository(session)
     client_hash = client.key_hash if client else None
+    user_id = getattr(request.state, "user_id", None)
+
+    if user_id is None:
+        raise HTTPException(400, "no user context — authenticate with a client key bound to a user")
 
     if req.stream:
         async def event_stream():
             try:
                 async for chunk in orch.stream(
-                    req, config_repo, rate_repo, usage_repo, strategy_repo,
+                    req, user_id, user_provider_repo,
+                    config_repo, rate_repo, usage_repo, strategy_repo,
                     client_hash=client_hash,
                 ):
                     yield f"data: {json.dumps(chunk)}\n\n"
@@ -381,7 +718,8 @@ async def chat_completions(
 
     try:
         return await orch.chat(
-            req, config_repo, rate_repo, usage_repo, strategy_repo,
+            req, user_id, user_provider_repo,
+            config_repo, rate_repo, usage_repo, strategy_repo,
             client_hash=client_hash,
         )
     except ProviderError as e:
@@ -423,7 +761,12 @@ async def audio_transcriptions(
     config_repo = ConfigRepository(session)
     rate_repo = RateRepository(session)
     usage_repo = UsageRepository(session)
+    user_provider_repo = UserProviderRepository(session)
     client_hash = client.key_hash if client else None
+    user_id = getattr(request.state, "user_id", None)
+
+    if user_id is None:
+        raise HTTPException(400, "no user context — authenticate with a client key bound to a user")
 
     # ── Prepare audio input (read once, reuse across attempts) ──
     file_bytes = await file.read()
@@ -434,13 +777,16 @@ async def audio_transcriptions(
         language=language,
     )
 
-    # ── Collect eligible providers ──
+    # ── Collect eligible providers from user's configured providers ──
+    user_providers = await user_provider_repo.list_for_user(user_id)
     candidates: list[tuple[str, ProviderConfigDTO]] = []
     for name in TRANSCRIPTION_PROVIDERS:
         if not supports_transcription(name):
             continue
-        dto = await config_repo.get_provider(name)
-        if dto and dto.api_key and dto.enabled:
+        # Find in user's providers
+        up = next((p for p in user_providers if p.provider_name == name), None)
+        if up and up.api_key and up.enabled:
+            dto = Orchestrator._user_provider_to_config(up)
             candidates.append((name, dto))
 
     if not candidates:
@@ -458,7 +804,7 @@ async def audio_transcriptions(
 
         # Reserve capacity
         reservation = await rate_repo.try_reserve(
-            provider_name, dto.rpm_limit, dto.rpd_limit,
+            user_id, provider_name, dto.rpm_limit, dto.rpd_limit,
         )
         if reservation is None:
             errors.append({"provider": provider_name, "skipped": "at capacity"})
@@ -477,7 +823,7 @@ async def audio_transcriptions(
                 provider=result.provider, model=result.model,
                 strategy="transcription", outcome="success",
                 latency_ms=result.latency_ms, client_hash=client_hash,
-                fallback_position=fallback_position,
+                user_id=user_id, fallback_position=fallback_position,
             ))
             return {
                 "text": result.text,
@@ -510,7 +856,7 @@ async def audio_transcriptions(
             provider=err.provider, model=err.model,
             strategy="transcription", outcome=err.kind.value,
             latency_ms=err.latency_ms, client_hash=client_hash,
-            fallback_position=fallback_position,
+            user_id=user_id, fallback_position=fallback_position,
         ))
 
         # Auth/client errors won't be fixed by trying another provider
@@ -552,12 +898,12 @@ class ProviderPatchResponse(BaseModel):
 
 async def _provider_status(
     name: str, config_repo: ConfigRepository, rate_repo: RateRepository,
-    session: Optional[AsyncSession] = None,
+    user_id: int,
 ) -> ProviderStatus:
     dto = await config_repo.get_provider(name)
     if not dto:
         raise HTTPException(404, f"unknown provider '{name}'")
-    snap = await rate_repo.snapshot(name)
+    snap = await rate_repo.snapshot(user_id, name)
 
     return ProviderStatus(
         name=name,
@@ -582,12 +928,12 @@ async def _provider_status(
 @app.get("/api/providers", response_model=list[ProviderStatus])
 async def list_providers(
     session: AsyncSession = Depends(get_session),
-    _admin=Depends(require_admin),
+    user: CurrentUser = Depends(require_admin_user),
 ) -> list[ProviderStatus]:
     config_repo = ConfigRepository(session)
     rate_repo = RateRepository(session)
     providers = await config_repo.list_providers()
-    return [await _provider_status(p.name, config_repo, rate_repo, session) for p in providers]
+    return [await _provider_status(p.name, config_repo, rate_repo, user.id) for p in providers]
 
 
 @app.patch("/api/providers/{name}", response_model=ProviderPatchResponse)
@@ -595,7 +941,7 @@ async def update_provider(
     name: str,
     patch: ProviderUpdate,
     session: AsyncSession = Depends(get_session),
-    _admin=Depends(require_admin),
+    user: CurrentUser = Depends(require_admin_user),
 ) -> ProviderPatchResponse:
     config_repo = ConfigRepository(session)
     rate_repo = RateRepository(session)
@@ -607,7 +953,7 @@ async def update_provider(
     except KeyError as e:
         raise HTTPException(404, str(e))
     if fields:
-        await rate_repo.reset_health(name)
+        await rate_repo.reset_health(user.id, name)
 
     # Model validation — soft: we accept unknown models but tell the user.
     model_warning: Optional[str] = None
@@ -621,7 +967,7 @@ async def update_provider(
             )
             suggestions = suggest_similar(name, new_model)
 
-    status = await _provider_status(name, config_repo, rate_repo, session)
+    status = await _provider_status(name, config_repo, rate_repo, user.id)
     return ProviderPatchResponse(
         provider=status,
         model_warning=model_warning,
@@ -633,10 +979,10 @@ async def update_provider(
 async def reset_provider_health(
     name: str,
     session: AsyncSession = Depends(get_session),
-    _admin=Depends(require_admin),
+    user: CurrentUser = Depends(require_admin_user),
 ) -> dict:
     rate_repo = RateRepository(session)
-    await rate_repo.reset_health(name)
+    await rate_repo.reset_health(user.id, name)
     return {"ok": True}
 
 
@@ -892,7 +1238,7 @@ async def preview_strategy(
     payload: StrategyPreviewIn,
     request: Request,
     session: AsyncSession = Depends(get_session),
-    _admin=Depends(require_admin),
+    user: CurrentUser = Depends(require_admin_user),
 ) -> StrategyPreviewOut:
     """Run the ranker against `definition` without saving the strategy.
 
@@ -918,7 +1264,7 @@ async def preview_strategy(
             warnings=["no providers configured with an API key"],
         )
 
-    snapshots = await rate_repo.snapshot_all([p.name for p in eligible])
+    snapshots = await rate_repo.snapshot_all(user.id, [p.name for p in eligible])
 
     from .strategy_dsl import baseline_score as dsl_baseline
     from .strategy_dsl import context_from_provider
@@ -1032,12 +1378,18 @@ class ClientCreated(BaseModel):
 @app.get("/api/clients")
 async def list_clients(
     session: AsyncSession = Depends(get_session),
-    _admin=Depends(require_admin),
+    user: CurrentUser = Depends(get_current_user),
 ) -> list[dict]:
     repo = ClientRepository(session)
+    # Admin sees all, regular user sees only their own
+    uid = None if user.is_admin else user.id
     return [
-        {"name": c.name, "key_hash": c.key_hash, "rpm_limit": c.rpm_limit, "enabled": c.enabled}
-        for c in await repo.list_all()
+        {
+            "name": c.name, "key_hash": c.key_hash,
+            "rpm_limit": c.rpm_limit, "enabled": c.enabled,
+            "user_id": c.user_id,
+        }
+        for c in await repo.list_all(user_id=uid)
     ]
 
 
@@ -1045,10 +1397,10 @@ async def list_clients(
 async def create_client(
     payload: ClientCreate,
     session: AsyncSession = Depends(get_session),
-    _admin=Depends(require_admin),
+    user: CurrentUser = Depends(get_current_user),
 ) -> ClientCreated:
     repo = ClientRepository(session)
-    client, raw = await repo.create(payload.name, payload.rpm_limit)
+    client, raw = await repo.create(payload.name, user.id, payload.rpm_limit)
     return ClientCreated(
         name=client.name,
         api_key=raw,
@@ -1061,10 +1413,12 @@ async def create_client(
 async def revoke_client(
     key_hash: str,
     session: AsyncSession = Depends(get_session),
-    _admin=Depends(require_admin),
+    user: CurrentUser = Depends(get_current_user),
 ) -> dict:
     repo = ClientRepository(session)
-    if not await repo.revoke(key_hash):
+    # Admin can revoke any; regular user only their own
+    uid = None if user.is_admin else user.id
+    if not await repo.revoke(key_hash, user_id=uid):
         raise HTTPException(status_code=404, detail="client not found")
     return {"ok": True}
 

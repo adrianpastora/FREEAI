@@ -39,6 +39,11 @@ class Settings(BaseSettings):
     admin_token: Optional[str] = None
     require_auth: bool = False
 
+    # JWT
+    jwt_secret: Optional[str] = None
+    jwt_access_expire_minutes: int = 15
+    jwt_refresh_expire_days: int = 7
+
     # Crypto
     master_key: Optional[str] = None
     master_key_path: Path = Path(__file__).parent.parent / "data" / ".master_key"

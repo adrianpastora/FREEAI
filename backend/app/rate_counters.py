@@ -1,6 +1,6 @@
 """In-memory rate counters — eliminates COUNT queries from the hot path.
 
-Maintains per-provider deques of call timestamps. Used by
+Maintains per-(user, provider) deques of call timestamps. Used by
 ``snapshot_all()`` to read rpm/rpd without hitting ``rate_events``.
 
 The plpgsql ``freeai_try_reserve`` function remains the correctness
@@ -18,22 +18,22 @@ from collections import deque
 
 
 class RateCounterStore:
-    """Per-provider sliding-window counters backed by timestamp deques."""
+    """Per-(user, provider) sliding-window counters backed by timestamp deques."""
 
     def __init__(self):
-        self._events: dict[str, deque[float]] = {}
+        self._events: dict[tuple[int, str], deque[float]] = {}
 
-    def record(self, provider: str) -> None:
-        """Record a call to ``provider`` at the current time."""
-        dq = self._events.get(provider)
+    def record(self, user_id: int, provider: str) -> None:
+        key = (user_id, provider)
+        dq = self._events.get(key)
         if dq is None:
             dq = deque()
-            self._events[provider] = dq
+            self._events[key] = dq
         dq.append(time.time())
 
-    def _prune(self, provider: str, now: float) -> deque[float]:
-        """Remove entries older than 24h and return the deque."""
-        dq = self._events.get(provider)
+    def _prune(self, user_id: int, provider: str, now: float) -> deque[float]:
+        key = (user_id, provider)
+        dq = self._events.get(key)
         if dq is None:
             return deque()
         cutoff = now - 86400
@@ -41,23 +41,21 @@ class RateCounterStore:
             dq.popleft()
         return dq
 
-    def rpm(self, provider: str) -> int:
-        """Requests in the last 60 seconds."""
+    def rpm(self, user_id: int, provider: str) -> int:
         now = time.time()
-        dq = self._prune(provider, now)
+        dq = self._prune(user_id, provider, now)
         cutoff = now - 60
         return sum(1 for t in dq if t >= cutoff)
 
-    def rpd(self, provider: str) -> int:
-        """Requests in the last 24 hours."""
+    def rpd(self, user_id: int, provider: str) -> int:
         now = time.time()
-        dq = self._prune(provider, now)
+        dq = self._prune(user_id, provider, now)
         return len(dq)
 
-    def counts(self, provider: str) -> tuple[int, int]:
+    def counts(self, user_id: int, provider: str) -> tuple[int, int]:
         """Return (rpm, rpd) in a single pass."""
         now = time.time()
-        dq = self._prune(provider, now)
+        dq = self._prune(user_id, provider, now)
         cutoff_min = now - 60
         rpm = sum(1 for t in dq if t >= cutoff_min)
         return rpm, len(dq)

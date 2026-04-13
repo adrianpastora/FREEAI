@@ -98,7 +98,8 @@ def _truncate_all_tables(url: str) -> None:
                 await conn.execute(
                     text(
                         "TRUNCATE rate_events, provider_stats, providers, app_config, clients, "
-                        "client_rate_events, strategies, usage_events RESTART IDENTITY CASCADE"
+                        "client_rate_events, strategies, usage_events, "
+                        "user_providers, refresh_tokens, users RESTART IDENTITY CASCADE"
                     )
                 )
         except ProgrammingError as e:
@@ -143,9 +144,36 @@ async def session(sessionmaker):
 
 @pytest_asyncio.fixture
 async def seeded_session(session):
-    """A session with the default providers seeded."""
+    """A session with the default providers seeded + an admin user (id=1)."""
+    from app.auth import hash_password
     from app.repositories import ConfigRepository
-    repo = ConfigRepository(session)
-    await repo.seed_defaults_if_empty()
+    from app.repositories.user_repo import UserRepository
+    config_repo = ConfigRepository(session)
+    await config_repo.seed_defaults_if_empty()
+    user_repo = UserRepository(session)
+    if await user_repo.count() == 0:
+        await user_repo.create("testadmin", hash_password("testpass123"), role="admin")
     await session.commit()
     yield session
+
+
+@pytest_asyncio.fixture
+async def admin_user(session):
+    """Create and return an admin user for tests."""
+    from app.auth import hash_password
+    from app.repositories.user_repo import UserRepository
+    repo = UserRepository(session)
+    user = await repo.create("testadmin", hash_password("testpass123"), role="admin")
+    await session.commit()
+    return user
+
+
+@pytest_asyncio.fixture
+async def regular_user(session):
+    """Create and return a regular user for tests."""
+    from app.auth import hash_password
+    from app.repositories.user_repo import UserRepository
+    repo = UserRepository(session)
+    user = await repo.create("testuser", hash_password("testpass123"), role="user")
+    await session.commit()
+    return user

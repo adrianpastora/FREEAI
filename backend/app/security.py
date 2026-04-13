@@ -1,16 +1,13 @@
 """Inbound auth + per-client rate limiting (Postgres-backed).
 
-Two layers:
-  • require_admin — protects /api/* admin routes. Accepts (in order):
-      FREEAI_ADMIN_TOKEN env, data/admin_token file, or bcrypt hash in
-      app_config.admin_token_hash (set via first-run UI POST /api/setup/initial).
-    Auto-generation of admin_token file was removed so a fresh install can use
-    the setup wizard instead.
+Three layers:
+  • get_current_user / require_admin_user — JWT-based auth for multi-user.
+  • require_admin — protects /api/* admin routes. Accepts JWT (role=admin)
+      or legacy admin token (env, file, DB hash) for backwards compatibility.
   • require_client — protects /v1/* client routes. Looks up the bearer key in
-    the clients table and enforces per-client rpm via ClientRateRepository,
-    which is backed by the `client_rate_events` table and the plpgsql
-    function `freeai_try_reserve_client`. In bootstrap mode (no clients
-    exist and FREEAI_REQUIRE_AUTH is false) the route is open.
+    the clients table and enforces per-client rpm via ClientRateRepository.
+    In bootstrap mode (no clients exist and FREEAI_REQUIRE_AUTH is false) the
+    route is open.
 """
 from __future__ import annotations
 
@@ -20,10 +17,12 @@ from typing import Optional
 from fastapi import Depends, Header, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from .auth import CurrentUser, decode_access_token
 from .crypto import verify_admin_token_hash
 from .db.models import AppConfigRow
 from .db.session import get_session
 from .repositories import ClientRateRepository, ClientRepository
+from .repositories.user_repo import UserRepository
 from .settings import get_settings
 
 
@@ -37,6 +36,7 @@ def _extract_bearer(authorization: Optional[str]) -> Optional[str]:
 
 
 async def verify_admin_credentials(session: AsyncSession, presented: Optional[str]) -> bool:
+    """Legacy admin-token verification (env → file → DB hash)."""
     if not presented:
         return False
     settings = get_settings()
@@ -51,7 +51,48 @@ async def verify_admin_credentials(session: AsyncSession, presented: Optional[st
     return False
 
 
+def _try_jwt(authorization: Optional[str]) -> Optional[CurrentUser]:
+    """Try to decode a JWT from the Authorization header. Returns None if not a JWT."""
+    token = _extract_bearer(authorization)
+    if not token:
+        return None
+    payload = decode_access_token(token)
+    if not payload:
+        return None
+    return CurrentUser(
+        id=int(payload["sub"]),
+        username=payload["username"],
+        role=payload["role"],
+    )
+
+
 # ──────────────── FastAPI dependencies ────────────────
+
+
+async def get_current_user(
+    authorization: Optional[str] = Header(default=None),
+) -> CurrentUser:
+    """Extract and validate JWT. Raises 401 if missing or invalid."""
+    user = _try_jwt(authorization)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="invalid or expired token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return user
+
+
+async def require_admin_user(
+    user: CurrentUser = Depends(get_current_user),
+) -> CurrentUser:
+    """Require a valid JWT with role=admin."""
+    if not user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="admin role required",
+        )
+    return user
 
 
 async def require_client(
@@ -102,6 +143,7 @@ async def require_client(
             headers={"Retry-After": "60"},
         )
     request.state.client = client
+    request.state.user_id = client.user_id
     return client
 
 
@@ -110,6 +152,15 @@ async def require_admin(
     authorization: Optional[str] = Header(default=None),
     x_admin_token: Optional[str] = Header(default=None, alias="X-Admin-Token"),
 ) -> None:
+    """Accepts JWT (role=admin) or legacy admin token."""
+    # Try JWT first
+    user = _try_jwt(authorization)
+    if user and user.is_admin:
+        return
+
+    # Fall back to legacy admin token
     raw = _extract_bearer(authorization) or x_admin_token
-    if not raw or not await verify_admin_credentials(session, raw):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="admin auth required")
+    if raw and await verify_admin_credentials(session, raw):
+        return
+
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="admin auth required")
