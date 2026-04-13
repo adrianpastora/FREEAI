@@ -605,10 +605,91 @@ async def list_my_providers(
     session: AsyncSession = Depends(get_session),
     user: CurrentUser = Depends(get_current_user),
 ) -> list[dict]:
-    """List the current user's provider configs (keys masked)."""
+    """List the current user's provider configs (keys masked).
+
+    Auto-recovery: if the user has NO providers configured but the catalog
+    still has encrypted keys (migration didn't move them properly), auto-claim
+    them for this admin user.
+    """
     repo = UserProviderRepository(session)
     dtos = await repo.list_for_user(user.id)
+
+    # Auto-recovery for admins: if no user_providers but catalog has keys
+    if not dtos and user.is_admin:
+        config_repo = ConfigRepository(session)
+        catalog = await config_repo.list_providers()
+        orphaned = [p for p in catalog if p.api_key]
+        if orphaned:
+            log.info("auto_recovering_orphaned_keys", user_id=user.id, count=len(orphaned))
+            for p in orphaned:
+                await repo.upsert(
+                    user.id, p.name, api_key=p.api_key, enabled=p.enabled,
+                    rpm_limit=p.rpm_limit, rpd_limit=p.rpd_limit,
+                    tpd_limit=p.tpd_limit, weight=p.weight,
+                    default_model=p.default_model,
+                )
+                # Clear from catalog
+                await config_repo.patch_provider(p.name, api_key=None)
+            await session.commit()
+            dtos = await repo.list_for_user(user.id)
+
+    # Also check if any other user_id has providers but this admin doesn't
+    if not dtos and user.is_admin:
+        from sqlalchemy import select, func
+        from .db.models import UserProviderRow
+        orphan_count = (await session.execute(
+            select(func.count()).select_from(UserProviderRow)
+            .where(UserProviderRow.api_key_encrypted.isnot(None))
+        )).scalar_one()
+        if orphan_count > 0:
+            # Transfer orphaned user_providers from non-existent users
+            from .db.models import UserRow
+            orphan_rows = (await session.execute(
+                select(UserProviderRow).where(
+                    UserProviderRow.user_id.notin_(
+                        select(UserRow.id)
+                    )
+                )
+            )).scalars().all()
+            if orphan_rows:
+                log.info("transferring_orphan_user_providers", user_id=user.id, count=len(orphan_rows))
+                for row in orphan_rows:
+                    row.user_id = user.id
+                await session.commit()
+                dtos = await repo.list_for_user(user.id)
+
     return [repo.mask_dto(d) for d in dtos]
+
+
+@app.get("/api/me/providers/debug")
+async def debug_my_providers(
+    session: AsyncSession = Depends(get_session),
+    user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    """Debug endpoint — shows where keys actually are."""
+    from sqlalchemy import select, func
+    from .db.models import UserProviderRow, ProviderConfigRow
+    # Count user_providers per user_id
+    up_counts = (await session.execute(
+        select(UserProviderRow.user_id, func.count()).group_by(UserProviderRow.user_id)
+    )).all()
+    # Count catalog keys
+    catalog_keys = (await session.execute(
+        select(func.count()).select_from(ProviderConfigRow)
+        .where(ProviderConfigRow.api_key_encrypted.isnot(None))
+    )).scalar_one()
+    # This user's providers
+    my_ups = (await session.execute(
+        select(UserProviderRow.provider_name, UserProviderRow.api_key_encrypted.isnot(None).label("has_key"))
+        .where(UserProviderRow.user_id == user.id)
+    )).all()
+    return {
+        "your_user_id": user.id,
+        "your_username": user.username,
+        "user_providers_by_user": {str(uid): cnt for uid, cnt in up_counts},
+        "catalog_keys_remaining": catalog_keys,
+        "your_providers": [{"name": r[0], "has_key": r[1]} for r in my_ups],
+    }
 
 
 @app.get("/api/me/providers/catalog")
