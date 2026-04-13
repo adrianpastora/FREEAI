@@ -771,13 +771,13 @@ function renderProvider(p) {
   enableToggle.checked = p.enabled;
   enableToggle.addEventListener("change", async (e) => {
     try {
-      await adminApi(`/api/providers/${p.name}`, {
+      await adminApi(_providerEndpoint(p.name), {
         method: "PATCH",
         body: JSON.stringify({ enabled: e.target.checked }),
       });
       refreshProviders(true);
     } catch (err) {
-      if (err instanceof AuthError) showAdminModal();
+      if (err instanceof AuthError) showLoginModal();
     }
   });
 
@@ -795,7 +795,7 @@ function renderProvider(p) {
     if (newWeight !== null && newWeight !== p.weight) body.weight = newWeight;
     if (!Object.keys(body).length) return flashButton(node.querySelector(".save-key"), "NO CHANGE");
     try {
-      const result = await adminApi(`/api/providers/${p.name}`, { method: "PATCH", body: JSON.stringify(body) });
+      const result = await adminApi(_providerEndpoint(p.name), { method: "PATCH", body: JSON.stringify(body) });
       flashButton(node.querySelector(".save-key"), "SAVED");
       keyInput.value = "";
       // Show the model warning inline if the backend sent one
@@ -809,10 +809,10 @@ function renderProvider(p) {
 
   node.querySelector(".reset-btn").addEventListener("click", async () => {
     try {
-      await adminApi(`/api/providers/${p.name}/reset`, { method: "POST" });
+      await adminApi(`/api/providers/${p.name}/reset`, { method: "POST" }); // admin-only, hidden for regular users
       refreshProviders(true);
     } catch (err) {
-      if (err instanceof AuthError) showAdminModal();
+      if (err instanceof AuthError) showLoginModal();
     }
   });
 
@@ -924,9 +924,51 @@ function updateProviderCard(node, p) {
   node.querySelector(".enable-toggle").checked = p.enabled;
 }
 
+function _isAdmin() {
+  const u = getCurrentUser();
+  return u && u.role === "admin";
+}
+
+function _providerEndpoint(name) {
+  // Admin edits the catalog; regular users edit their own config
+  return _isAdmin() ? `/api/providers/${name}` : `/api/me/providers/${name}`;
+}
+
 async function refreshProviders(fullRender = false) {
   try {
-    const data = await adminApi("/api/providers");
+    let data;
+    if (_isAdmin()) {
+      data = await adminApi("/api/providers");
+    } else {
+      // Regular user: fetch catalog + merge with their own config
+      const [catalog, myProviders] = await Promise.all([
+        adminApi("/api/me/providers/catalog"),
+        adminApi("/api/me/providers"),
+      ]);
+      const myMap = {};
+      myProviders.forEach(p => { myMap[p.provider_name] = p; });
+      data = catalog.map(c => {
+        const my = myMap[c.name] || {};
+        return {
+          name: c.name,
+          enabled: my.enabled ?? c.enabled,
+          has_key: my.has_key || false,
+          healthy: true,
+          requests_today: 0,
+          requests_this_minute: 0,
+          rpm_limit: my.rpm_limit ?? c.rpm_limit,
+          rpd_limit: my.rpd_limit ?? c.rpd_limit,
+          tpd_limit: my.tpd_limit ?? c.tpd_limit,
+          tokens_today: 0,
+          weight: my.weight ?? c.weight,
+          last_error: null,
+          last_latency_ms: null,
+          latency_ema_ms: null,
+          tags: c.tags || [],
+          default_model: my.default_model ?? c.default_model,
+        };
+      });
+    }
     providersCache = data;
 
     // If cards already exist and no structural change, patch in-place
@@ -947,8 +989,8 @@ async function refreshProviders(fullRender = false) {
   } catch (err) {
     if (err instanceof AuthError) {
       updateUplink(false);
-      grid.innerHTML = `<div class="output-empty"><pre>admin token required\nclick the lock icon</pre></div>`;
-      showAdminModal();
+      grid.innerHTML = `<div class="output-empty"><pre>login required\nclick the lock icon</pre></div>`;
+      showLoginModal();
       return;
     }
     updateUplink(false);
@@ -980,7 +1022,7 @@ async function refreshConfig() {
   try {
     configCache = await adminApi("/api/config");
   } catch (err) {
-    if (err instanceof AuthError) showAdminModal();
+    if (err instanceof AuthError) showLoginModal();
     return;
   }
   document.getElementById("strategyValue").textContent = configCache.default_strategy;
@@ -1069,7 +1111,7 @@ async function refreshStrategies() {
         });
         refreshConfig();
       } catch (err) {
-        if (err instanceof AuthError) showAdminModal();
+        if (err instanceof AuthError) showLoginModal();
       }
     });
     card.querySelector(".edit-strategy")?.addEventListener("click", (e) => {
@@ -1083,7 +1125,7 @@ async function refreshStrategies() {
         await adminApi(`/api/strategies/${s.name}`, { method: "DELETE" });
         refreshConfig();
       } catch (err) {
-        if (err instanceof AuthError) showAdminModal();
+        if (err instanceof AuthError) showLoginModal();
         else alert(err.message);
       }
     });
@@ -1462,7 +1504,7 @@ document.getElementById("fallbackToggle").addEventListener("change", async (e) =
       body: JSON.stringify({ enable_fallback: e.target.checked }),
     });
   } catch (err) {
-    if (err instanceof AuthError) showAdminModal();
+    if (err instanceof AuthError) showLoginModal();
   }
 });
 
@@ -1715,7 +1757,7 @@ async function refreshClients() {
         await adminApi(`/api/clients/${c.key_hash}`, { method: "DELETE" });
         refreshClients();
       } catch (err) {
-        if (err instanceof AuthError) showAdminModal();
+        if (err instanceof AuthError) showLoginModal();
       }
     });
     list.appendChild(card);
@@ -1741,7 +1783,7 @@ document.getElementById("clientCreate").addEventListener("click", async () => {
     document.getElementById("clientName").value = "";
     refreshClients();
   } catch (err) {
-    if (err instanceof AuthError) showAdminModal();
+    if (err instanceof AuthError) showLoginModal();
     else alert(err.message);
   }
 });
