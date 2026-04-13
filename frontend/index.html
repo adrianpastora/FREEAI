@@ -291,6 +291,45 @@
   </div>
 </div>
 
+<!-- ───────── PROVIDER SETUP WIZARD (multi-step) ───────── -->
+<div class="modal" id="providerWizardModal" hidden>
+  <div class="modal__backdrop"></div>
+  <div class="modal__card modal__card--wizard">
+    <div class="modal__corner modal__corner--tl">┌</div>
+    <div class="modal__corner modal__corner--tr">┐</div>
+    <div class="modal__corner modal__corner--bl">└</div>
+    <div class="modal__corner modal__corner--br">┘</div>
+
+    <!-- Progress header -->
+    <div class="pw__header">
+      <div class="pw__title-row">
+        <h3>PROVIDER SETUP</h3>
+        <span class="pw__counter" id="pwCounter">1 / 6</span>
+      </div>
+      <div class="pw__progress">
+        <div class="pw__progress-fill" id="pwProgressFill"></div>
+      </div>
+      <div class="pw__track" id="pwTrack"></div>
+    </div>
+
+    <!-- Step content (replaced dynamically) -->
+    <div class="pw__body" id="pwBody"></div>
+
+    <!-- Navigation -->
+    <div class="pw__nav">
+      <button class="ghost-button ghost-button--small" id="pwPrev">
+        <span class="ghost-button__char">←</span> ANTERIOR
+      </button>
+      <div class="pw__nav-right">
+        <button class="ghost-button ghost-button--small" id="pwSkip">SALTAR</button>
+        <button class="primary-button" id="pwNext">
+          SIGUIENTE <span class="primary-button__char">→</span>
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <main class="stage">
 
   <!-- ───────── PROVIDERS ───────── -->
@@ -301,6 +340,10 @@
         <h2 class="panel__title">PROVIDER&nbsp;ROSTER</h2>
       </div>
       <div class="panel__head-right">
+        <button class="primary-button" id="openProviderWizard" style="margin-right:8px">
+          <span class="primary-button__char">⚡</span>
+          <span>SETUP WIZARD</span>
+        </button>
         <button class="ghost-button" id="refreshProviders">
           <span>REFRESH</span>
           <span class="ghost-button__char">↻</span>
