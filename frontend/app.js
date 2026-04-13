@@ -121,9 +121,15 @@ function updateLockUI() {
 }
 
 function showLoginModal() {
-  document.getElementById("adminModal").hidden = false;
+  const modal = document.getElementById("adminModal");
+  const wasAlreadyOpen = !modal.hidden;
+  modal.hidden = false;
   document.getElementById("loginError").style.display = "none";
-  setTimeout(() => document.getElementById("loginUsername").focus(), 50);
+  // Only auto-focus if the modal was just opened — don't steal focus
+  // from the user if they're already typing in the password field
+  if (!wasAlreadyOpen) {
+    setTimeout(() => document.getElementById("loginUsername").focus(), 50);
+  }
 }
 function hideLoginModal() {
   document.getElementById("adminModal").hidden = true;
