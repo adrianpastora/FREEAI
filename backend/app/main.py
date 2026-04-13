@@ -365,40 +365,46 @@ async def register(
 ) -> dict:
     """Register a new user.
 
-    The first user becomes admin automatically. Subsequent users require
-    a valid admin JWT.
+    The first real user becomes admin automatically. Subsequent users require
+    a valid admin JWT. The placeholder user created by migration 0013 does not
+    count as a real user.
     """
     user_repo = UserRepository(session)
     count = await user_repo.count()
 
-    if count > 0:
+    # Don't count the migration placeholder as a real user
+    placeholder = await user_repo.find_by_username("admin")
+    is_placeholder = placeholder and placeholder.password_hash == "__placeholder_needs_migration__"
+    real_count = count - (1 if is_placeholder else 0)
+
+    if real_count > 0:
         # Require admin JWT for creating additional users
-        user = None
         from .auth import decode_access_token
         token = None
         if authorization:
             parts = authorization.split(None, 1)
             if len(parts) == 2 and parts[0].lower() == "bearer":
                 token = parts[1].strip()
+        caller = None
         if token:
             payload = decode_access_token(token)
             if payload and payload.get("role") == "admin":
-                user = CurrentUser(
+                caller = CurrentUser(
                     id=int(payload["sub"]),
                     username=payload["username"],
                     role=payload["role"],
                 )
-        if not user:
+        if not caller:
             raise HTTPException(403, "only admins can register new users")
-        if count >= 5:
+        if real_count >= 5:
             raise HTTPException(400, "maximum number of users reached (5)")
 
     # Check uniqueness
     existing = await user_repo.find_by_username(body.username)
-    if existing:
+    if existing and not (existing == placeholder and is_placeholder):
         raise HTTPException(409, f"username '{body.username}' is already taken")
 
-    role = "admin" if count == 0 else "user"
+    role = "admin" if real_count == 0 else "user"
     pwd_hash = hash_password(body.password)
     user_dto = await user_repo.create(body.username, pwd_hash, role=role)
 
