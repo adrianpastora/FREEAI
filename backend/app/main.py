@@ -408,6 +408,35 @@ async def register(
     pwd_hash = hash_password(body.password)
     user_dto = await user_repo.create(body.username, pwd_hash, role=role)
 
+    # If this is the first real admin and a placeholder exists,
+    # transfer its providers, clients, and usage data to the new user
+    if role == "admin" and is_placeholder and placeholder:
+        from sqlalchemy import update as sa_update
+        from .db.models import ClientRow, UserProviderRow, UsageEventRow, RateEventRow, ProviderStatsRow
+        for tbl, col in [
+            (UserProviderRow, UserProviderRow.user_id),
+            (ClientRow, ClientRow.user_id),
+        ]:
+            await session.execute(
+                sa_update(tbl).where(col == placeholder.id).values(user_id=user_dto.id)
+            )
+        # Also transfer rate_events and provider_stats
+        await session.execute(
+            sa_update(RateEventRow).where(RateEventRow.user_id == placeholder.id).values(user_id=user_dto.id)
+        )
+        await session.execute(
+            sa_update(UsageEventRow).where(UsageEventRow.user_id == placeholder.id).values(user_id=user_dto.id)
+        )
+        # Transfer provider_stats — delete old PK rows and re-insert would be complex,
+        # so just delete the placeholder's stats (they'll be re-created on first request)
+        from sqlalchemy import delete as sa_delete
+        await session.execute(
+            sa_delete(ProviderStatsRow).where(ProviderStatsRow.user_id == placeholder.id)
+        )
+        # Delete the placeholder user
+        await user_repo.delete(placeholder.id)
+        await session.flush()
+
     return await _issue_tokens(user_dto.id, user_dto.username, user_dto.role, session)
 
 
