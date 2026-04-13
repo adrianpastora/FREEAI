@@ -117,7 +117,7 @@ _GEMINI_AUDIO_MIMES = {"audio/ogg", "audio/mpeg", "audio/wav", "audio/flac",
 
 
 async def _transcribe_groq(
-    audio: AudioInput, api_key: str
+    audio: AudioInput, api_key: str, *, client: httpx.AsyncClient,
 ) -> TranscriptionResult | TranscriptionError:
     """Send audio to Groq's OpenAI-compatible Whisper endpoint.
 
@@ -131,14 +131,13 @@ async def _transcribe_groq(
 
     started = time.perf_counter()
     try:
-        async with httpx.AsyncClient() as http:
-            resp = await http.post(
-                _GROQ_URL,
-                headers={"Authorization": f"Bearer {api_key}"},
-                files=files,
-                data=data,
-                timeout=_GROQ_TIMEOUT,
-            )
+        resp = await client.post(
+            _GROQ_URL,
+            headers={"Authorization": f"Bearer {api_key}"},
+            files=files,
+            data=data,
+            timeout=_GROQ_TIMEOUT,
+        )
     except httpx.TimeoutException:
         return TranscriptionError(
             provider="groq", model=_GROQ_MODEL, kind=ErrorKind.NETWORK,
@@ -175,7 +174,7 @@ async def _transcribe_groq(
 
 
 async def _transcribe_gemini(
-    audio: AudioInput, api_key: str
+    audio: AudioInput, api_key: str, *, client: httpx.AsyncClient,
 ) -> TranscriptionResult | TranscriptionError:
     """Send audio to Gemini's generateContent endpoint with a transcription prompt.
 
@@ -210,8 +209,7 @@ async def _transcribe_gemini(
 
     started = time.perf_counter()
     try:
-        async with httpx.AsyncClient() as http:
-            resp = await http.post(url, json=payload, timeout=_GEMINI_TIMEOUT)
+        resp = await client.post(url, json=payload, timeout=_GEMINI_TIMEOUT)
     except httpx.TimeoutException:
         return TranscriptionError(
             provider="gemini", model=_GEMINI_MODEL, kind=ErrorKind.NETWORK,
@@ -264,7 +262,8 @@ def supports_transcription(provider_name: str) -> bool:
 
 
 async def transcribe(
-    provider_name: str, audio: AudioInput, api_key: str
+    provider_name: str, audio: AudioInput, api_key: str,
+    *, client: httpx.AsyncClient,
 ) -> TranscriptionResult | TranscriptionError:
     """Dispatch to a provider's transcription function with retry.
 
@@ -282,7 +281,7 @@ async def transcribe(
 
     last_error: Optional[TranscriptionError] = None
     for attempt in range(_MAX_RETRIES + 1):
-        result = await fn(audio, api_key)
+        result = await fn(audio, api_key, client=client)
 
         if isinstance(result, TranscriptionResult):
             return result

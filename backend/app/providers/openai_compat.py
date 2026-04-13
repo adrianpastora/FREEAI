@@ -114,7 +114,7 @@ class OpenAICompatibleProvider(BaseProvider):
                 self.BASE_URL,
                 json=payload,
                 headers=headers,
-                timeout=self.request_timeout,
+                timeout=httpx.Timeout(self.request_timeout, read=None),
             ) as resp:
                 if resp.status_code >= 400:
                     body = await resp.aread()

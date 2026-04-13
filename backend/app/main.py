@@ -465,7 +465,10 @@ async def audio_transcriptions(
             continue
 
         # Attempt transcription
-        result = await transcribe(provider_name, audio, dto.api_key)
+        result = await transcribe(
+            provider_name, audio, dto.api_key,
+            client=app.state.orchestrator._client,
+        )
 
         if isinstance(result, TranscriptionResult):
             # ── Success ──
