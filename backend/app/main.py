@@ -190,6 +190,16 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def no_cache_static_assets(request: Request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    if path.endswith((".js", ".css", ".html")) or path == "/":
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+    return response
+
+
 # ──────────────────────────── first-run setup (public) ────────────────────────────
 
 
@@ -613,6 +623,12 @@ async def list_my_providers(
     """
     repo = UserProviderRepository(session)
     dtos = await repo.list_for_user(user.id)
+    log.info(
+        "list_my_providers",
+        user_id=user.id, username=user.username, role=user.role,
+        providers_found=len(dtos),
+        with_key=sum(1 for d in dtos if d.api_key),
+    )
 
     # Auto-recovery for admins: if no user_providers but catalog has keys
     if not dtos and user.is_admin:
@@ -666,9 +682,10 @@ async def debug_my_providers(
     session: AsyncSession = Depends(get_session),
     user: CurrentUser = Depends(get_current_user),
 ) -> dict:
-    """Debug endpoint — shows where keys actually are."""
+    """Debug endpoint — shows where keys actually are and if decrypt works."""
     from sqlalchemy import select, func
     from .db.models import UserProviderRow, ProviderConfigRow
+    from .crypto import decrypt
     # Count user_providers per user_id
     up_counts = (await session.execute(
         select(UserProviderRow.user_id, func.count()).group_by(UserProviderRow.user_id)
@@ -678,17 +695,36 @@ async def debug_my_providers(
         select(func.count()).select_from(ProviderConfigRow)
         .where(ProviderConfigRow.api_key_encrypted.isnot(None))
     )).scalar_one()
-    # This user's providers
-    my_ups = (await session.execute(
-        select(UserProviderRow.provider_name, UserProviderRow.api_key_encrypted.isnot(None).label("has_key"))
+    # This user's providers with decrypt check
+    my_rows = (await session.execute(
+        select(UserProviderRow)
         .where(UserProviderRow.user_id == user.id)
-    )).all()
+    )).scalars().all()
+    providers_detail = []
+    for r in my_rows:
+        has_encrypted = r.api_key_encrypted is not None
+        decrypted = decrypt(r.api_key_encrypted) if has_encrypted else None
+        providers_detail.append({
+            "name": r.provider_name,
+            "has_encrypted_value": has_encrypted,
+            "decrypt_ok": decrypted is not None,
+            "has_key": bool(decrypted),
+        })
+    # Master key info
+    from .crypto import MASTER_KEY_PATH
+    master_key_source = "env" if os.environ.get("FREEAI_MASTER_KEY") else (
+        "file" if MASTER_KEY_PATH.exists() else "auto-generated"
+    )
     return {
         "your_user_id": user.id,
         "your_username": user.username,
+        "your_role": user.role,
         "user_providers_by_user": {str(uid): cnt for uid, cnt in up_counts},
         "catalog_keys_remaining": catalog_keys,
-        "your_providers": [{"name": r[0], "has_key": r[1]} for r in my_ups],
+        "your_providers": providers_detail,
+        "master_key_source": master_key_source,
+        "master_key_path": str(MASTER_KEY_PATH),
+        "cors_origins": get_settings().cors_origin_list,
     }
 
 
