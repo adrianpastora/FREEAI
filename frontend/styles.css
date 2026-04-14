@@ -102,11 +102,22 @@ body.dark .modal__card { background: var(--bone-2); border-color: var(--char-3);
 
 /* Forms */
 body.dark input, body.dark select, body.dark textarea {
-  background: var(--bone);
+  background: var(--bone-2);
   color: var(--char);
   border-color: var(--char-3);
 }
-body.dark input::placeholder { color: var(--char-3); }
+body.dark input::placeholder,
+body.dark textarea::placeholder { color: var(--char-3); }
+body.dark select option {
+  background: var(--bone-2);
+  color: var(--char);
+}
+body.dark .field textarea:focus,
+body.dark .field input:focus,
+body.dark .field select:focus {
+  background: var(--bone-3);
+  box-shadow: inset 0 0 0 1px var(--amber);
+}
 
 /* Code & footer */
 body.dark code { background: #100e0a; color: var(--amber-soft); }
