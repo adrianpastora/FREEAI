@@ -136,6 +136,11 @@ body.dark .playground__output--small {
   color: #f1ece1;
   border-color: var(--char-3);
 }
+body.dark .output-body { color: #f1ece1; }
+body.dark .output-meta { color: #b5ac98; }
+body.dark .output-meta b { color: var(--amber); }
+body.dark .output-fallback { color: #b5ac98; border-top-color: #3c372d; }
+body.dark .output-fallback b { color: var(--amber-soft); }
 body.dark .output-empty { color: #b5ac98; }
 body.dark .output-empty pre { color: var(--amber); opacity: 0.7; }
 
