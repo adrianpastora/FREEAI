@@ -83,7 +83,12 @@ def decrypt(value: Optional[str]) -> Optional[str]:
     try:
         return _fernet.decrypt(token.encode("utf-8")).decode("utf-8")
     except InvalidToken:
-        log.error("could not decrypt value — wrong master key?")
+        log.error(
+            "could not decrypt value — wrong master key? "
+            "key_source=%s key_path=%s",
+            "env" if os.environ.get("FREEAI_MASTER_KEY") else "file",
+            MASTER_KEY_PATH,
+        )
         return None
 
 

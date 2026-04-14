@@ -106,11 +106,25 @@ async def require_client(
     Returns the matched Client DTO (or None in bootstrap mode). Raises 401 on
     missing/invalid keys and 429 on client rate limit breach.
 
-    Also accepts the admin token (via X-Admin-Token header) as a bypass so the
-    built-in playground can call /v1/* without needing a separate client key.
+    Auth precedence:
+      1. JWT (Authorization: Bearer <jwt>) — used by the built-in playground.
+         Sets request.state.user_id from the JWT claims.
+      2. Legacy admin token (X-Admin-Token header) — backwards compat.
+         Resolves to the first admin user so user_id is always set.
+      3. Client API key (Authorization: Bearer <api-key>) — external consumers.
     """
-    # Admin bypass — if a valid admin token is presented, skip client auth.
+    # 1. Try JWT first — the playground sends the user's JWT here.
+    jwt_user = _try_jwt(authorization)
+    if jwt_user:
+        request.state.user_id = jwt_user.id
+        return None
+
+    # 2. Legacy admin token bypass.
     if x_admin_token and await verify_admin_credentials(session, x_admin_token):
+        user_repo = UserRepository(session)
+        admin = await user_repo.find_first_admin()
+        if admin:
+            request.state.user_id = admin.id
         return None
 
     settings = get_settings()

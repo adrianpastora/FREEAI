@@ -59,6 +59,11 @@ class UserRepository:
         rows = (await self._s.execute(stmt)).scalars().all()
         return [self._to_dto(r) for r in rows]
 
+    async def find_first_admin(self) -> Optional[UserDTO]:
+        stmt = select(UserRow).where(UserRow.role == "admin").order_by(UserRow.id).limit(1)
+        row = (await self._s.execute(stmt)).scalar_one_or_none()
+        return self._to_dto(row) if row else None
+
     async def count(self) -> int:
         stmt = select(func.count()).select_from(UserRow)
         return (await self._s.execute(stmt)).scalar_one()

@@ -50,7 +50,7 @@ class Settings(BaseSettings):
     admin_token_path: Path = Path(__file__).parent.parent / "data" / "admin_token"
 
     # CORS
-    cors_origins: str = "http://localhost:8000,http://127.0.0.1:8000"
+    cors_origins: str = "http://localhost:8000,http://127.0.0.1:8000,https://freeai.example.com"
 
     # Logging
     log_level: str = "INFO"

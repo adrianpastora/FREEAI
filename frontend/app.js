@@ -1805,7 +1805,7 @@ const pgSend = document.getElementById("pgSend");
 function getPlaygroundHeaders(extra = {}) {
   const headers = { "Content-Type": "application/json", ...extra };
   const token = getAccessToken();
-  if (token) headers["X-Admin-Token"] = token;
+  if (token) headers["Authorization"] = `Bearer ${token}`;
   return headers;
 }
 
@@ -1958,8 +1958,8 @@ document.getElementById("pgTranscribe").addEventListener("click", async () => {
 
   try {
     const headers = {};
-    const token = getAdminToken();
-    if (token) headers["X-Admin-Token"] = token;
+    const token = getAccessToken();
+    if (token) headers["Authorization"] = `Bearer ${token}`;
 
     const res = await fetch(`${API_BASE}/v1/audio/transcriptions`, {
       method: "POST",
