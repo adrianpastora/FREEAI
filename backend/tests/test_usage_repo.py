@@ -119,3 +119,58 @@ async def test_summary_time_buckets_dense(session):
     assert len(summary.time_buckets) == 6
     total = sum(b["calls"] for b in summary.time_buckets)
     assert total == 1
+
+
+@pytest.mark.asyncio
+async def test_summary_enriched_fields(session):
+    """New analytics dims: P99, TTFB, token split, errors by kind, by model,
+    fallback histogram, hourly pattern — all present and consistent."""
+    repo = UsageRepository(session)
+    # 10 successes with spread latencies so p99 != p95
+    for lat in [50, 60, 70, 80, 90, 100, 110, 120, 130, 900]:
+        await _record(repo, provider="groq", outcome="success", latency=lat, tokens=100)
+    # 2 failures of distinct kinds
+    await _record(repo, provider="groq", outcome="rate_limited", latency=20)
+    await _record(repo, provider="gemini", outcome="server_error", latency=400)
+    # one event with fallback_position=2
+    from app.repositories import UsageEvent
+    await repo.record(UsageEvent(
+        provider="gemini", model="gemini-model", strategy="auto",
+        outcome="success", latency_ms=200, prompt_tokens=40,
+        completion_tokens=60, fallback_position=2, ttfb_ms=75,
+    ))
+    await session.commit()
+
+    s = await repo.summary(window_seconds=3600, bucket_count=12)
+
+    assert s.total_calls == 13
+    assert s.p50_latency_ms and s.p95_latency_ms and s.p99_latency_ms
+    assert s.p95_latency_ms <= s.p99_latency_ms
+
+    assert s.avg_ttfb_ms == 75  # only one event has ttfb
+
+    assert s.prompt_tokens + s.completion_tokens == s.total_tokens
+    assert s.prompt_tokens > 0 and s.completion_tokens > 0
+
+    kinds = {e["kind"]: e["calls"] for e in s.errors_by_kind}
+    assert kinds == {"rate_limited": 1, "server_error": 1}
+
+    models = {m["model"]: m["calls"] for m in s.by_model}
+    assert models["groq-model"] == 11
+    assert models["gemini-model"] == 2
+
+    fb = {r["position"]: r["calls"] for r in s.fallback_hist}
+    assert fb[1] == 12 and fb[2] == 1
+
+    # hourly_pattern always has 24 entries, zero-filled
+    assert len(s.hourly_pattern) == 24
+    assert sum(r["calls"] for r in s.hourly_pattern) >= 13
+
+
+@pytest.mark.asyncio
+async def test_errors_by_kind_empty_when_all_success(session):
+    repo = UsageRepository(session)
+    await _record(repo, provider="groq", outcome="success", latency=100)
+    await session.commit()
+    s = await repo.summary(window_seconds=3600, bucket_count=12)
+    assert s.errors_by_kind == []
