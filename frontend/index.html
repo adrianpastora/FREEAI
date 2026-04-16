@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,600;9..144,900&family=JetBrains+Mono:wght@300;400;500;700&display=swap" rel="stylesheet">
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='8' fill='%2316140f'/%3E%3Crect x='2' y='2' width='60' height='60' rx='6' fill='none' stroke='%23ff7a18' stroke-width='2'/%3E%3Ctext x='32' y='26' text-anchor='middle' font-family='Georgia,serif' font-weight='bold' font-size='18' fill='%23ff7a18'%3EFREE%3C/text%3E%3Ctext x='32' y='46' text-anchor='middle' font-family='Georgia,serif' font-weight='bold' font-style='italic' font-size='20' fill='%23f1ece1'%3E.AI%3C/text%3E%3C/svg%3E">
-<link rel="stylesheet" href="./styles.css?v=2.0.0">
+<link rel="stylesheet" href="./styles.css?v=2.1.0">
 </head>
 <body>
 
@@ -548,6 +548,79 @@
         <div class="chart-card__body" id="chartByClient"></div>
       </div>
     </div>
+
+    <!-- Enriched analytics row — percentiles / TTFB / token split -->
+    <div class="kpi-grid" id="kpiGridExtra"></div>
+
+    <div class="chart-row">
+      <div class="chart-card">
+        <h3 class="chart-card__title">ERRORS&nbsp;BY&nbsp;KIND</h3>
+        <div class="chart-card__body" id="chartErrorsByKind"></div>
+      </div>
+      <div class="chart-card">
+        <h3 class="chart-card__title">BY&nbsp;MODEL</h3>
+        <div class="chart-card__body" id="chartByModel"></div>
+      </div>
+      <div class="chart-card">
+        <h3 class="chart-card__title">FALLBACK&nbsp;CHAIN</h3>
+        <div class="chart-card__body" id="chartFallbackChain"></div>
+      </div>
+      <div class="chart-card">
+        <h3 class="chart-card__title">TOKENS&nbsp;IN / OUT</h3>
+        <div class="chart-card__body" id="chartTokenSplit"></div>
+      </div>
+    </div>
+
+    <div class="chart-row">
+      <div class="chart-card chart-card--wide">
+        <h3 class="chart-card__title">HOURLY&nbsp;PATTERN&nbsp;<span class="chart-card__subtitle">(last 7d)</span></h3>
+        <div class="chart-card__body" id="chartHourlyPattern"></div>
+      </div>
+    </div>
+
+    <!-- ───────── HISTORICAL (long-window rollups) ───────── -->
+    <details class="historical-block" id="historicalBlock">
+      <summary class="historical-block__head">
+        <span class="ascii-arrow">└──▶</span>
+        <span class="historical-block__title">HISTORICAL</span>
+        <span class="historical-block__hint">aggregated from daily rollups — up to 2 years</span>
+      </summary>
+      <div class="historical-block__body">
+        <div class="historical-block__controls">
+          <select id="historicalDays" class="ghost-button">
+            <option value="30">last 30 days</option>
+            <option value="90" selected>last 90 days</option>
+            <option value="180">last 180 days</option>
+            <option value="365">last 365 days</option>
+            <option value="730">last 2 years</option>
+          </select>
+          <button class="ghost-button" id="historicalRefresh">
+            <span>REFRESH</span>
+            <span class="ghost-button__char">↻</span>
+          </button>
+        </div>
+
+        <div class="kpi-grid" id="historicalKpis"></div>
+
+        <div class="chart-row">
+          <div class="chart-card chart-card--wide">
+            <h3 class="chart-card__title">DAILY&nbsp;CALLS</h3>
+            <div class="chart-card__body" id="chartHistoricalDaily"></div>
+          </div>
+        </div>
+
+        <div class="chart-row">
+          <div class="chart-card">
+            <h3 class="chart-card__title">BY&nbsp;PROVIDER&nbsp;<span class="chart-card__subtitle">(window)</span></h3>
+            <div class="chart-card__body" id="chartHistoricalByProvider"></div>
+          </div>
+          <div class="chart-card">
+            <h3 class="chart-card__title">BY&nbsp;MODEL&nbsp;<span class="chart-card__subtitle">(window)</span></h3>
+            <div class="chart-card__body" id="chartHistoricalByModel"></div>
+          </div>
+        </div>
+      </div>
+    </details>
   </section>
 
   <!-- ───────── CLIENTS ───────── -->
@@ -848,7 +921,7 @@ language: "en"        // optional (ISO 639-1)
   </article>
 </template>
 
-<script src="./charts.js?v=2.0.0"></script>
-<script src="./app.js?v=2.0.0"></script>
+<script src="./charts.js?v=2.1.0"></script>
+<script src="./app.js?v=2.1.0"></script>
 </body>
 </html>

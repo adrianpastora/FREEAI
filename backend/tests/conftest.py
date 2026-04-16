@@ -98,7 +98,7 @@ def _truncate_all_tables(url: str) -> None:
                 await conn.execute(
                     text(
                         "TRUNCATE rate_events, provider_stats, providers, app_config, clients, "
-                        "client_rate_events, strategies, usage_events, "
+                        "client_rate_events, strategies, usage_events, usage_daily_rollup, "
                         "user_providers, refresh_tokens, users RESTART IDENTITY CASCADE"
                     )
                 )

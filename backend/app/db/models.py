@@ -15,12 +15,14 @@ see the freeai_try_reserve plpgsql function in the initial migration.
 """
 from __future__ import annotations
 
+import datetime as _dt
 import time
 from typing import Optional
 
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    Date,
     Float,
     ForeignKey,
     Integer,
@@ -158,6 +160,37 @@ class UsageEventRow(Base):
     client_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     user_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     ttfb_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+
+class UsageDailyRollupRow(Base):
+    """Daily pre-aggregated analytics, keyed by (user, day, provider, model, strategy).
+
+    Populated hourly by the rollup_daily background task. Enables long-window
+    queries (>30d) without scanning the full usage_events table, and keeps
+    2 years of history even after usage_events is purged at 90 days.
+    """
+    __tablename__ = "usage_daily_rollup"
+
+    user_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    day: Mapped[_dt.date] = mapped_column(Date, primary_key=True)
+    provider_name: Mapped[str] = mapped_column(String(64), primary_key=True)
+    model: Mapped[str] = mapped_column(String(256), primary_key=True, default="")
+    strategy: Mapped[str] = mapped_column(String(32), primary_key=True)
+    total_calls: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    success_calls: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    failed_calls: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    sum_latency_ms: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    p50_latency_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    p95_latency_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    p99_latency_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    avg_ttfb_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    prompt_tokens: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    completion_tokens: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    errors_by_kind: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    fallback_position_hist: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    updated_at: Mapped[float] = mapped_column(
+        Float, default=time.time, onupdate=time.time, nullable=False
+    )
 
 
 class UserRow(Base):

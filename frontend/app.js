@@ -2088,13 +2088,57 @@ async function refreshAnalytics() {
   renderByOutcome(data);
   renderByStrategy(data);
   renderByClient(data);
+  // Enriched analytics (Sprint 7)
+  renderKpisExtra(data);
+  renderErrorsByKind(data);
+  renderByModel(data);
+  renderFallbackChain(data);
+  renderTokenSplit(data);
+  renderHourlyPattern(data);
   updateSavingsBadge(data.total_tokens || 0);
+}
+
+// ─────────────── historical analytics (rollups) ───────────────
+
+const historicalDaysSel = document.getElementById("historicalDays");
+const historicalBlock = document.getElementById("historicalBlock");
+
+async function refreshHistorical() {
+  if (!historicalDaysSel) return;
+  const days = parseInt(historicalDaysSel.value, 10);
+  let data;
+  try {
+    data = await adminApi(`/api/analytics/historical?days=${days}`);
+  } catch (err) {
+    if (err instanceof AuthError) { showAdminModal(); return; }
+    const el = document.getElementById("historicalKpis");
+    if (el) el.innerHTML = `<div class="chart-card__empty">${escapeHtml(err.message)}</div>`;
+    return;
+  }
+  renderHistoricalKpis(data);
+  renderHistoricalDaily(data);
+  renderHistoricalByProvider(data);
+  renderHistoricalByModel(data);
 }
 
 // Chart rendering functions live in charts.js (loaded before this file).
 
 document.getElementById("analyticsRefresh").addEventListener("click", refreshAnalytics);
 analyticsWindowSel.addEventListener("change", refreshAnalytics);
+
+if (historicalDaysSel) {
+  // Lazy-load: only fetch the first time the user expands the section, then
+  // refetch when they change the range or click refresh.
+  let historicalLoaded = false;
+  historicalBlock.addEventListener("toggle", () => {
+    if (historicalBlock.open && !historicalLoaded) {
+      historicalLoaded = true;
+      refreshHistorical();
+    }
+  });
+  historicalDaysSel.addEventListener("change", refreshHistorical);
+  document.getElementById("historicalRefresh").addEventListener("click", refreshHistorical);
+}
 
 // ─────────────── dark mode ───────────────
 

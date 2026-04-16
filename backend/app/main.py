@@ -144,28 +144,46 @@ async def _run_migrations(database_url: str) -> None:
 
 
 async def _periodic_purge(sessionmaker) -> None:
-    """Background loop that trims event tables every hour.
+    """Background loop that trims event tables every hour and rolls up dailies.
 
     rate_events: keep 2 days (only rpm/rpd windows matter).
     client_rate_events: keep 2 days (only per-minute window matters).
-    usage_events: keep 90 days (feeds the analytics dashboard).
+    usage_events: keep 90 days (feeds the real-time analytics dashboard).
+    usage_daily_rollup: keep 730 days (feeds historical analytics).
+
+    Rollup order: compute today + yesterday rollups BEFORE purging usage_events,
+    so a late-arrival row never falls off the 90d edge without being counted.
     """
+    from datetime import datetime, timedelta, timezone
     while True:
         await asyncio.sleep(3600)
         try:
             async with sessionmaker() as session:
+                usage_repo = UsageRepository(session)
+                # Roll up yesterday (closes out late arrivals) then today
+                # (still-accumulating, but kept fresh for historical views).
+                today_utc = datetime.now(timezone.utc).date()
+                yesterday_utc = today_utc - timedelta(days=1)
+                rolled_yday = await usage_repo.rollup_day(yesterday_utc)
+                rolled_today = await usage_repo.rollup_day(today_utc)
+
                 r1 = await RateRepository(session).purge_old_events(86400 * 2)
                 r2 = await ClientRateRepository(session).purge_older_than(86400 * 2)
-                r3 = await UsageRepository(session).purge_older_than(86400 * 90)
+                r3 = await usage_repo.purge_older_than(86400 * 90)
+                r4 = await usage_repo.purge_rollups_older_than(730)
                 await session.commit()
-                if r1 or r2 or r3:
+                if r1 or r2 or r3 or r4:
                     purge_rows_total.labels(table="rate_events").inc(r1)
                     purge_rows_total.labels(table="client_rate_events").inc(r2)
                     purge_rows_total.labels(table="usage_events").inc(r3)
-                    log.info(
-                        "periodic_purge",
-                        rate_events=r1, client_rate_events=r2, usage_events=r3,
-                    )
+                    purge_rows_total.labels(table="usage_daily_rollup").inc(r4)
+                log.info(
+                    "periodic_purge",
+                    rate_events=r1, client_rate_events=r2,
+                    usage_events=r3, usage_daily_rollup=r4,
+                    rollup_rows_yesterday=rolled_yday,
+                    rollup_rows_today=rolled_today,
+                )
         except Exception as exc:  # noqa: BLE001
             log.error("periodic_purge_failed", error=str(exc))
 
@@ -1541,6 +1559,25 @@ async def analytics(
         window_seconds=window_seconds, bucket_count=bucket_count,
         user_id=_user.id,
     )
+    return asdict(summary)
+
+
+@app.get("/api/analytics/historical")
+async def analytics_historical(
+    days: int = 90,
+    session: AsyncSession = Depends(get_session),
+    _user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    """Long-window aggregates read from usage_daily_rollup.
+
+    Supports 30/90/180/365/730 days — computed from pre-aggregated daily rows
+    so it stays fast even over a full year. Use /api/analytics for windows
+    ≤ 7 days (finer granularity from raw events).
+    """
+    if days not in (30, 90, 180, 365, 730):
+        raise HTTPException(400, "days must be one of 30, 90, 180, 365, 730")
+    repo = UsageRepository(session)
+    summary = await repo.historical_summary(days=days, user_id=_user.id)
     return asdict(summary)
 
 
