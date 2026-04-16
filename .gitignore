@@ -8,3 +8,5 @@ backend/data/.master_key
 .DS_Store
 .vscode/
 .idea/
+.claude/
+.playwright-mcp/
