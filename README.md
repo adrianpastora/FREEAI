@@ -78,6 +78,11 @@ Any OpenAI-compatible client works — point its base URL at
   translated to its native `inlineData`/`fileData` format; OpenRouter gets
   the standard OpenAI multimodal format. Non-vision providers are
   automatically excluded.
+- **Embeddings with fallback** — `POST /v1/embeddings` (OpenAI-compatible)
+  returns text embeddings through Mistral (`mistral-embed`, 1024 dim) or
+  Gemini (`text-embedding-004`, 768 dim). Same rate-limiting, quarantine
+  and analytics pipeline as chat — events land in `usage_events` with
+  `strategy = "embedding"`. See [docs/API.md § Embeddings](docs/API.md#embeddings).
 - **Language-aware auto strategy** — detects EN/ES/FR/DE/PT from stopword
   frequency and picks coding/reasoning/vision/long_context/fastest from
   signals in the prompt (including actual `image_url` blocks), without an
@@ -107,6 +112,7 @@ This README is a pointer. The actual documentation lives in
 |---|---|
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Layering, request flow, error taxonomy, design decisions |
 | [docs/API.md](docs/API.md) | Full endpoint reference with examples and auth details |
+| [docs/EMBEDDINGS.md](docs/EMBEDDINGS.md) | `/v1/embeddings` — provider table, same-model rule, fallback loop, RAG guidance |
 | [docs/DATABASE.md](docs/DATABASE.md) | Schema, migrations, the atomic reservation function, useful queries |
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | Deploy, observability, backup/restore, reverse-proxy, troubleshooting |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Contributing, tests, adding providers/strategies, frontend conventions |

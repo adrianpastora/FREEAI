@@ -13,7 +13,7 @@ from typing import AsyncIterator, Optional
 import httpx
 
 from ..schemas import ChatMessage
-from .base import BaseProvider, ErrorKind, ProviderError, ProviderResponse, StreamChunk
+from .base import BaseProvider, EmbeddingResult, ErrorKind, ProviderError, ProviderResponse, StreamChunk
 
 # Matches data URIs: data:image/png;base64,iVBOR...
 _DATA_URI_RE = re.compile(r"^data:([^;]+);base64,(.+)$", re.DOTALL)
@@ -22,8 +22,10 @@ _DATA_URI_RE = re.compile(r"^data:([^;]+);base64,(.+)$", re.DOTALL)
 class GeminiProvider(BaseProvider):
     name = "gemini"
     BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
+    DEFAULT_EMBEDDING_MODEL = "text-embedding-004"
     supports_streaming = True
     supports_vision = True
+    supports_embeddings = True
     request_timeout = 60.0
 
     def _content_to_parts(self, content) -> list[dict]:
@@ -184,3 +186,50 @@ class GeminiProvider(BaseProvider):
             raise ProviderError(self.name, f"timeout: {e}", kind=ErrorKind.NETWORK) from e
         except httpx.HTTPError as e:
             raise ProviderError(self.name, f"network: {e}", kind=ErrorKind.NETWORK) from e
+
+    async def embed(
+        self,
+        texts: list[str],
+        *,
+        model: Optional[str] = None,
+        client: httpx.AsyncClient,
+    ) -> EmbeddingResult:
+        """Gemini's batchEmbedContents takes a list of requests and returns
+        an aligned list of embeddings. Each request specifies its own model,
+        even though they're all the same here.
+        """
+        if not self.api_key:
+            raise ProviderError(self.name, "missing API key", kind=ErrorKind.AUTH)
+        chosen = model or self.DEFAULT_EMBEDDING_MODEL
+        # Gemini's embedding model names use the "models/" prefix in the body
+        qualified = chosen if chosen.startswith("models/") else f"models/{chosen}"
+        payload = {
+            "requests": [
+                {"model": qualified, "content": {"parts": [{"text": t}]}}
+                for t in texts
+            ],
+        }
+        url = f"{self.BASE_URL}/{chosen}:batchEmbedContents?key={self.api_key}"
+        try:
+            resp = await client.post(url, json=payload, timeout=self.request_timeout)
+        except httpx.TimeoutException as e:
+            raise ProviderError(self.name, f"timeout: {e}", kind=ErrorKind.NETWORK) from e
+        except httpx.HTTPError as e:
+            raise ProviderError(self.name, f"network: {e}", kind=ErrorKind.NETWORK) from e
+        self._raise_for_status(resp)
+        try:
+            data = resp.json()
+            # Shape: {"embeddings": [{"values": [...]}, {"values": [...]}, ...]}
+            vectors = [e["values"] for e in data["embeddings"]]
+        except (KeyError, IndexError, ValueError, TypeError) as e:
+            raise ProviderError(
+                self.name, f"unexpected response shape: {e}", kind=ErrorKind.PARSING,
+            ) from e
+        # Gemini doesn't report token counts for embeddings — leave at 0.
+        return EmbeddingResult(
+            vectors=vectors,
+            model=chosen,
+            provider=self.name,
+            prompt_tokens=0,
+            raw=data,
+        )

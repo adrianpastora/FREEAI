@@ -95,12 +95,28 @@ class StreamChunk:
     completion_tokens: int = 0
 
 
+@dataclass
+class EmbeddingResult:
+    """Normalized result of one successful embeddings call.
+
+    ``vectors`` is aligned with the input list — vectors[i] corresponds to
+    the i-th input string. ``prompt_tokens`` is the total input-token count
+    reported by the provider (completion_tokens is always 0 for embeddings).
+    """
+    vectors: list[list[float]]
+    model: str
+    provider: str
+    prompt_tokens: int = 0
+    raw: dict = field(default_factory=dict)
+
+
 class BaseProvider:
     """Subclass and implement `complete`. Each adapter handles its own auth/payload shape."""
 
     name: str = "base"
     supports_streaming: bool = False
     supports_vision: bool = False
+    supports_embeddings: bool = False
 
     def __init__(self, api_key: Optional[str], default_model: Optional[str] = None):
         self.api_key = api_key
@@ -132,6 +148,21 @@ class BaseProvider:
     ) -> AsyncIterator[StreamChunk]:
         raise NotImplementedError(f"{self.name} does not support streaming")
         yield  # pragma: no cover — make this an async generator for type checkers
+
+    async def embed(
+        self,
+        texts: list[str],
+        *,
+        model: Optional[str] = None,
+        client: httpx.AsyncClient,
+    ) -> EmbeddingResult:
+        """Compute embedding vectors for the given input strings.
+
+        Override in subclasses that expose an embeddings endpoint. The input
+        is always a list (single-string callers should wrap in a 1-element list);
+        output vectors are returned in the same order.
+        """
+        raise NotImplementedError(f"{self.name} does not support embeddings")
 
     def _messages_to_dicts(self, messages: list[ChatMessage]) -> list[dict]:
         """Convert ChatMessages to OpenAI-compatible dicts.

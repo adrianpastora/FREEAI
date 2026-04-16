@@ -55,13 +55,13 @@ DEFAULT_PROVIDERS: dict[str, ProviderConfigDTO] = {
     "gemini": ProviderConfigDTO(
         name="gemini",
         rpm_limit=10, rpd_limit=250, tpd_limit=None, weight=0.9,
-        tags=["quality", "vision", "long_context", "reasoning"],
+        tags=["quality", "vision", "long_context", "reasoning", "embeddings"],
         default_model="gemini-2.5-flash",
     ),
     "mistral": ProviderConfigDTO(
         name="mistral",
         rpm_limit=2, rpd_limit=1_000_000_000, tpd_limit=33_000_000, weight=0.8,
-        tags=["coding", "fast", "cheap"],
+        tags=["coding", "fast", "cheap", "embeddings"],
         default_model="mistral-small-latest",
     ),
     "openrouter": ProviderConfigDTO(

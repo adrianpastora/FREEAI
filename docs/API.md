@@ -260,6 +260,103 @@ resp = client.chat.completions.create(
 print(resp.choices[0].message.content)
 ```
 
+## Embeddings
+
+### `POST /v1/embeddings`
+
+**Auth:** client key (`Authorization: Bearer <client-key>`).
+
+OpenAI-compatible text embeddings with multi-provider fallback. Request body:
+
+| Field | Type | Required | Default | Notes |
+|-------|------|----------|---------|-------|
+| `input` | `string \| string[]` | yes | — | Single string or list; response vectors are aligned with the list order. |
+| `model` | `string` | no | provider default | Passed through; each provider has its own default (see below). |
+| `preferred_provider` | `string` | no | — | Force a specific provider (e.g. `"mistral"`). Must support embeddings. |
+| `fallback` | `boolean` | no | `true` | When `false`, only the first candidate is tried. |
+
+Response follows OpenAI's shape:
+
+```json
+{
+  "object": "list",
+  "data": [
+    {"object": "embedding", "index": 0, "embedding": [0.014, -0.231, ...]},
+    {"object": "embedding", "index": 1, "embedding": [...]}
+  ],
+  "model": "mistral-embed",
+  "provider": "mistral",
+  "usage": {"prompt_tokens": 12, "total_tokens": 12},
+  "fallback_position": 1
+}
+```
+
+`provider` and `fallback_position` are FreeAI extensions (non-OpenAI). The
+official OpenAI Python client ignores unknown fields, so standard `.embeddings.create()`
+calls work without modification.
+
+#### Supported providers
+
+| Provider | Default model | Dimension | Free-tier limit (2026-04) | Token counts? |
+|----------|---------------|-----------|---------------------------|---------------|
+| **Mistral** | `mistral-embed` | 1024 | 1 RPS, ~1B tokens/month | yes |
+| **Gemini**  | `text-embedding-004` | 768 | 1500 RPM, 30k RPD | no (always 0) |
+
+You can force a specific model by passing `model`. Mistral accepts any of
+its embedding models; Gemini accepts the `text-embedding-*` family (the
+`models/` prefix is added automatically).
+
+#### Provider selection
+
+1. Candidates are built from the user's configured providers, intersected
+   with those that implement `BaseProvider.embed()` (today: Mistral, Gemini).
+2. If `preferred_provider` is set it goes first; otherwise the priority is
+   **mistral → gemini**.
+3. Each candidate reserves capacity through the same `freeai_try_reserve`
+   function used by chat (per-user RPM/RPD). Providers at capacity are
+   skipped, not counted as failures.
+4. On transient failure (`server_error`, `network`, `rate_limited`) the next
+   candidate is tried. On `auth`/`client_error` the loop stops — those won't
+   be fixed by switching provider.
+5. All 2xx/4xx/5xx outcomes are written to `usage_events` with
+   `strategy = "embedding"`, so the analytics dashboard shows embedding
+   traffic alongside chat automatically.
+
+#### Errors
+
+- `400` — empty input, non-string entries, or no embedding provider is
+  configured for the user.
+- `401` / `403` — provider auth failure on the first attempt (not retried).
+- `429` — all candidates are rate-limited or at capacity.
+- `5xx` — all candidates returned a transient failure; the response body
+  includes `attempts` with per-provider diagnostics.
+
+#### Example — OpenAI SDK
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8000/v1", api_key="your-client-key")
+resp = client.embeddings.create(
+    model="mistral-embed",
+    input=["hello world", "second document"],
+)
+vectors = [d.embedding for d in resp.data]
+```
+
+#### Example — raw curl
+
+```bash
+curl -X POST http://localhost:8000/v1/embeddings \
+     -H "Authorization: Bearer $CLIENT_KEY" \
+     -H "Content-Type: application/json" \
+     -d '{"input": ["hello world"], "preferred_provider": "gemini"}'
+```
+
+> **Heads up:** embeddings are only comparable to other embeddings from the
+> **same model**. If you switch providers (or dimensions change) your vector
+> index must be rebuilt. Tag every vector with the `model` from the response.
+
 ## Admin — providers
 
 ### `GET /api/providers`
