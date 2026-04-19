@@ -30,6 +30,14 @@
 
   /* Focus-state surface — flips per theme so inputs never blind the user */
   --focus-bg: #fff;
+
+  /* "Dark bar" tokens — surfaces that MUST stay dark in both themes
+     (ribbon, signoff, playground output, filled buttons, active chips).
+     --char / --bone flip together, so using them for bar+text = invisible
+     in dark mode. These pinned tokens avoid that. */
+  --bar-bg:   #16140f;
+  --bar-fg:   #f1ece1;
+  --bar-dim:  rgba(241,236,225,0.65);
 }
 
 /* ─── dark mode: warm CRT phosphor ───
@@ -50,6 +58,13 @@ body.dark {
   --shadow-hard-sm: 3px 3px 0 rgba(0,0,0,0.35);
 
   --focus-bg: #332e25;
+
+  /* Dark bars stay dark in dark mode — slightly deeper for contrast
+     with warm-brown page background. Matches existing #100e0a overrides
+     so all dark bars read as one consistent surface. */
+  --bar-bg:   #100e0a;
+  --bar-fg:   #f1ece1;
+  --bar-dim:  rgba(241,236,225,0.55);
 }
 
 /* Texture overlays adapt for dark bg */
@@ -74,11 +89,7 @@ body.dark .masthead {
     radial-gradient(circle at 92% 12%, rgba(255,122,24,0.14), transparent 38%),
     var(--bone);
 }
-body.dark .ribbon {
-  background: #100e0a;
-  color: #f1ece1;
-  border-bottom-color: var(--char-3);
-}
+body.dark .ribbon { border-bottom-color: var(--char-3); }
 body.dark .ribbon__item  { color: #ddd6c6; border-right-color: rgba(241,236,225,0.12); }
 body.dark .ribbon__item:hover { background: #2a2418; color: #f1ece1; }
 body.dark .ribbon__item--active { background: var(--amber); color: #1a1814; }
@@ -120,21 +131,13 @@ body.dark select option {
 
 /* Code & footer */
 body.dark code { background: #100e0a; color: var(--amber-soft); }
-body.dark .signoff { background: #100e0a; border-top-color: var(--char-3); color: #b5ac98; }
+body.dark .signoff { border-top-color: var(--char-3); color: #b5ac98; }
 body.dark .signoff__line { color: #ddd6c6; }
 body.dark .signoff__meta code { background: #242019; color: var(--amber-soft); }
 
-/* Playground output: keep dark terminal look in both themes */
-body.dark .playground__output {
-  background: #100e0a;
-  color: #f1ece1;
-  border-color: var(--char-3);
-}
-body.dark .playground__output--small {
-  background: #100e0a;
-  color: #f1ece1;
-  border-color: var(--char-3);
-}
+/* Playground output: keep dark terminal look in both themes (bar tokens handle bg/fg). */
+body.dark .playground__output,
+body.dark .playground__output--small { border-color: var(--char-3); }
 body.dark .output-body { color: #f1ece1; }
 body.dark .output-meta { color: #b5ac98; }
 body.dark .output-meta b { color: var(--amber); }
@@ -379,8 +382,8 @@ body::before {
   align-items: stretch;
   gap: 0;
   padding: 0 56px;
-  background: var(--char);
-  color: var(--bone);
+  background: var(--bar-bg);
+  color: var(--bar-fg);
   border-bottom: var(--line-thick);
 }
 .ribbon__item {
@@ -511,8 +514,8 @@ body::before {
   transition: transform .12s, box-shadow .12s, background .12s;
 }
 .ghost-button:hover {
-  background: var(--char);
-  color: var(--bone);
+  background: var(--bar-bg);
+  color: var(--bar-fg);
   transform: translate(-2px, -2px);
   box-shadow: var(--shadow-hard-sm);
 }
@@ -555,8 +558,8 @@ body.dark .primary-button:active { box-shadow: 2px 2px 0 rgba(0,0,0,0.55); }
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.14em;
-  background: var(--char);
-  color: var(--bone);
+  background: var(--bar-bg);
+  color: var(--bar-fg);
   border: var(--line);
   padding: 7px 10px;
   cursor: pointer;
@@ -878,8 +881,8 @@ body.dark .primary-button:active { box-shadow: 2px 2px 0 rgba(0,0,0,0.55); }
   box-shadow: var(--shadow-hard-sm);
 }
 .strategy-card.is-active {
-  background: var(--char);
-  color: var(--bone);
+  background: var(--bar-bg);
+  color: var(--bar-fg);
   box-shadow: var(--shadow-hard);
   transform: translate(-3px, -3px);
 }
@@ -983,8 +986,8 @@ body.dark .primary-button:active { box-shadow: 2px 2px 0 rgba(0,0,0,0.55); }
 
 .playground__output {
   border: var(--line);
-  background: var(--char);
-  color: var(--bone);
+  background: var(--bar-bg);
+  color: var(--bar-fg);
   padding: 22px;
   box-shadow: var(--shadow-hard-sm);
   font-family: var(--mono);
@@ -1023,7 +1026,7 @@ body.dark .primary-button:active { box-shadow: 2px 2px 0 rgba(0,0,0,0.55); }
   white-space: pre-wrap;
   font-size: 13px;
   line-height: 1.65;
-  color: var(--bone);
+  color: var(--bar-fg);
   flex: 1;
 }
 .output-fallback {
@@ -1092,8 +1095,8 @@ body.dark .primary-button:active { box-shadow: 2px 2px 0 rgba(0,0,0,0.55); }
 }
 .api-section:first-child { margin-top: 6px; }
 .api-section__tag {
-  background: var(--char);
-  color: var(--bone);
+  background: var(--bar-bg);
+  color: var(--bar-fg);
   padding: 5px 10px 5px 9px;
   font-weight: 700;
   letter-spacing: 0.18em;
@@ -1104,7 +1107,7 @@ body.dark .primary-button:active { box-shadow: 2px 2px 0 rgba(0,0,0,0.55); }
    because --char flips to cream in dark mode and fails contrast on amber/cyan/moss. */
 .api-section__tag--client { background: var(--amber); color: #16140f; }
 .api-section__tag--user   { background: var(--cyan);  color: #16140f; }
-.api-section__tag--admin  { background: var(--char);  color: var(--bone); }
+.api-section__tag--admin  { background: var(--bar-bg); color: var(--bar-fg); }
 .api-section__tag--public { background: var(--moss);  color: #16140f; }
 .api-section__rule {
   flex: 1;
@@ -1230,14 +1233,11 @@ body.dark .api-card:hover {
   gap: 10px;
   border-bottom: var(--line);
   padding: 12px 16px;
-  background: var(--char);
-  color: var(--bone);
+  background: var(--bar-bg);
+  color: var(--bar-fg);
   min-width: 0;
 }
-body.dark .api-card header {
-  background: #100e0a;
-  border-bottom-color: var(--char-3);
-}
+body.dark .api-card header { border-bottom-color: var(--char-3); }
 .api-card__verb {
   background: var(--amber);
   color: #16140f;
@@ -1262,8 +1262,7 @@ body.dark .api-card header {
   font-family: var(--mono);
   font-size: 9px;
   letter-spacing: 0.18em;
-  color: var(--bone);
-  opacity: 0.55;
+  color: var(--bar-dim);
   padding-left: 6px;
   border-left: 1px solid rgba(241,236,225,0.2);
   flex-shrink: 0;
@@ -1368,8 +1367,8 @@ body.dark .api-card details summary { background: #1a1814; border-bottom-color: 
   z-index: 5;
   border-top: var(--line-thick);
   padding: 24px 56px;
-  background: var(--char);
-  color: var(--bone);
+  background: var(--bar-bg);
+  color: var(--bar-fg);
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -1396,7 +1395,7 @@ body.dark .api-card details summary { background: #1a1814; border-bottom-color: 
   margin-left: auto;
   background: transparent;
   border: none;
-  color: var(--bone);
+  color: var(--bar-fg);
   padding: 0 16px;
   font-size: 18px;
   cursor: pointer;
@@ -1585,8 +1584,8 @@ body.dark .ribbon__theme { color: var(--amber); opacity: 1; }
   font-family: var(--mono);
   font-size: 11px;
   font-weight: 700;
-  color: var(--bone);
-  background: var(--char);
+  color: var(--bar-fg);
+  background: var(--bar-bg);
   border-radius: 0;
 }
 .wizard__step-text {
@@ -1665,7 +1664,7 @@ body.dark .ribbon__theme { color: var(--amber); opacity: 1; }
   cursor: pointer; transition: all .15s; text-transform: uppercase;
 }
 .pw__track-dot:hover { border-color: var(--char); color: var(--char); }
-.pw__track-dot.is-active { background: var(--char); color: var(--bone); border-color: var(--char); }
+.pw__track-dot.is-active { background: var(--bar-bg); color: var(--bar-fg); border-color: var(--bar-bg); }
 .pw__track-dot.is-done { background: var(--moss); color: var(--bone); border-color: var(--moss); }
 .pw__track-dot.is-summary { width: auto; padding: 0 8px; letter-spacing: 0.1em; }
 
@@ -1706,7 +1705,7 @@ body.dark .ribbon__theme { color: var(--amber); opacity: 1; }
   flex-shrink: 0; width: 24px; height: 24px;
   display: flex; align-items: center; justify-content: center;
   font-family: var(--mono); font-size: 10px; font-weight: 700;
-  color: var(--bone); background: var(--char);
+  color: var(--bar-fg); background: var(--bar-bg);
 }
 .pw__step-text { flex: 1; padding-top: 2px; }
 .pw__step-text a { color: var(--amber); text-decoration: underline; text-underline-offset: 2px; }
@@ -1984,8 +1983,8 @@ body.dark .ribbon__theme { color: var(--amber); opacity: 1; }
 
 .client-flash {
   border: var(--line-thick);
-  background: var(--char);
-  color: var(--bone);
+  background: var(--bar-bg);
+  color: var(--bar-fg);
   padding: 18px 22px;
   margin-bottom: 24px;
   box-shadow: var(--shadow-hard);
