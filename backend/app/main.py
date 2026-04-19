@@ -1009,60 +1009,73 @@ async def audio_transcriptions(
             errors.append({"provider": provider_name, "skipped": "at capacity"})
             continue
 
-        # Attempt transcription
-        result = await transcribe(
-            provider_name, audio, dto.api_key,
-            client=app.state.orchestrator._client,
-        )
+        reservation_settled = False
+        try:
+            # Attempt transcription
+            result = await transcribe(
+                provider_name, audio, dto.api_key,
+                client=app.state.orchestrator._client,
+            )
 
-        if isinstance(result, TranscriptionResult):
-            # ── Success ──
-            await rate_repo.commit(reservation, result.latency_ms, ok=True)
+            if isinstance(result, TranscriptionResult):
+                # ── Success ──
+                await rate_repo.commit(reservation, result.latency_ms, ok=True)
+                reservation_settled = True
+                await usage_repo.record(UsageEvent(
+                    provider=result.provider, model=result.model,
+                    strategy="transcription", outcome="success",
+                    latency_ms=result.latency_ms, client_hash=client_hash,
+                    user_id=user_id, fallback_position=fallback_position,
+                ))
+                return {
+                    "text": result.text,
+                    "provider": result.provider,
+                    "model": result.model,
+                    "latency_ms": result.latency_ms,
+                    "fallback_position": fallback_position,
+                }
+
+            # ── Failure: commit error and decide whether to continue ──
+            err = result
+            errors.append({
+                "provider": err.provider,
+                "kind": err.kind.value,
+                "message": err.message[:200],
+            })
+
+            quarantine_s = None
+            if err.kind == ErrorKind.SERVER_ERROR:
+                quarantine_s = 60
+            elif err.kind == ErrorKind.NETWORK:
+                quarantine_s = 30
+
+            await rate_repo.commit(
+                reservation, err.latency_ms, ok=False,
+                error=err.message, error_kind=err.kind.value,
+                quarantine_seconds=quarantine_s,
+            )
+            reservation_settled = True
             await usage_repo.record(UsageEvent(
-                provider=result.provider, model=result.model,
-                strategy="transcription", outcome="success",
-                latency_ms=result.latency_ms, client_hash=client_hash,
+                provider=err.provider, model=err.model,
+                strategy="transcription", outcome=err.kind.value,
+                latency_ms=err.latency_ms, client_hash=client_hash,
                 user_id=user_id, fallback_position=fallback_position,
             ))
-            return {
-                "text": result.text,
-                "provider": result.provider,
-                "model": result.model,
-                "latency_ms": result.latency_ms,
-                "fallback_position": fallback_position,
-            }
 
-        # ── Failure: commit error and decide whether to continue ──
-        err = result
-        errors.append({
-            "provider": err.provider,
-            "kind": err.kind.value,
-            "message": err.message[:200],
-        })
+            # Auth/client errors won't be fixed by trying another provider
+            if err.kind in (ErrorKind.AUTH, ErrorKind.CLIENT_ERROR):
+                break
 
-        quarantine_s = None
-        if err.kind == ErrorKind.SERVER_ERROR:
-            quarantine_s = 60
-        elif err.kind == ErrorKind.NETWORK:
-            quarantine_s = 30
-
-        await rate_repo.commit(
-            reservation, err.latency_ms, ok=False,
-            error=err.message, error_kind=err.kind.value,
-            quarantine_seconds=quarantine_s,
-        )
-        await usage_repo.record(UsageEvent(
-            provider=err.provider, model=err.model,
-            strategy="transcription", outcome=err.kind.value,
-            latency_ms=err.latency_ms, client_hash=client_hash,
-            user_id=user_id, fallback_position=fallback_position,
-        ))
-
-        # Auth/client errors won't be fixed by trying another provider
-        if err.kind in (ErrorKind.AUTH, ErrorKind.CLIENT_ERROR):
-            break
-
-        # Transient / rate-limit → try next provider
+            # Transient / rate-limit → try next provider
+        finally:
+            if not reservation_settled:
+                try:
+                    await rate_repo.rollback(reservation)
+                except Exception:  # noqa: BLE001
+                    log.warning(
+                        "transcription reservation rollback failed",
+                        provider=provider_name, exc_info=True,
+                    )
 
     # ── All providers exhausted ──
     last = errors[-1] if errors else {}
@@ -1192,40 +1205,55 @@ async def embeddings_endpoint(
             provider_name, api_key=dto.api_key, default_model=dto.default_model,
         )
         started = time.time()
+        reservation_settled = False
         try:
-            result: EmbeddingResult = await provider.embed(
-                texts, model=req.model, client=app.state.orchestrator._client,
-            )
-        except ProviderError as err:
-            latency_ms = int((time.time() - started) * 1000)
-            errors.append({
-                "provider": err.provider,
-                "kind": err.kind.value,
-                "message": err.message[:200],
-            })
+            try:
+                result: EmbeddingResult = await provider.embed(
+                    texts, model=req.model, client=app.state.orchestrator._client,
+                )
+            except ProviderError as err:
+                latency_ms = int((time.time() - started) * 1000)
+                errors.append({
+                    "provider": err.provider,
+                    "kind": err.kind.value,
+                    "message": err.message[:200],
+                })
 
-            quarantine_s = None
-            if err.kind == ErrorKind.SERVER_ERROR:
-                quarantine_s = 60
-            elif err.kind == ErrorKind.NETWORK:
-                quarantine_s = 30
+                quarantine_s = None
+                if err.kind == ErrorKind.SERVER_ERROR:
+                    quarantine_s = 60
+                elif err.kind == ErrorKind.NETWORK:
+                    quarantine_s = 30
 
-            await rate_repo.commit(
-                reservation, latency_ms, ok=False,
-                error=err.message, error_kind=err.kind.value,
-                quarantine_seconds=quarantine_s,
-            )
-            await usage_repo.record(UsageEvent(
-                provider=err.provider, model=req.model or "",
-                strategy="embedding", outcome=err.kind.value,
-                latency_ms=latency_ms, client_hash=client_hash,
-                user_id=user_id, fallback_position=fallback_position,
-            ))
+                await rate_repo.commit(
+                    reservation, latency_ms, ok=False,
+                    error=err.message, error_kind=err.kind.value,
+                    quarantine_seconds=quarantine_s,
+                )
+                reservation_settled = True
+                await usage_repo.record(UsageEvent(
+                    provider=err.provider, model=req.model or "",
+                    strategy="embedding", outcome=err.kind.value,
+                    latency_ms=latency_ms, client_hash=client_hash,
+                    user_id=user_id, fallback_position=fallback_position,
+                ))
 
-            # Auth/client errors won't be fixed by trying another provider
-            if err.kind in (ErrorKind.AUTH, ErrorKind.CLIENT_ERROR):
-                break
-            continue
+                # Auth/client errors won't be fixed by trying another provider
+                if err.kind in (ErrorKind.AUTH, ErrorKind.CLIENT_ERROR):
+                    break
+                continue
+        finally:
+            if not reservation_settled:
+                # Request cancelled or unexpected exception before outcome
+                # recorded — release the reservation so rate counters don't
+                # carry a phantom in-flight call against the user.
+                try:
+                    await rate_repo.rollback(reservation)
+                except Exception:  # noqa: BLE001
+                    log.warning(
+                        "embeddings reservation rollback failed",
+                        provider=provider_name, exc_info=True,
+                    )
 
         # ── Success ──
         latency_ms = int((time.time() - started) * 1000)
