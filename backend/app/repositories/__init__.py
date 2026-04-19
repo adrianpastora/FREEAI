@@ -1,7 +1,7 @@
 """Repositories — async DB-backed replacements for the old in-memory singletons."""
 from .client_rate_repo import ClientRateRepository, ClientReservation
 from .client_repo import ClientRepository
-from .config_repo import ConfigRepository, ProviderConfigDTO
+from .config_repo import AppConfigDTO, ConfigRepository, ProviderConfigDTO
 from .rate_repo import RateRepository, ReservationToken
 from .strategy_repo import StrategyDTO, StrategyRepository
 from .usage_repo import AnalyticsSummary, UsageEvent, UsageRepository
@@ -9,6 +9,8 @@ from .user_provider_repo import UserProviderDTO, UserProviderRepository
 from .user_repo import RefreshTokenRepository, UserDTO, UserRepository
 
 __all__ = [
+    "AnalyticsSummary",
+    "AppConfigDTO",
     "ClientRateRepository",
     "ClientRepository",
     "ClientReservation",
@@ -25,5 +27,4 @@ __all__ = [
     "UserProviderDTO",
     "UserProviderRepository",
     "UserRepository",
-    "AnalyticsSummary",
 ]

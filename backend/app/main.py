@@ -14,23 +14,48 @@ import os
 import sys
 import time
 import uuid
+from collections import deque
 from contextlib import asynccontextmanager
 from dataclasses import asdict
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional, Self, Union
 
-import httpx
 import structlog
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from sqlalchemy import delete as sa_delete, func, select, text as sa_text, update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .crypto import hash_admin_token
+from . import strategy_dsl
+from .auth import (
+    CurrentUser,
+    create_access_token,
+    create_refresh_token,
+    decode_access_token,
+    hash_password,
+    verify_password,
+)
+from .bootstrap import (
+    consume_bootstrap_token,
+    ensure_bootstrap_token,
+    verify_bootstrap_token,
+)
+from .crypto import MASTER_KEY_PATH, decrypt, hash_admin_token
 from .db import create_engine_and_sessionmaker, dispose_engine, get_session
-from .db.models import AppConfigRow
+from .db.models import (
+    AppConfigRow,
+    ClientRow,
+    ProviderConfigRow,
+    ProviderStatsRow,
+    RateEventRow,
+    UsageEventRow,
+    UserProviderRow,
+    UserRow,
+)
 from .logging_config import configure_logging, get_logger
 from .metrics import http_request_duration_seconds, http_requests_total, purge_rows_total, render_latest
 from .orchestrator import Orchestrator
@@ -48,27 +73,17 @@ from .repositories import (
     UsageRepository,
     UserRepository,
 )
-from .repositories.usage_repo import UsageEvent
 from .repositories.config_repo import DEFAULT_PROVIDERS
+from .repositories.usage_repo import UsageEvent
 from .repositories.user_provider_repo import UserProviderRepository
-from .schemas import (
-    ChatCompletionRequest,
-    ChatCompletionResponse,
-    ProviderStatus,
+from .schemas import ChatCompletionRequest, ProviderStatus
+from .security import (
+    get_current_user,
+    require_admin,
+    require_admin_user,
+    require_client,
+    verify_admin_credentials,
 )
-from .auth import (
-    CurrentUser,
-    create_access_token,
-    create_refresh_token,
-    hash_password,
-    verify_password,
-)
-from .bootstrap import (
-    consume_bootstrap_token,
-    ensure_bootstrap_token,
-    verify_bootstrap_token,
-)
-from .security import get_current_user, require_admin, require_admin_user, require_client
 from .settings import get_settings
 from .strategy_dsl import ParseError, parse_definition
 from .virtual_models import VIRTUAL_MODELS
@@ -114,8 +129,7 @@ async def lifespan(app: FastAPI):
         user_repo = UserRepository(session)
         user_count = await user_repo.count()
         placeholder = await user_repo.find_by_username("admin")
-        is_placeholder = placeholder and placeholder.password_hash == "__placeholder_needs_migration__"
-        real_users = user_count - (1 if is_placeholder else 0)
+        real_users = user_count - (1 if _is_placeholder(placeholder) else 0)
         cfg_row = await session.get(AppConfigRow, 1)
         has_admin_token = bool(cfg_row and cfg_row.admin_token_hash) or bool(settings.admin_token) or settings.admin_token_path.exists()
         needs_bootstrap = real_users == 0 and not has_admin_token
@@ -184,7 +198,6 @@ async def _periodic_purge(sessionmaker) -> None:
     Rollup order: compute today + yesterday rollups BEFORE purging usage_events,
     so a late-arrival row never falls off the 90d edge without being counted.
     """
-    from datetime import datetime, timedelta, timezone
     while True:
         await asyncio.sleep(3600)
         try:
@@ -197,20 +210,19 @@ async def _periodic_purge(sessionmaker) -> None:
                 rolled_yday = await usage_repo.rollup_day(yesterday_utc)
                 rolled_today = await usage_repo.rollup_day(today_utc)
 
-                r1 = await RateRepository(session).purge_old_events(86400 * 2)
-                r2 = await ClientRateRepository(session).purge_older_than(86400 * 2)
-                r3 = await usage_repo.purge_older_than(86400 * 90)
-                r4 = await usage_repo.purge_rollups_older_than(730)
+                purged = {
+                    "rate_events": await RateRepository(session).purge_old_events(86400 * 2),
+                    "client_rate_events": await ClientRateRepository(session).purge_older_than(86400 * 2),
+                    "usage_events": await usage_repo.purge_older_than(86400 * 90),
+                    "usage_daily_rollup": await usage_repo.purge_rollups_older_than(730),
+                }
                 await session.commit()
-                if r1 or r2 or r3 or r4:
-                    purge_rows_total.labels(table="rate_events").inc(r1)
-                    purge_rows_total.labels(table="client_rate_events").inc(r2)
-                    purge_rows_total.labels(table="usage_events").inc(r3)
-                    purge_rows_total.labels(table="usage_daily_rollup").inc(r4)
+                if any(purged.values()):
+                    for table, rows in purged.items():
+                        purge_rows_total.labels(table=table).inc(rows)
                 log.info(
                     "periodic_purge",
-                    rate_events=r1, client_rate_events=r2,
-                    usage_events=r3, usage_daily_rollup=r4,
+                    **purged,
                     rollup_rows_yesterday=rolled_yday,
                     rollup_rows_today=rolled_today,
                 )
@@ -359,6 +371,26 @@ async def setup_status(session: AsyncSession = Depends(get_session)) -> SetupSta
 
 _SETUP_ADVISORY_LOCK_KEY = 98172354  # arbitrary but stable; pg_advisory_xact_lock
 
+# Placeholder pattern left by migration 0013 when an installation with a
+# legacy admin token is upgraded but hasn't completed user migration yet.
+# The hash is never a valid bcrypt output so no login can ever match it.
+_PLACEHOLDER_PWD_HASH = "__placeholder_needs_migration__"
+
+
+def _is_placeholder(user) -> bool:
+    return bool(user) and user.password_hash == _PLACEHOLDER_PWD_HASH
+
+
+async def _acquire_setup_lock(session: AsyncSession) -> None:
+    """Serialize first-admin / setup flows against concurrent callers.
+
+    Released automatically at transaction commit / rollback.
+    """
+    await session.execute(
+        sa_text("SELECT pg_advisory_xact_lock(:k)"),
+        {"k": _SETUP_ADVISORY_LOCK_KEY},
+    )
+
 
 @app.post("/api/setup/initial", status_code=201)
 async def setup_initial(
@@ -368,11 +400,7 @@ async def setup_initial(
 ) -> dict:
     # Serialize the full setup flow — two concurrent callers would otherwise
     # both pass the _needs_initial_setup check and race on set_admin_token_hash.
-    from sqlalchemy import text as _sql_text
-    await session.execute(
-        _sql_text("SELECT pg_advisory_xact_lock(:k)"),
-        {"k": _SETUP_ADVISORY_LOCK_KEY},
-    )
+    await _acquire_setup_lock(session)
     if not await _needs_initial_setup(session):
         raise HTTPException(
             status_code=403,
@@ -485,7 +513,7 @@ async def auth_status(session: AsyncSession = Depends(get_session)) -> dict:
     # Check if the only user is the migration placeholder
     if user_count == 1:
         placeholder = await user_repo.find_by_username("admin")
-        if placeholder and placeholder.password_hash == "__placeholder_needs_migration__":
+        if _is_placeholder(placeholder):
             return {"status": "needs_migration", "user_count": 0}
 
     if user_count > 0:
@@ -518,18 +546,14 @@ async def register(
     """
     # Serialize against concurrent registrations so two callers can't both
     # become the "first" admin by slipping past the count check in parallel.
-    from sqlalchemy import text as _sql_text
-    await session.execute(
-        _sql_text("SELECT pg_advisory_xact_lock(:k)"),
-        {"k": _SETUP_ADVISORY_LOCK_KEY},
-    )
+    await _acquire_setup_lock(session)
 
     user_repo = UserRepository(session)
     count = await user_repo.count()
 
     # Don't count the migration placeholder as a real user
     placeholder = await user_repo.find_by_username("admin")
-    is_placeholder = placeholder and placeholder.password_hash == "__placeholder_needs_migration__"
+    is_placeholder = _is_placeholder(placeholder)
     real_count = count - (1 if is_placeholder else 0)
 
     if real_count == 0:
@@ -545,7 +569,6 @@ async def register(
             )
     else:
         # Require admin JWT for creating additional users
-        from .auth import decode_access_token
         token = None
         if authorization:
             parts = authorization.split(None, 1)
@@ -577,8 +600,6 @@ async def register(
     # If this is the first real admin and a placeholder exists,
     # transfer its providers, clients, and usage data to the new user
     if role == "admin" and is_placeholder and placeholder:
-        from sqlalchemy import update as sa_update
-        from .db.models import ClientRow, UserProviderRow, UsageEventRow, RateEventRow, ProviderStatsRow
         for tbl, col in [
             (UserProviderRow, UserProviderRow.user_id),
             (ClientRow, ClientRow.user_id),
@@ -595,7 +616,6 @@ async def register(
         )
         # Transfer provider_stats — delete old PK rows and re-insert would be complex,
         # so just delete the placeholder's stats (they'll be re-created on first request)
-        from sqlalchemy import delete as sa_delete
         await session.execute(
             sa_delete(ProviderStatsRow).where(ProviderStatsRow.user_id == placeholder.id)
         )
@@ -612,7 +632,7 @@ async def register(
 _LOGIN_ATTEMPT_WINDOW_SECONDS = 300  # 5 min
 _LOGIN_ATTEMPT_MAX = 10
 # keyed by (ip, username_lower) → deque[timestamp]
-_login_attempts: dict[tuple[str, str], "__import__('collections').deque[float]"] = {}  # type: ignore[assignment]
+_login_attempts: dict[tuple[str, str], deque[float]] = {}
 
 
 def _client_ip(request: Request) -> str:
@@ -624,7 +644,6 @@ def _client_ip(request: Request) -> str:
 
 def _check_login_rate(ip: str, username: str) -> bool:
     """Return False when the caller has exceeded the window budget."""
-    from collections import deque
     key = (ip, username.lower())
     now = time.time()
     dq = _login_attempts.setdefault(key, deque())
@@ -708,8 +727,6 @@ async def migrate_token(
     proves they own the old token; the system creates a proper user account
     (or updates the placeholder created by migration 0013).
     """
-    from .security import verify_admin_credentials
-
     ip = _client_ip(request)
     if not _check_login_rate(ip, "__migrate_token__"):
         raise HTTPException(
@@ -718,11 +735,7 @@ async def migrate_token(
         )
 
     # Serialize against concurrent calls so only one migration attempt wins.
-    from sqlalchemy import text as _sql_text
-    await session.execute(
-        _sql_text("SELECT pg_advisory_xact_lock(:k)"),
-        {"k": _SETUP_ADVISORY_LOCK_KEY},
-    )
+    await _acquire_setup_lock(session)
 
     user_repo = UserRepository(session)
 
@@ -730,7 +743,7 @@ async def migrate_token(
     # placeholder inserted by migration 0013. Once any real user exists —
     # even alongside the placeholder — this endpoint is permanently closed.
     placeholder = await user_repo.find_by_username("admin")
-    is_placeholder = placeholder and placeholder.password_hash == "__placeholder_needs_migration__"
+    is_placeholder = _is_placeholder(placeholder)
     total_users = await user_repo.count()
     real_user_count = total_users - (1 if is_placeholder else 0)
     if real_user_count > 0:
@@ -744,10 +757,8 @@ async def migrate_token(
 
     if is_placeholder:
         # Update the placeholder with real credentials
-        from sqlalchemy import update
-        from .db.models import UserRow
         await session.execute(
-            update(UserRow).where(UserRow.id == placeholder.id).values(
+            sa_update(UserRow).where(UserRow.id == placeholder.id).values(
                 username=body.username,
                 password_hash=pwd_hash,
                 updated_at=time.time(),
@@ -837,10 +848,6 @@ async def users_analytics(
     if days < 1 or days > 30:
         raise HTTPException(400, "days must be between 1 and 30")
 
-    from datetime import datetime as _datetime, timezone as _timezone
-
-    from sqlalchemy import text as sa_text
-
     # One batch query for each aggregate. All keyed by user_id.
     users_rows = (await session.execute(sa_text(
         "SELECT id, username, role, max_clients, created_at FROM users ORDER BY id"
@@ -924,7 +931,7 @@ async def users_analytics(
         use = usage_by_user.get(u.id, {"calls": 0, "success": 0, "tokens": 0, "last_seen": None})
         series = daily_by_user.get(u.id, {})
         daily = [
-            {"day": (_datetime.fromtimestamp(idx * day_seconds, tz=_timezone.utc)
+            {"day": (datetime.fromtimestamp(idx * day_seconds, tz=timezone.utc)
                      .date().isoformat()),
              "calls": series.get(idx, 0)}
             for idx in day_indices
@@ -994,9 +1001,6 @@ async def debug_my_providers(
     user: CurrentUser = Depends(get_current_user),
 ) -> dict:
     """Debug endpoint — shows where keys actually are and if decrypt works."""
-    from sqlalchemy import select, func
-    from .db.models import UserProviderRow, ProviderConfigRow
-    from .crypto import decrypt
     # Count user_providers per user_id
     up_counts = (await session.execute(
         select(UserProviderRow.user_id, func.count()).group_by(UserProviderRow.user_id)
@@ -1022,7 +1026,6 @@ async def debug_my_providers(
             "has_key": bool(decrypted),
         })
     # Master key info
-    from .crypto import MASTER_KEY_PATH
     master_key_source = "env" if os.environ.get("FREEAI_MASTER_KEY") else (
         "file" if MASTER_KEY_PATH.exists() else "auto-generated"
     )
@@ -1064,7 +1067,7 @@ async def update_my_provider(
     try:
         dto = await repo.upsert(user.id, name, **fields)
     except KeyError as e:
-        raise HTTPException(404, str(e))
+        raise HTTPException(404, str(e)) from e
     return repo.mask_dto(dto)
 
 
@@ -1666,7 +1669,7 @@ async def update_provider(
     try:
         await config_repo.patch_provider(name, **fields)
     except KeyError as e:
-        raise HTTPException(404, str(e))
+        raise HTTPException(404, str(e)) from e
     if fields:
         await rate_repo.reset_health(user.id, name)
 
@@ -1821,7 +1824,7 @@ def _validate_definition_or_422(definition: Optional[dict]) -> None:
     try:
         parse_definition(definition)
     except ParseError as e:
-        raise HTTPException(422, str(e))
+        raise HTTPException(422, str(e)) from e
 
 
 @app.post("/api/strategies", response_model=StrategyOut)
@@ -1885,7 +1888,7 @@ async def delete_strategy(
     try:
         deleted = await repo.delete(name)
     except ValueError as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     if not deleted:
         raise HTTPException(404, f"unknown strategy '{name}'")
     request.app.state.orchestrator.invalidate_strategy_cache(name)
@@ -1966,7 +1969,7 @@ async def preview_strategy(
     try:
         defn = parse_definition(payload.definition)
     except ParseError as e:
-        raise HTTPException(422, str(e))
+        raise HTTPException(422, str(e)) from e
 
     config_repo = ConfigRepository(session)
     rate_repo = RateRepository(session)
@@ -1981,10 +1984,6 @@ async def preview_strategy(
 
     snapshots = await rate_repo.snapshot_all(user.id, [p.name for p in eligible])
 
-    from .strategy_dsl import baseline_score as dsl_baseline
-    from .strategy_dsl import context_from_provider
-    from .strategy_dsl import score as dsl_score
-
     candidates: list[PreviewedCandidate] = []
     excluded: list[str] = [p.name for p in providers if not (p.enabled and p.api_key)]
 
@@ -1997,7 +1996,7 @@ async def preview_strategy(
             excluded.append(dto.name)
             continue
 
-        ctx = context_from_provider(
+        ctx = strategy_dsl.context_from_provider(
             name=dto.name,
             enabled=dto.enabled,
             weight=dto.weight,
@@ -2011,11 +2010,11 @@ async def preview_strategy(
             tokens_today=snap.tokens_today,
             total_failures=snap.total_failures,
         )
-        contribution = dsl_score(defn, ctx)
+        contribution = strategy_dsl.score(defn, ctx)
         if contribution is None:
             excluded.append(dto.name)
             continue
-        baseline = dsl_baseline(ctx)
+        baseline = strategy_dsl.baseline_score(ctx)
         rpd_remaining = ctx.fields["rpd_remaining"]
         candidates.append(PreviewedCandidate(
             name=dto.name,
