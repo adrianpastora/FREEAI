@@ -895,7 +895,7 @@ body.dark .primary-button:active { box-shadow: 2px 2px 0 rgba(0,0,0,0.55); }
   color: var(--char-3);
   margin-bottom: 6px;
 }
-.strategy-card.is-active .strategy-card__index { color: var(--bone-3); }
+.strategy-card.is-active .strategy-card__index { color: var(--bar-dim); }
 .strategy-card__name {
   font-family: var(--serif);
   font-style: italic;
@@ -905,7 +905,7 @@ body.dark .primary-button:active { box-shadow: 2px 2px 0 rgba(0,0,0,0.55); }
   margin-bottom: 6px;
 }
 .strategy-card__desc { font-size: 11px; color: var(--char-2); }
-.strategy-card.is-active .strategy-card__desc { color: var(--bone-2); }
+.strategy-card.is-active .strategy-card__desc { color: var(--bar-fg); }
 
 /* ─────────────── TOGGLE ROW ─────────────── */
 
@@ -1946,6 +1946,8 @@ body.dark .ribbon__theme { color: var(--amber); opacity: 1; }
   color: var(--char-3);
   font-style: italic;
 }
+.strategy-card.is-active .strategy-card__rules,
+.strategy-card.is-active .strategy-card__rule-empty { color: var(--bar-dim); }
 
 .setup-reveal-warning {
   border: var(--line);
@@ -2369,8 +2371,8 @@ body.dark .ribbon__theme { color: var(--amber); opacity: 1; }
   color: var(--char-2);
 }
 .strategy-card.is-active .strategy-card__tag {
-  border-color: var(--bone-3);
-  color: var(--bone-3);
+  border-color: var(--bar-dim);
+  color: var(--bar-fg);
 }
 .strategy-card__builtin {
   position: absolute;
@@ -2384,9 +2386,9 @@ body.dark .ribbon__theme { color: var(--amber); opacity: 1; }
   padding: 1px 4px;
 }
 .strategy-card.is-active .strategy-card__builtin {
-  color: var(--bone-3);
-  background: var(--char-2);
-  border-color: var(--bone-3);
+  color: var(--bar-fg);
+  background: transparent;
+  border-color: var(--bar-dim);
 }
 .strategy-card__actions {
   display: flex;
