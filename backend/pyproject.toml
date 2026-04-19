@@ -1,0 +1,53 @@
+# Minimal packaging metadata so contributors can `pip install -e .`
+# locally. Runtime/test dependencies still live in requirements.txt /
+# requirements-dev.txt — this file is here for tooling (editors, linters,
+# `python -m build`) rather than as the source of truth for deps.
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "freeai"
+version = "0.5.0"
+description = "Multi-provider AI orchestrator — one OpenAI-compatible endpoint, many free-tier providers."
+readme = { file = "../README.md", content-type = "text/markdown" }
+license = { file = "../LICENSE" }
+requires-python = ">=3.12"
+keywords = ["openai", "llm", "orchestrator", "fastapi", "gateway", "rate-limiting", "fallback"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Framework :: FastAPI",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+authors = [{ name = "FreeAI contributors" }]
+# Pinned deps live in requirements.txt; the project resolves them at
+# image-build / local-dev time. Listing them here again would just
+# create two sources of truth.
+dynamic = ["dependencies", "optional-dependencies"]
+
+[project.urls]
+Homepage = "https://github.com/adrianpastora/FREEAI"
+Documentation = "https://github.com/adrianpastora/FREEAI/tree/main/docs"
+Repository = "https://github.com/adrianpastora/FREEAI"
+Issues = "https://github.com/adrianpastora/FREEAI/issues"
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
+optional-dependencies.dev = { file = ["requirements-dev.txt"] }
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+exclude = ["tests*", "alembic*", "data*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
