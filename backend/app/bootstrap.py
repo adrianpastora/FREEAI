@@ -7,15 +7,15 @@ consumed, the token file is deleted.
 """
 from __future__ import annotations
 
-import logging
 import os
 import secrets
 from pathlib import Path
 from typing import Optional
 
+from .logging_config import get_logger
 from .settings import get_settings
 
-log = logging.getLogger("freeai.bootstrap")
+log = get_logger("freeai.bootstrap")
 
 
 def ensure_bootstrap_token(*, needed: bool) -> Optional[str]:
@@ -41,7 +41,9 @@ def ensure_bootstrap_token(*, needed: bool) -> Optional[str]:
     path.write_text(token, encoding="utf-8")
     try:
         os.chmod(path, 0o600)
-    except Exception:
+    except OSError:
+        # Some filesystems (e.g. Windows under WSL) don't honour chmod.
+        # The token file is still protected by parent directory perms.
         pass
     return token
 
@@ -64,7 +66,7 @@ def consume_bootstrap_token() -> None:
     except FileNotFoundError:
         pass
     except OSError as e:
-        log.warning("could not delete bootstrap token file: %s", e)
+        log.warning("bootstrap_token_delete_failed", error=str(e))
 
 
 def verify_bootstrap_token(provided: Optional[str]) -> bool:

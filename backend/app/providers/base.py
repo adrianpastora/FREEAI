@@ -234,7 +234,9 @@ class BaseProvider:
             return
         kind = classify_status(resp.status_code)
         retry_after = parse_retry_after(resp.headers)
-        # Try to extract a useful message from the body
+        # Try to extract a useful message from the body. Some providers
+        # return HTML or malformed JSON on errors; fall back to the raw
+        # text in that case.
         body = resp.text[:500]
         try:
             data = resp.json()
@@ -244,7 +246,7 @@ class BaseProvider:
                 or data.get("detail")
                 or body
             )
-        except Exception:
+        except (ValueError, AttributeError):
             pass
         raise ProviderError(
             self.name,

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from typing import Any, Literal, Optional, Union
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class ChatMessage(BaseModel):
@@ -21,7 +21,7 @@ class ChatMessage(BaseModel):
     OpenAI wire format; Gemini silently drops them (no tool-calling support
     in that adapter yet).
     """
-    model_config = {"extra": "allow"}
+    model_config = ConfigDict(extra="allow")
 
     role: Literal["system", "user", "assistant", "tool"]
     content: Optional[Union[str, list[dict[str, Any]]]] = None
@@ -124,7 +124,7 @@ class ChatCompletionRequest(BaseModel):
     # frequency_penalty, logit_bias, user, ...). Accepting them prevents
     # 422 Unprocessable Entity at the edge when a client rounds-trips a
     # conversation built with the full OpenAI SDK.
-    model_config = {"extra": "allow"}
+    model_config = ConfigDict(extra="allow")
 
     messages: list[ChatMessage] = Field(..., min_length=1, max_length=200)
     model: Optional[str] = None  # pass-through if set; else provider default_model

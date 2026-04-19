@@ -37,6 +37,7 @@ from .providers import (
     StreamChunk,
 )
 from .repositories import (
+    AppConfigDTO,
     ConfigRepository,
     ProviderConfigDTO,
     RateRepository,
@@ -45,6 +46,7 @@ from .repositories import (
     UsageEvent,
     UsageRepository,
 )
+from .repositories.rate_repo import ProviderSnapshot
 from .repositories.user_provider_repo import UserProviderDTO, UserProviderRepository
 from .schemas import (
     ChatCompletionRequest,
@@ -135,7 +137,7 @@ class Orchestrator:
     _IN_FLIGHT_MAX_KEYS = 10_000
 
     @staticmethod
-    def _circuit_breaker_kwargs(app_cfg) -> dict:
+    def _circuit_breaker_kwargs(app_cfg: Optional[AppConfigDTO]) -> dict:
         """Pull breaker tunables from AppConfig with safe fallbacks."""
         if app_cfg is None:
             return {}
@@ -200,7 +202,7 @@ class Orchestrator:
     def _score(
         self,
         dto: ProviderConfigDTO,
-        snap,
+        snap: ProviderSnapshot,
         definition: Optional[Definition],
         user_id: int,
     ) -> Optional[float]:
@@ -379,7 +381,7 @@ class Orchestrator:
         fallback_position: int,
         client_hash: Optional[str],
         user_id: Optional[int] = None,
-        app_cfg: Optional[object] = None,
+        app_cfg: Optional[AppConfigDTO] = None,
     ) -> None:
         """Record the outcome of a provider attempt. Never raises — a DB
         error during commit must not mask a successful provider response."""
@@ -409,7 +411,7 @@ class Orchestrator:
         fallback_position: int,
         client_hash: Optional[str],
         user_id: Optional[int] = None,
-        app_cfg: Optional[object] = None,
+        app_cfg: Optional[AppConfigDTO] = None,
     ) -> None:
         outcome: str
         if result.response is not None:

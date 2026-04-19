@@ -13,6 +13,7 @@ knows how to execute strategies.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Optional
 
 
 @dataclass(frozen=True)
@@ -72,7 +73,7 @@ VIRTUAL_MODEL_MAP: dict[str, VirtualModel] = {vm.id: vm for vm in VIRTUAL_MODELS
 DEFAULT_VIRTUAL_MODEL = VIRTUAL_MODELS[0].id
 
 
-def is_virtual_model(model: str | None) -> bool:
+def is_virtual_model(model: Optional[str]) -> bool:
     """Return True if *model* is a FreeAI virtual model name."""
     return model is not None and model in VIRTUAL_MODEL_MAP
 
