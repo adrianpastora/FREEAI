@@ -140,7 +140,7 @@ function hideLoginModal() {
 
 document.getElementById("lockButton").addEventListener("click", () => {
   if (isLoggedIn()) {
-    if (confirm("Cerrar sesion?")) { clearSession(); boot(); }
+    if (confirm("Log out?")) { clearSession(); boot(); }
     return;
   }
   showLoginModal();
@@ -205,12 +205,12 @@ document.getElementById("migrateSubmit").addEventListener("click", async () => {
 
   if (!oldToken || !username || !password) return;
   if (password !== password2) {
-    errEl.textContent = "Las contraseñas no coinciden";
+    errEl.textContent = "Passwords do not match";
     errEl.style.display = "block";
     return;
   }
   if (password.length < 8) {
-    errEl.textContent = "La contraseña debe tener al menos 8 caracteres";
+    errEl.textContent = "Password must be at least 8 characters";
     errEl.style.display = "block";
     return;
   }
@@ -241,7 +241,7 @@ document.getElementById("migrateSubmit").addEventListener("click", async () => {
   }
 });
 
-// ─────────────── first-run setup (configuración inicial) ───────────────
+// ─────────────── first-run setup ───────────────
 
 function showSetupModal() {
   document.getElementById("setupModal").hidden = false;
@@ -264,7 +264,7 @@ function buildSetupProviderFields(names) {
     input.dataset.provider = n;
     input.className = "key-input";
     input.autocomplete = "off";
-    input.placeholder = "pegar clave API…";
+    input.placeholder = "paste API key…";
     label.appendChild(cap);
     label.appendChild(input);
     wrap.appendChild(label);
@@ -334,17 +334,17 @@ document.getElementById("setupSubmit").addEventListener("click", async () => {
   const t2 = document.getElementById("setupAdminToken2").value.trim();
   if (!bootstrap) {
     err.textContent =
-      "Introduce el token de arranque impreso en los logs del servidor.";
+      "Enter the bootstrap token printed to the server logs.";
     err.hidden = false;
     return;
   }
   if (t1.length < 12) {
-    err.textContent = "El token debe tener al menos 12 caracteres.";
+    err.textContent = "The admin token must be at least 12 characters.";
     err.hidden = false;
     return;
   }
   if (t1 !== t2) {
-    err.textContent = "Los dos campos del token no coinciden.";
+    err.textContent = "The two admin-token fields do not match.";
     err.hidden = false;
     return;
   }
@@ -368,7 +368,7 @@ document.getElementById("setupSubmit").addEventListener("click", async () => {
     });
     if (res.status === 403) {
       err.textContent =
-        "La configuración inicial ya no está disponible. Usa el candado e introduce tu token de administrador.";
+        "Initial setup is no longer available. Use the lock icon and enter your admin token.";
       err.hidden = false;
       hideSetupModal();
       await boot();
@@ -415,7 +415,7 @@ document.getElementById("setupCopyToken").addEventListener("click", async () => 
     input.select();
     try { document.execCommand("copy"); } catch {}
   }
-  hint.textContent = "Copiado al portapapeles.";
+  hint.textContent = "Copied to clipboard.";
   hint.hidden = false;
 });
 
@@ -562,73 +562,73 @@ const PROVIDER_GUIDES = {
     displayName: "Groq",
     signupUrl: "https://console.groq.com/signup",
     docsUrl: "https://console.groq.com/docs/quickstart",
-    freeTier: "Free: 30 req/min, 14.400 req/día, sin tarjeta de crédito",
+    freeTier: "Free: 30 req/min, 14,400 req/day, no credit card required",
     steps: [
-      "Ve a <a href=\"https://console.groq.com/signup\" target=\"_blank\" rel=\"noopener\">console.groq.com/signup</a> y crea una cuenta (puedes usar Google/GitHub).",
-      "Una vez dentro, ve a <strong>API Keys</strong> en el menú lateral izquierdo.",
-      "Haz clic en <strong>Create API Key</strong>, ponle un nombre (p.ej. \"FreeAI\") y copia la clave generada.",
-      "Pega la clave en el campo <em>API KEY</em> de la tarjeta de Groq en FreeAI y haz clic en <strong>SAVE</strong>."
+      "Go to <a href=\"https://console.groq.com/signup\" target=\"_blank\" rel=\"noopener\">console.groq.com/signup</a> and create an account (Google/GitHub work).",
+      "Once in, open <strong>API Keys</strong> from the left sidebar.",
+      "Click <strong>Create API Key</strong>, name it (e.g. \"FreeAI\") and copy the generated key.",
+      "Paste the key into the <em>API KEY</em> field on the Groq card in FreeAI and click <strong>SAVE</strong>."
     ]
   },
   gemini: {
     displayName: "Google Gemini",
     signupUrl: "https://aistudio.google.com/apikey",
     docsUrl: "https://ai.google.dev/gemini-api/docs/quickstart",
-    freeTier: "Free: 15 req/min, 1.500 req/día, requiere cuenta de Google",
+    freeTier: "Free: 15 req/min, 1,500 req/day, requires a Google account",
     steps: [
-      "Ve a <a href=\"https://aistudio.google.com/apikey\" target=\"_blank\" rel=\"noopener\">aistudio.google.com/apikey</a> e inicia sesión con tu cuenta de Google.",
-      "Haz clic en <strong>Create API Key</strong> y selecciona un proyecto de Google Cloud (se crea uno automáticamente si no tienes).",
-      "Copia la clave API generada.",
-      "Pega la clave en el campo <em>API KEY</em> de la tarjeta de Gemini en FreeAI y haz clic en <strong>SAVE</strong>."
+      "Go to <a href=\"https://aistudio.google.com/apikey\" target=\"_blank\" rel=\"noopener\">aistudio.google.com/apikey</a> and sign in with your Google account.",
+      "Click <strong>Create API Key</strong> and pick a Google Cloud project (one is created automatically if you don't have any).",
+      "Copy the generated API key.",
+      "Paste the key into the <em>API KEY</em> field on the Gemini card in FreeAI and click <strong>SAVE</strong>."
     ]
   },
   mistral: {
     displayName: "Mistral AI",
     signupUrl: "https://console.mistral.ai/",
     docsUrl: "https://docs.mistral.ai/getting-started/quickstart/",
-    freeTier: "Free: 60 req/min, plan experimental gratuito, requiere registro",
+    freeTier: "Free: 60 req/min on the experimental free plan; signup required",
     steps: [
-      "Ve a <a href=\"https://console.mistral.ai/\" target=\"_blank\" rel=\"noopener\">console.mistral.ai</a> y crea una cuenta.",
-      "En el dashboard, ve a <strong>API Keys</strong> en el menú lateral.",
-      "Haz clic en <strong>Create new key</strong>, dale un nombre y copia la clave.",
-      "Pega la clave en el campo <em>API KEY</em> de la tarjeta de Mistral en FreeAI y haz clic en <strong>SAVE</strong>."
+      "Go to <a href=\"https://console.mistral.ai/\" target=\"_blank\" rel=\"noopener\">console.mistral.ai</a> and create an account.",
+      "From the dashboard, open <strong>API Keys</strong> in the sidebar.",
+      "Click <strong>Create new key</strong>, name it, and copy the key.",
+      "Paste the key into the <em>API KEY</em> field on the Mistral card in FreeAI and click <strong>SAVE</strong>."
     ]
   },
   openrouter: {
     displayName: "OpenRouter",
     signupUrl: "https://openrouter.ai/",
     docsUrl: "https://openrouter.ai/docs/quickstart",
-    freeTier: "Free: 20 req/min, 200 req/día, modelos gratuitos marcados con \":free\"",
+    freeTier: "Free: 20 req/min, 200 req/day on models flagged with \":free\"",
     steps: [
-      "Ve a <a href=\"https://openrouter.ai/\" target=\"_blank\" rel=\"noopener\">openrouter.ai</a> y regístrate (puedes usar Google/GitHub).",
-      "En tu perfil, ve a <strong>Keys</strong> (<a href=\"https://openrouter.ai/keys\" target=\"_blank\" rel=\"noopener\">openrouter.ai/keys</a>).",
-      "Haz clic en <strong>Create Key</strong>, ponle un nombre y copia la clave (empieza con <code>sk-or-</code>).",
-      "Pega la clave en el campo <em>API KEY</em> de la tarjeta de OpenRouter en FreeAI y haz clic en <strong>SAVE</strong>.",
-      "<strong>Nota:</strong> FreeAI usa modelos con sufijo <code>:free</code>. No necesitas añadir créditos."
+      "Go to <a href=\"https://openrouter.ai/\" target=\"_blank\" rel=\"noopener\">openrouter.ai</a> and sign up (Google/GitHub work).",
+      "Open <strong>Keys</strong> in your profile (<a href=\"https://openrouter.ai/keys\" target=\"_blank\" rel=\"noopener\">openrouter.ai/keys</a>).",
+      "Click <strong>Create Key</strong>, name it, and copy the key (starts with <code>sk-or-</code>).",
+      "Paste the key into the <em>API KEY</em> field on the OpenRouter card in FreeAI and click <strong>SAVE</strong>.",
+      "<strong>Note:</strong> FreeAI uses models with the <code>:free</code> suffix. You don't need to add credits."
     ]
   },
   cohere: {
     displayName: "Cohere",
     signupUrl: "https://dashboard.cohere.com/welcome/register",
     docsUrl: "https://docs.cohere.com/docs/the-cohere-platform",
-    freeTier: "Free (Trial): 20 req/min, 1.000 req/día, sin tarjeta de crédito",
+    freeTier: "Free (Trial): 20 req/min, 1,000 req/day, no credit card required",
     steps: [
-      "Ve a <a href=\"https://dashboard.cohere.com/welcome/register\" target=\"_blank\" rel=\"noopener\">dashboard.cohere.com</a> y crea una cuenta.",
-      "En el dashboard, ve a <strong>API Keys</strong> en el menú lateral.",
-      "Encontrarás una <strong>Trial key</strong> ya generada. Si necesitas una nueva, haz clic en <strong>+ New Trial key</strong>.",
-      "Copia la clave y pégala en el campo <em>API KEY</em> de la tarjeta de Cohere en FreeAI y haz clic en <strong>SAVE</strong>."
+      "Go to <a href=\"https://dashboard.cohere.com/welcome/register\" target=\"_blank\" rel=\"noopener\">dashboard.cohere.com</a> and create an account.",
+      "From the dashboard, open <strong>API Keys</strong> in the sidebar.",
+      "A <strong>Trial key</strong> is already generated for you. If you need a new one, click <strong>+ New Trial key</strong>.",
+      "Copy the key and paste it into the <em>API KEY</em> field on the Cohere card in FreeAI. Click <strong>SAVE</strong>."
     ]
   },
   huggingface: {
     displayName: "Hugging Face",
     signupUrl: "https://huggingface.co/join",
     docsUrl: "https://huggingface.co/docs/api-inference/",
-    freeTier: "Free: 30 req/min, 1.000 req/día, Inference API gratuita",
+    freeTier: "Free: 30 req/min, 1,000 req/day on the free Inference API",
     steps: [
-      "Ve a <a href=\"https://huggingface.co/join\" target=\"_blank\" rel=\"noopener\">huggingface.co/join</a> y crea una cuenta.",
-      "Ve a <strong>Settings → Access Tokens</strong> (<a href=\"https://huggingface.co/settings/tokens\" target=\"_blank\" rel=\"noopener\">huggingface.co/settings/tokens</a>).",
-      "Haz clic en <strong>Create new token</strong>, selecciona permisos de <strong>Read</strong> (o <em>Fine-grained</em> con acceso a Inference), ponle un nombre y genera el token.",
-      "Copia el token (empieza con <code>hf_</code>) y pégalo en el campo <em>API KEY</em> de la tarjeta de HuggingFace en FreeAI. Haz clic en <strong>SAVE</strong>."
+      "Go to <a href=\"https://huggingface.co/join\" target=\"_blank\" rel=\"noopener\">huggingface.co/join</a> and create an account.",
+      "Open <strong>Settings → Access Tokens</strong> (<a href=\"https://huggingface.co/settings/tokens\" target=\"_blank\" rel=\"noopener\">huggingface.co/settings/tokens</a>).",
+      "Click <strong>Create new token</strong>, pick the <strong>Read</strong> scope (or <em>Fine-grained</em> with Inference access), name it, and generate the token.",
+      "Copy the token (starts with <code>hf_</code>) and paste it into the <em>API KEY</em> field on the HuggingFace card in FreeAI. Click <strong>SAVE</strong>."
     ]
   }
 };
@@ -645,8 +645,8 @@ function openSetupWizard(providerName) {
     .join("");
   const linksRow = modal.querySelector(".wizard__links");
   linksRow.innerHTML = `
-    <a href="${guide.signupUrl}" target="_blank" rel="noopener" class="ghost-button ghost-button--small">CREAR&nbsp;CUENTA ↗</a>
-    <a href="${guide.docsUrl}" target="_blank" rel="noopener" class="ghost-button ghost-button--small">DOCUMENTACIÓN ↗</a>
+    <a href="${guide.signupUrl}" target="_blank" rel="noopener" class="ghost-button ghost-button--small">SIGN&nbsp;UP ↗</a>
+    <a href="${guide.docsUrl}" target="_blank" rel="noopener" class="ghost-button ghost-button--small">DOCS ↗</a>
   `;
   modal.hidden = false;
 }
@@ -733,7 +733,7 @@ function _pwRender() {
   // Nav buttons
   document.getElementById("pwPrev").style.visibility = _pwStep > 0 ? "visible" : "hidden";
   document.getElementById("pwSkip").style.display = isSummary ? "none" : "";
-  document.getElementById("pwNext").textContent = isSummary ? "CERRAR" : "SIGUIENTE →";
+  document.getElementById("pwNext").textContent = isSummary ? "CLOSE" : "NEXT →";
 }
 
 function _pwRenderProviderStep(body, name) {
@@ -746,7 +746,7 @@ function _pwRenderProviderStep(body, name) {
       <div class="pw__provider-name">${escapeHtml(guide.displayName)}</div>
       <div class="pw__provider-status">
         <span class="pw__status-badge ${isConfigured ? "is-configured" : "is-pending"}">
-          ${isConfigured ? "✓ CONFIGURADO" : "⚠ PENDIENTE"}
+          ${isConfigured ? "✓ CONFIGURED" : "⚠ PENDING"}
         </span>
       </div>
       <div class="pw__free-tier">${escapeHtml(guide.freeTier)}</div>
@@ -754,8 +754,8 @@ function _pwRenderProviderStep(body, name) {
       ${isConfigured ? `
         <div class="pw__configured-msg">
           <div class="pw__configured-check">✓</div>
-          <div class="pw__configured-text">Este proveedor ya tiene una API key configurada.</div>
-          <button class="ghost-button ghost-button--small pw__reconfigure-btn" id="pwReconfigure">RECONFIGURAR</button>
+          <div class="pw__configured-text">This provider already has an API key configured.</div>
+          <button class="ghost-button ghost-button--small pw__reconfigure-btn" id="pwReconfigure">RECONFIGURE</button>
         </div>
         <div id="pwGuideSection" hidden>
           ${_pwGuideHtml(guide, name)}
@@ -795,16 +795,16 @@ function _pwGuideHtml(guide, name) {
       ${guide.steps.map((s, i) => `<li><span class="pw__step-num">${i + 1}</span><span class="pw__step-text">${s}</span></li>`).join("")}
     </ol>
     <div class="pw__links">
-      <a href="${guide.signupUrl}" target="_blank" rel="noopener" class="ghost-button ghost-button--small">CREAR CUENTA ↗</a>
+      <a href="${guide.signupUrl}" target="_blank" rel="noopener" class="ghost-button ghost-button--small">SIGN UP ↗</a>
       <a href="${guide.docsUrl}" target="_blank" rel="noopener" class="ghost-button ghost-button--small">DOCS ↗</a>
     </div>
     <div class="pw__key-section">
       <div class="pw__key-label">API KEY — ${escapeHtml(guide.displayName)}</div>
       <div class="pw__key-row">
-        <input type="password" id="pwKeyInput" placeholder="pega tu clave aqui..." autocomplete="off" />
-        <button class="primary-button" id="pwSaveKey" style="padding:10px 16px">GUARDAR</button>
+        <input type="password" id="pwKeyInput" placeholder="paste your key here..." autocomplete="off" />
+        <button class="primary-button" id="pwSaveKey" style="padding:10px 16px">SAVE</button>
       </div>
-      <div class="pw__key-saved" id="pwKeySaved">✓ Clave guardada correctamente</div>
+      <div class="pw__key-saved" id="pwKeySaved">✓ Key saved</div>
       <div class="pw__key-error" id="pwKeyError"></div>
     </div>
   `;
@@ -836,7 +836,7 @@ async function _pwSaveKey(providerName) {
       if (s) s.classList.add("is-visible");
     }, 50);
   } catch (e) {
-    errorEl.textContent = e.message || "Error al guardar";
+    errorEl.textContent = e.message || "Failed to save";
     errorEl.classList.add("is-visible");
   }
 }
@@ -849,14 +849,14 @@ function _pwRenderSummary(body) {
     body.innerHTML = `
       <div class="pw__all-done">
         <div class="pw__all-done-icon">◆</div>
-        <div class="pw__all-done-text">Todos los proveedores configurados</div>
-        <div class="pw__all-done-sub">${configured} / ${_pwProviderOrder.length} proveedores con API key — FreeAI enrutara automaticamente tus requests.</div>
+        <div class="pw__all-done-text">All providers configured</div>
+        <div class="pw__all-done-sub">${configured} / ${_pwProviderOrder.length} providers have an API key — FreeAI will route your requests automatically.</div>
       </div>
     `;
   } else {
     body.innerHTML = `
       <div class="pw__summary">
-        <div class="pw__summary-title">Resumen de configuracion</div>
+        <div class="pw__summary-title">Setup summary</div>
         <div class="pw__summary-grid">
           ${_pwProviderOrder.map(name => {
             const guide = PROVIDER_GUIDES[name];
@@ -864,12 +864,12 @@ function _pwRenderSummary(body) {
             return `
               <div class="pw__summary-row">
                 <span class="pw__summary-provider">${guide?.displayName || name}</span>
-                <span class="pw__summary-status ${ok ? "is-ok" : "is-missing"}">${ok ? "✓ OK" : "SIN KEY"}</span>
+                <span class="pw__summary-status ${ok ? "is-ok" : "is-missing"}">${ok ? "✓ OK" : "NO KEY"}</span>
               </div>
             `;
           }).join("")}
         </div>
-        <div class="pw__all-done-sub" style="text-align:center">${configured} / ${_pwProviderOrder.length} configurados — puedes volver a este wizard en cualquier momento.</div>
+        <div class="pw__all-done-sub" style="text-align:center">${configured} / ${_pwProviderOrder.length} configured — you can return to this wizard any time.</div>
       </div>
     `;
   }
@@ -947,7 +947,7 @@ function renderProvider(p) {
     // Add "no key" banner
     const banner = document.createElement("div");
     banner.className = "provider-card__nokey-banner";
-    banner.textContent = "⚠ API KEY NO CONFIGURADA — usa el Setup Wizard o pega tu clave abajo";
+    banner.textContent = "⚠ NO API KEY SET — use the Setup Wizard or paste your key below";
     node.querySelector(".provider-card__head").after(banner);
   } else if (!p.healthy) {
     statusLabel.textContent = "quarantined";
@@ -1126,7 +1126,7 @@ function updateProviderCard(node, p) {
     node.classList.add("is-disabled");
     const banner = document.createElement("div");
     banner.className = "provider-card__nokey-banner";
-    banner.textContent = "⚠ API KEY NO CONFIGURADA — usa el Setup Wizard o pega tu clave abajo";
+    banner.textContent = "⚠ NO API KEY SET — use the Setup Wizard or paste your key below";
     node.querySelector(".provider-card__head").after(banner);
   } else if (!p.healthy) {
     statusLabel.textContent = "quarantined";
@@ -2479,8 +2479,8 @@ async function boot() {
       }
       // No legacy setup needed either — show registration
       if (!isLoggedIn()) {
-        document.getElementById("loginTitle").textContent = "CREAR ADMIN";
-        document.getElementById("loginSubtitle").textContent = "Crea la primera cuenta de administrador.";
+        document.getElementById("loginTitle").textContent = "CREATE ADMIN";
+        document.getElementById("loginSubtitle").textContent = "Create the first admin account.";
         showLoginModal();
         // Override login to register instead for first user
         const origHandler = document.getElementById("loginSubmit").onclick;
@@ -2490,7 +2490,7 @@ async function boot() {
           const errEl = document.getElementById("loginError");
           if (!username || !password) return;
           if (password.length < 8) {
-            errEl.textContent = "La contraseña debe tener al menos 8 caracteres";
+            errEl.textContent = "Password must be at least 8 characters";
             errEl.style.display = "block";
             return;
           }
@@ -2508,8 +2508,8 @@ async function boot() {
             }
             saveSession(await res.json());
             hideLoginModal();
-            document.getElementById("loginTitle").textContent = "INICIAR SESION";
-            document.getElementById("loginSubtitle").textContent = "Introduce tus credenciales para acceder al panel de control.";
+            document.getElementById("loginTitle").textContent = "SIGN IN";
+            document.getElementById("loginSubtitle").textContent = "Enter your credentials to access the control panel.";
             await boot();
           } catch (e) {
             errEl.textContent = e.message;
