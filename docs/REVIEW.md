@@ -8,23 +8,25 @@
 > **severity** (🔴 critical, 🟠 high, 🟡 medium, 🟢 low) and a concrete fix
 > sketch. Section 10 is the prioritized backlog turning these into a plan.
 
-## Status as of Sprint 6
+## Status as of Sprint 7
 
-✅ **Sprints 4–6 complete.** All critical bugs, performance issues,
-telemetry gaps, and product-polish items from the original audit are
-resolved. 99 tests pass on Windows and Linux.
+✅ **Sprints 4–7 complete.** All critical bugs, performance issues,
+telemetry gaps, product-polish items, and fallback-robustness gaps from
+the original audit are resolved. 134 tests pass on Windows and Linux.
 
 - **Sprint 4** fixed the three critical bugs (§ 1.1, § 1.2, § 6.4).
 - **Sprint 5** resolved all performance/hygiene items (§ 2, § 3, § 4, § 5).
 - **Sprint 6** delivered product polish (inline strategy editor, analytics
   auto-refresh, E2E/streaming/security tests, frontend refactor).
+- **Sprint 7** closed six fallback-robustness gaps plus two resource-leak
+  bugs discovered in production. See § 11 below.
 - **Windows test fix** — `pytest.ini` now sets
   `asyncio_default_fixture_loop_scope = session` and
   `asyncio_default_test_loop_scope = session`; `conftest.py` forces
   `WindowsSelectorEventLoopPolicy` so asyncpg works with Python 3.14's
-  `ProactorEventLoop`. All 99 tests pass reliably.
+  `ProactorEventLoop`. All 134 tests pass reliably.
 
-The remaining backlog is Sprint 7 (future work): table partitioning,
+The remaining backlog is Sprint 8+ (future work): table partitioning,
 Helm chart, cost tracking, semantic cache.
 
 ## TL;DR
@@ -943,3 +945,66 @@ well-designed and should be preserved:
 - 3 in `test_streaming.py`
 - 6 in `test_strategy_repo.py`
 - 5 in `test_usage_repo.py`
+
+## 11. Sprint 7 — fallback robustness — ✅ DONE
+
+Discovered while a real client (Atlas/internal-client) was hammering the
+deployed instance. The server would start dropping requests after a
+burst of traffic and only recover on restart.
+
+### 11.1 Six robustness gaps in the fallback path
+
+Before Sprint 7 the orchestrator would happily treat certain "not really
+failures" as successes, or hang indefinitely instead of falling back.
+Closed in commit `9bab1b6`:
+
+| Gap | Before | After |
+|---|---|---|
+| Empty 200 OK (`content=""` or null with no `tool_calls`) | Returned as success | `ErrorKind.EMPTY_RESPONSE` → fallback |
+| `finish_reason="content_filter"` / Gemini SAFETY / RECITATION / BLOCKLIST / PROHIBITED_CONTENT / SPII | Silently delivered to client | `ErrorKind.CONTENT_FILTERED` → fallback. Benign (doesn't trip breaker). |
+| Streaming upstream going silent mid-request | Hung until httpx read_timeout (120s × retries) | `stream_idle_timeout_s` wraps each chunk (`asyncio.wait_for`); default 45s. Raises NETWORK, falls back if nothing flushed yet. |
+| Malformed SSE frames | `continue` forever (JSONDecodeError swallowed) | Counter: 5 consecutive malformed frames → `ErrorKind.PARSING` |
+| Circuit breaker | Ad-hoc (3 consecutive → 30s → doubling up to 10m), not configurable | Sliding window + exponential cooldown, fully tunable via `app_config.circuit_breaker_*`. Separate `cooldown_level` in `provider_stats`. |
+| Retry budget | Hardcoded `_MAX_RETRIES = 1` | Configurable via `app_config.provider_max_retries` (global) and `user_providers.max_retries` (per-user-provider override) |
+
+Migrations `0018` and `0019` added the new columns. New Prometheus
+metric `freeai_provider_circuit_breaker_trips_total{provider}`.
+
+### 11.2 Resource leak on client cancellation
+
+Two bugs in production code. Commits `08e2f0f` and `8e789f9`:
+
+- `/v1/chat/completions` streaming path incremented `_in_flight` and
+  wrote a `rate_events` reservation, but only decremented / committed
+  in the happy and `ProviderError` branches. A cancelled client
+  (Atlas timing out and retrying) left both uncommitted — the scoring
+  penalty grew unbounded and `rate_events` piled up phantom rows that
+  exhausted the provider's RPM for legitimate traffic.
+- Same pattern in `/v1/embeddings` and `/v1/audio/transcriptions`.
+
+Fix: wrap every critical section in `try/finally` that always
+`_dec_in_flight`s and `rate_repo.rollback(reservation)`s when the
+outcome wasn't recorded. The streaming path also closes the upstream
+httpx iterator with `aclose()` so the connection returns to the pool.
+
+### 11.3 Schema rejecting valid OpenAI histories
+
+Commit `be391c9`. `ChatMessage.content` was `Union[str, list[dict]]` — no
+`None`. A second-turn chat with an assistant turn that had
+`content: null` (standard when the assistant only emitted `tool_calls`,
+and sometimes emitted by the official OpenAI SDK even without tools)
+would 422 at the Pydantic boundary before the orchestrator ever saw the
+request.
+
+Relaxed: `content` is `Optional`, `tool_calls` / `tool_call_id` are
+accepted, `ChatCompletionRequest` has `extra="allow"` so the full
+OpenAI SDK payload (`tools`, `response_format`, `seed`, `top_p`, `n`,
+`stop`, `presence_penalty`, `frequency_penalty`, `logit_bias`, `user`)
+round-trips without erroring.
+
+### 11.4 Test coverage
+
+Added 35 tests across three new files: `test_provider_robustness.py`
+(20), `test_orchestrator_retry_budget.py` (6),
+`test_schema_tool_calls.py` (15). Full suite: **134 passed, 99 skipped,
+0 regressions.**

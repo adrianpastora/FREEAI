@@ -30,22 +30,27 @@ and refresh the browser. No build step, no watcher.
 
 ### 2.1 Layout
 
-63 tests total in [backend/tests/](../backend/tests/):
+134 tests total in [backend/tests/](../backend/tests/). The test suite
+grew across sprints; this list highlights the main buckets rather than
+every file:
 
-| File | Tests | Needs Postgres? |
-|---|---|---|
-| [test_auto_strategy.py](../backend/tests/test_auto_strategy.py) | 15 | no |
-| [test_crypto.py](../backend/tests/test_crypto.py) | 4 | no |
-| [test_known_models.py](../backend/tests/test_known_models.py) | 7 | no |
-| [test_orchestrator.py](../backend/tests/test_orchestrator.py) | 11 | yes (4 of those are pure, 8 DB-backed) |
-| [test_config_repo.py](../backend/tests/test_config_repo.py) | 5 | yes |
-| [test_rate_repo.py](../backend/tests/test_rate_repo.py) | 9 | yes |
-| [test_client_repo.py](../backend/tests/test_client_repo.py) | 4 | yes |
-| [test_usage_repo.py](../backend/tests/test_usage_repo.py) | 5 | yes |
-| [test_strategy_repo.py](../backend/tests/test_strategy_repo.py) | 6 | yes |
+- **Pure** (no DB, no Docker): `test_auto_strategy.py`, `test_crypto.py`,
+  `test_known_models.py`, `test_strategy_dsl.py`,
+  `test_virtual_models.py`, `test_provider_robustness.py` (empty response
+  / content filter / stream parsing), `test_orchestrator_retry_budget.py`
+  (retry budget + circuit-breaker kwargs), `test_schema_tool_calls.py`
+  (OpenAI-compatible payload shapes).
+- **DB-backed** (need Postgres via testcontainers):
+  `test_orchestrator.py`, `test_rate_repo.py`, `test_config_repo.py`,
+  `test_usage_repo.py`, `test_usage_repo_rollup.py`,
+  `test_strategy_repo.py`, `test_client_repo.py`,
+  `test_client_rate_repo.py`, `test_main_endpoints.py`,
+  `test_embeddings_providers.py`, `test_security_integration.py`,
+  `test_setup_api.py`, `test_streaming.py`, `test_migration_0009.py`.
 
-"Pure" means no database, no external calls, no Docker. Fast loop for
-iterating on crypto, auto-strategy, or providers' known-models list.
+"Pure" means no database, no external calls, no Docker — fast loop for
+iterating on providers, schemas, or scoring logic. Running them alone
+takes a couple of seconds.
 
 ### 2.2 Running tests
 
@@ -429,7 +434,7 @@ FreeAI/
 │   │   ├── env.py
 │   │   └── versions/        (migrations)
 │   ├── app/                 (the FastAPI app, 18 modules)
-│   └── tests/               (63 pytest tests)
+│   └── tests/               (134 pytest tests)
 ├── frontend/                (3 files, no build)
 ├── deploy/                  (prometheus + grafana provisioning)
 ├── docker-compose.yml

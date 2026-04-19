@@ -99,9 +99,15 @@ Any OpenAI-compatible client works — point its base URL at
 - **Analytics panel** — the frontend has a live analytics tab reading from
   the `usage_events` table, with KPIs, time series, and breakdowns by
   provider / strategy / outcome.
-- **99 pytest tests** — unit, integration, E2E, streaming, and security
-  coverage. 26+ run without Docker, the rest against a real Postgres via
-  testcontainers.
+- **134 pytest tests** — unit, integration, E2E, streaming, security,
+  and fallback robustness (empty responses, content filtering, stream
+  idle timeout, circuit breaker, configurable retries). ~60 run without
+  Docker, the rest against a real Postgres via testcontainers.
+- **Robust fallback chain** — empty 200-OK responses, content-filtered
+  finish reasons and stream stalls all trigger automatic fallback to
+  the next provider. Per-user sliding-window circuit breaker with
+  exponential cooldown prevents a degraded upstream from dragging
+  every user down. See [docs/ARCHITECTURE.md § 4](docs/ARCHITECTURE.md#4-error-handling).
 
 ## Documentation
 

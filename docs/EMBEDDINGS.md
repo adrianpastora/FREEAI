@@ -31,6 +31,32 @@ gap with the same architectural decisions already in place:
 Default priority on fallback: **mistral → gemini**. Override per-request
 with `preferred_provider`.
 
+### ⚠ Only these model names are valid
+
+The `model` field must match a model the chosen upstream provider actually
+serves. FreeAI does **not** translate OpenAI-style model names
+(`text-embedding-3-small`, `text-embedding-3-large`, `text-embedding-ada-002`)
+into native ones — it passes them through as-is, and the upstream provider
+replies with `400 invalid model`.
+
+Safe choices:
+
+```json
+{"input": "hello"}                                         // uses mistral-embed (default)
+{"input": "hello", "model": "mistral-embed"}               // explicit mistral
+{"input": "hello", "model": "text-embedding-004", "preferred_provider": "gemini"}
+```
+
+This will **not** work even if you have an OpenAI key configured elsewhere:
+
+```json
+{"input": "hello", "model": "text-embedding-3-small"}      // → 400 Bad Request
+```
+
+If your client hardcodes OpenAI model names, either:
+1. Omit the `model` field (recommended for new code), or
+2. Map the OpenAI names to native ones in your client before calling FreeAI.
+
 Why only these two today? They are the providers already integrated in the
 catalog that expose embeddings on their free tier. Groq's free tier is
 chat + audio only; Cohere has embeddings but its free trial quota (~33

@@ -173,13 +173,20 @@ Exposed at `GET /metrics` (public, no auth). Metric inventory:
   `(0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30)`
 
 **Provider dispatch**
-- `freeai_provider_calls_total{provider, outcome}` — counter. Outcomes are
-  `success` plus every `ErrorKind.value`.
+- `freeai_provider_calls_total{provider, outcome}` — counter. Outcomes:
+  `success`, `server_error`, `rate_limited`, `auth`, `network`,
+  `client_error`, `parsing`, `empty_response`, `content_filtered`,
+  `unknown`.
 - `freeai_provider_call_duration_seconds{provider}` — histogram, buckets
   `(0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30, 60)`
 
 **Orchestrator**
 - `freeai_orchestrator_fallbacks_total{from_provider, to_provider}` — counter
+- `freeai_provider_circuit_breaker_trips_total{provider}` — counter. One
+  tick each time the breaker flips `healthy=false` for some user of that
+  provider (see [ARCHITECTURE.md § 4 Circuit breaker](ARCHITECTURE.md#circuit-breaker-and-retry-budget)).
+  A sudden rate of trips is a strong signal that an upstream is degraded
+  for a meaningful chunk of your users.
 
 **Cardinality warning**: `freeai_http_requests_total` currently uses the raw
 `request.url.path`, so `/api/providers/groq` and `/api/providers/gemini`
@@ -393,6 +400,61 @@ Possible causes:
    for `Retry-After`. Check `provider_stats.quarantined_until`.
 3. **All providers exhausted their rpd** — check `rate_events` with the
    query in [DATABASE.md § 6](DATABASE.md#6-connecting-for-ad-hoc-queries).
+
+### Circuit breaker tripped too aggressively (or not enough)
+
+Symptom: a healthy provider keeps landing in quarantine, or a flaky one
+still gets picked every time.
+
+Check the current state for a given user:
+
+```sql
+SELECT provider_name, healthy, consecutive_failures,
+       to_timestamp(quarantined_until) AS quar_until,
+       cooldown_level, last_error_kind, substr(last_error,1,80) AS err
+FROM provider_stats WHERE user_id = 1 ORDER BY provider_name;
+```
+
+If `consecutive_failures` climbs fast for one provider, the upstream is
+genuinely degraded. If it climbs fast across **all** providers, the
+problem is likely client-side (bad payloads, network between client and
+FreeAI). Tune `app_config.circuit_breaker_*` columns — see
+[API.md § Fallback robustness tunables](API.md#fallback-robustness-tunables-app_config).
+
+To manually clear a stuck quarantine on one provider:
+
+```sql
+UPDATE provider_stats
+SET healthy=true, consecutive_failures=0, quarantined_until=0,
+    cooldown_level=0, recent_failures_started_at=0
+WHERE user_id=1 AND provider_name='groq';
+```
+
+The Prometheus counter `freeai_provider_circuit_breaker_trips_total{provider}`
+is the best early-warning signal — an alert at `rate(trips_total[5m]) > 0.5`
+catches most real incidents.
+
+### Streams that feel stuck mid-response
+
+FreeAI adds an **idle timeout** to streaming upstreams (default 45s without
+a chunk). If an upstream accepts the request but never sends bytes, the
+orchestrator raises `NETWORK` and falls back — **unless** bytes were
+already flushed, in which case the stream is aborted with the client. Tune
+via `app_config.stream_idle_timeout_s`. A value too low (e.g. 10s) will
+cut off legitimately slow responses from reasoning models; too high
+(>2min) lets a dead upstream hold the client forever.
+
+### Rate counters wrong after a burst of client retries
+
+Symptom: `provider_stats.consecutive_failures` keeps growing even though
+no actual provider call fails; `rate_events` has many rows from the same
+user but `usage_events` shows very few.
+
+This was a bug before Sprint 7 — cancelled requests (client timed out and
+gave up) left rate_events reservations uncommitted. The fix (commits
+`08e2f0f` and `8e789f9`) wraps every endpoint in `try/finally` that
+rolls back the reservation on cancel. If you see this on Sprint 7+ code,
+report the exact repro.
 
 ### Postgres connection pool exhausted
 
