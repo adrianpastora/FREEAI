@@ -94,10 +94,8 @@ async function ensureValidToken() {
   return true;
 }
 
-// Legacy admin token getter (for backwards compat during migration)
-function getAdminToken() {
-  return localStorage.getItem(TOKEN_KEY) || "";
-}
+// Legacy admin token setter — used once on first-run setup to remember
+// the freshly-minted admin token so the user can reload without re-entering.
 function setAdminToken(token) {
   if (token) localStorage.setItem(TOKEN_KEY, token);
   else localStorage.removeItem(TOKEN_KEY);
@@ -127,7 +125,7 @@ function showLoginModal() {
   const modal = document.getElementById("adminModal");
   const wasAlreadyOpen = !modal.hidden;
   modal.hidden = false;
-  document.getElementById("loginError").style.display = "none";
+  document.getElementById("loginError").hidden = true;
   // Only auto-focus if the modal was just opened — don't steal focus
   // from the user if they're already typing in the password field
   if (!wasAlreadyOpen) {
@@ -151,7 +149,7 @@ document.getElementById("loginSubmit").addEventListener("click", async () => {
   const password = document.getElementById("loginPassword").value;
   const errEl = document.getElementById("loginError");
   if (!username || !password) return;
-  errEl.style.display = "none";
+  errEl.hidden = true;
   try {
     const res = await fetch(`${API_BASE}/api/auth/login`, {
       method: "POST",
@@ -161,7 +159,7 @@ document.getElementById("loginSubmit").addEventListener("click", async () => {
     if (!res.ok) {
       const detail = await res.json().catch(() => ({}));
       errEl.textContent = detail.detail || "Login failed";
-      errEl.style.display = "block";
+      errEl.hidden = false;
       return;
     }
     const data = await res.json();
@@ -169,11 +167,11 @@ document.getElementById("loginSubmit").addEventListener("click", async () => {
     hideLoginModal();
     document.getElementById("loginUsername").value = "";
     document.getElementById("loginPassword").value = "";
-    errEl.style.display = "none";
+    errEl.hidden = true;
     await boot();
   } catch (e) {
     errEl.textContent = e.message;
-    errEl.style.display = "block";
+    errEl.hidden = false;
   }
 });
 
@@ -188,7 +186,7 @@ document.getElementById("loginPassword").addEventListener("keydown", (e) => {
 
 function showMigrateModal() {
   document.getElementById("migrateModal").hidden = false;
-  document.getElementById("migrateError").style.display = "none";
+  document.getElementById("migrateError").hidden = true;
   setTimeout(() => document.getElementById("migrateOldToken").focus(), 50);
 }
 
@@ -202,12 +200,12 @@ document.getElementById("migrateSubmit").addEventListener("click", async () => {
   if (!oldToken || !username || !password) return;
   if (password !== password2) {
     errEl.textContent = "Passwords do not match";
-    errEl.style.display = "block";
+    errEl.hidden = false;
     return;
   }
   if (password.length < 8) {
     errEl.textContent = "Password must be at least 8 characters";
-    errEl.style.display = "block";
+    errEl.hidden = false;
     return;
   }
 
@@ -224,7 +222,7 @@ document.getElementById("migrateSubmit").addEventListener("click", async () => {
     if (!res.ok) {
       const detail = await res.json().catch(() => ({}));
       errEl.textContent = detail.detail || "Migration failed";
-      errEl.style.display = "block";
+      errEl.hidden = false;
       return;
     }
     const data = await res.json();
@@ -233,7 +231,7 @@ document.getElementById("migrateSubmit").addEventListener("click", async () => {
     await boot();
   } catch (e) {
     errEl.textContent = e.message;
-    errEl.style.display = "block";
+    errEl.hidden = false;
   }
 });
 
@@ -549,8 +547,6 @@ tickDate();
 
 const grid = document.getElementById("providerGrid");
 const tpl  = document.getElementById("providerCardTemplate");
-
-let providersCache = [];
 
 // ─── Provider setup wizard data ───
 const PROVIDER_GUIDES = {
@@ -1080,7 +1076,7 @@ function renderProvider(p) {
       showModelWarning(node, result?.model_warning, result?.model_suggestions, modelInput);
       refreshProviders(true);
     } catch (err) {
-      if (err instanceof AuthError) { showAdminModal(); return; }
+      if (err instanceof AuthError) { showLoginModal(); return; }
       flashButton(node.querySelector(".save-key"), "ERROR");
     }
   });
@@ -1209,11 +1205,6 @@ function updateProviderCard(node, p) {
   node.querySelector(".enable-toggle").checked = p.enabled;
 }
 
-function _isAdmin() {
-  const u = getCurrentUser();
-  return u && u.role === "admin";
-}
-
 function _providerEndpoint(name) {
   // Every user edits their own provider config
   return `/api/me/providers/${name}`;
@@ -1250,7 +1241,6 @@ async function refreshProviders(fullRender = false) {
         default_model: my.default_model ?? c.default_model,
       };
     });
-    providersCache = data;
 
     // If cards already exist and no structural change, patch in-place
     const existingCards = grid.querySelectorAll(".provider-card");
@@ -1362,7 +1352,7 @@ async function refreshStrategies() {
   try {
     strategiesCache = await adminApi("/api/strategies");
   } catch (err) {
-    if (err instanceof AuthError) { showAdminModal(); return; }
+    if (err instanceof AuthError) { showLoginModal(); return; }
     return;
   }
   strategyGrid.innerHTML = "";
@@ -1687,7 +1677,7 @@ async function _runPreview() {
     }
     status.textContent = `${result.candidates.length} match · ${result.excluded.length} excluded`;
   } catch (err) {
-    if (err instanceof AuthError) { showAdminModal(); return; }
+    if (err instanceof AuthError) { showLoginModal(); return; }
     status.textContent = "preview error";
     list.innerHTML = `<div class="strategy-card__rule-empty">${escapeHtml(err.message)}</div>`;
     warningsEl.hidden = true;
@@ -1721,7 +1711,7 @@ async function openStrategyEditor(existing) {
   try {
     _editorTagsCache = await adminApi("/api/tags");
   } catch (err) {
-    if (err instanceof AuthError) { showAdminModal(); return; }
+    if (err instanceof AuthError) { showLoginModal(); return; }
     _editorTagsCache = [];
   }
 
@@ -1770,7 +1760,7 @@ document.getElementById("stratEditorSave").addEventListener("click", async () =>
     document.getElementById("strategyEditorModal").hidden = true;
     refreshConfig();
   } catch (err) {
-    if (err instanceof AuthError) { showAdminModal(); return; }
+    if (err instanceof AuthError) { showLoginModal(); return; }
     errEl.textContent = err.message;
     errEl.hidden = false;
   }
@@ -1860,14 +1850,14 @@ async function runOneShot(body, out) {
   const data = await res.json();
   out.innerHTML = `
     <div class="output-meta">
-      <span>provider: <b>${data.provider}</b></span>
-      <span>model: <b>${data.model}</b></span>
-      <span>strategy: <b>${data.strategy_used}</b></span>
+      <span>provider: <b>${escapeHtml(data.provider)}</b></span>
+      <span>model: <b>${escapeHtml(data.model)}</b></span>
+      <span>strategy: <b>${escapeHtml(data.strategy_used)}</b></span>
       <span>${data.latency_ms} ms</span>
       <span>${data.usage.total_tokens} tokens</span>
     </div>
     <div class="output-body">${escapeHtml(data.choices[0].message.content)}</div>
-    <div class="output-fallback">chain: <b>${data.fallback_chain.join(" → ")}</b></div>
+    <div class="output-fallback">chain: <b>${escapeHtml(data.fallback_chain.join(" → "))}</b></div>
   `;
 }
 
@@ -1917,9 +1907,9 @@ async function runStreaming(body, out) {
         model    = chunk.model;
         strategy = chunk.strategy_used;
         meta.innerHTML = `
-          <span>provider: <b>${provider}</b></span>
-          <span>model: <b>${model}</b></span>
-          <span>strategy: <b>${strategy}</b></span>
+          <span>provider: <b>${escapeHtml(provider)}</b></span>
+          <span>model: <b>${escapeHtml(model)}</b></span>
+          <span>strategy: <b>${escapeHtml(strategy)}</b></span>
           <span id="streamLatency">streaming…</span>
         `;
       }
@@ -2007,7 +1997,7 @@ async function refreshClients() {
   try {
     clients = await adminApi("/api/clients");
   } catch (err) {
-    if (err instanceof AuthError) { showAdminModal(); return; }
+    if (err instanceof AuthError) { showLoginModal(); return; }
     list.innerHTML = `<div class="output-empty"><pre>${escapeHtml(err.message)}</pre></div>`;
     return;
   }
@@ -2080,7 +2070,7 @@ async function refreshAnalytics() {
   try {
     data = await adminApi(`/api/analytics?window_seconds=${windowSec}&bucket_count=${buckets}`);
   } catch (err) {
-    if (err instanceof AuthError) { showAdminModal(); return; }
+    if (err instanceof AuthError) { showLoginModal(); return; }
     document.getElementById("kpiGrid").innerHTML = `<div class="chart-card__empty">${escapeHtml(err.message)}</div>`;
     return;
   }
@@ -2112,7 +2102,7 @@ async function refreshHistorical() {
   try {
     data = await adminApi(`/api/analytics/historical?days=${days}`);
   } catch (err) {
-    if (err instanceof AuthError) { showAdminModal(); return; }
+    if (err instanceof AuthError) { showLoginModal(); return; }
     const el = document.getElementById("historicalKpis");
     if (el) el.innerHTML = `<div class="chart-card__empty">${escapeHtml(err.message)}</div>`;
     return;
@@ -2484,7 +2474,7 @@ async function boot() {
           if (!username || !password) return;
           if (password.length < 8) {
             errEl.textContent = "Password must be at least 8 characters";
-            errEl.style.display = "block";
+            errEl.hidden = false;
             return;
           }
           try {
@@ -2496,7 +2486,7 @@ async function boot() {
             if (!res.ok) {
               const d = await res.json().catch(() => ({}));
               errEl.textContent = d.detail || "Registration failed";
-              errEl.style.display = "block";
+              errEl.hidden = false;
               return;
             }
             saveSession(await res.json());
@@ -2506,7 +2496,7 @@ async function boot() {
             await boot();
           } catch (e) {
             errEl.textContent = e.message;
-            errEl.style.display = "block";
+            errEl.hidden = false;
           }
         };
         return;
@@ -2542,12 +2532,25 @@ async function boot() {
 
 (async function start() {
   await boot();
-  setInterval(() => {
+
+  // Guard against overlapping polls when a refresh takes longer than the
+  // 8s tick — the next tick just skips instead of stacking a second
+  // refresh that would race the first to write the DOM.
+  let polling = false;
+  setInterval(async () => {
+    if (polling) return;
     const activePanel = document.querySelector('.panel--active');
     if (!activePanel) return;
     const panel = activePanel.dataset.panel;
-    if (panel === "providers") { refreshProviders(); refreshSavings(); }
-    if (panel === "analytics") refreshAnalytics();
-    if (panel === "users") refreshUsers();
+    polling = true;
+    try {
+      if (panel === "providers") await Promise.all([refreshProviders(), refreshSavings()]);
+      else if (panel === "analytics") await refreshAnalytics();
+      else if (panel === "users") await refreshUsers();
+    } catch {
+      // poll errors are surfaced by the individual refresh fns; ignore here
+    } finally {
+      polling = false;
+    }
   }, 8000);
 })();

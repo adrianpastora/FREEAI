@@ -1226,6 +1226,7 @@ body.dark .api-card:hover {
 .api-card[data-group="user"]::before   { background: var(--cyan); }
 .api-card[data-group="admin"]::before  { background: var(--char); }
 .api-card[data-group="public"]::before { background: var(--moss); }
+.api-card[data-group="client"]::before { background: var(--rose); }
 
 .api-card header {
   display: flex;
@@ -3039,3 +3040,21 @@ body.dark .user-usage-row__bar { background: #100e0a; border-color: var(--char-3
     transform: none;
   }
 }
+
+/* ─────────────────────────── utilities ─────────────────────────── */
+
+.inline-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+.inline-form input { min-width: 10rem; }
+
+.modal-error {
+  color: var(--rose);
+  font-size: 0.85rem;
+  margin-top: 0.5rem;
+}
+

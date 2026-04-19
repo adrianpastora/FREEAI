@@ -16,7 +16,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,600;9..144,900&family=JetBrains+Mono:wght@300;400;500;700&display=swap" rel="stylesheet">
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='8' fill='%2316140f'/%3E%3Crect x='2' y='2' width='60' height='60' rx='6' fill='none' stroke='%23ff7a18' stroke-width='2'/%3E%3Ctext x='32' y='26' text-anchor='middle' font-family='Georgia,serif' font-weight='bold' font-size='18' fill='%23ff7a18'%3EFREE%3C/text%3E%3Ctext x='32' y='46' text-anchor='middle' font-family='Georgia,serif' font-weight='bold' font-style='italic' font-size='20' fill='%23f1ece1'%3E.AI%3C/text%3E%3C/svg%3E">
-<link rel="stylesheet" href="./styles.css?v=0.5.0">
+<link rel="stylesheet" href="./styles.css?v=0.5.1">
 </head>
 <body>
 
@@ -116,7 +116,7 @@
 </nav>
 
 <!-- ───────── LOGIN MODAL ───────── -->
-<div class="modal" id="adminModal" hidden>
+<div class="modal" id="adminModal" role="dialog" aria-modal="true" aria-labelledby="loginTitle" hidden>
   <div class="modal__backdrop"></div>
   <div class="modal__card">
     <div class="modal__corner modal__corner--tl">┌</div>
@@ -127,7 +127,7 @@
     <p id="loginSubtitle">Enter your credentials to access the control panel.</p>
     <input type="text" id="loginUsername" placeholder="username" autocomplete="username" />
     <input type="password" id="loginPassword" placeholder="password" autocomplete="current-password" />
-    <div id="loginError" style="color:#ff4444;font-size:.85rem;margin-top:.5rem;display:none"></div>
+    <div id="loginError" class="modal-error" hidden></div>
     <div class="modal__actions">
       <button class="primary-button" id="loginSubmit">LOG&nbsp;IN</button>
     </div>
@@ -136,20 +136,20 @@
 </div>
 
 <!-- ───────── MIGRATION MODAL (legacy admin token → user) ───────── -->
-<div class="modal" id="migrateModal" hidden>
+<div class="modal" id="migrateModal" role="dialog" aria-modal="true" aria-labelledby="migrateTitle" hidden>
   <div class="modal__backdrop"></div>
   <div class="modal__card modal__card--wide">
     <div class="modal__corner modal__corner--tl">┌</div>
     <div class="modal__corner modal__corner--tr">┐</div>
     <div class="modal__corner modal__corner--bl">└</div>
     <div class="modal__corner modal__corner--br">┘</div>
-    <h3>MIGRATE TO MULTI-USER</h3>
+    <h3 id="migrateTitle">MIGRATE TO MULTI-USER</h3>
     <p>The system has been upgraded. Enter your current admin token and choose a new username and password.</p>
     <input type="password" id="migrateOldToken" placeholder="current admin token" />
     <input type="text" id="migrateUsername" placeholder="new username" autocomplete="username" />
     <input type="password" id="migratePassword" placeholder="new password (min 8 chars)" autocomplete="new-password" />
     <input type="password" id="migratePassword2" placeholder="confirm password" autocomplete="new-password" />
-    <div id="migrateError" style="color:#ff4444;font-size:.85rem;margin-top:.5rem;display:none"></div>
+    <div id="migrateError" class="modal-error" hidden></div>
     <div class="modal__actions">
       <button class="primary-button" id="migrateSubmit">MIGRATE</button>
     </div>
@@ -157,14 +157,14 @@
 </div>
 
 <!-- ───────── FIRST-RUN SETUP ───────── -->
-<div class="modal" id="setupModal" hidden>
+<div class="modal" id="setupModal" role="dialog" aria-modal="true" aria-labelledby="setupTitle" hidden>
   <div class="modal__backdrop"></div>
   <div class="modal__card modal__card--wide">
     <div class="modal__corner modal__corner--tl">┌</div>
     <div class="modal__corner modal__corner--tr">┐</div>
     <div class="modal__corner modal__corner--bl">└</div>
     <div class="modal__corner modal__corner--br">┘</div>
-    <h3>INITIAL&nbsp;SETUP</h3>
+    <h3 id="setupTitle">INITIAL&nbsp;SETUP</h3>
     <div id="setupForm">
       <p class="setup-intro">
         This is the <strong>first time</strong> someone is connecting to this
@@ -234,7 +234,7 @@
 </div>
 
 <!-- ───────── STRATEGY EDITOR MODAL ───────── -->
-<div class="modal" id="strategyEditorModal" hidden>
+<div class="modal" id="strategyEditorModal" role="dialog" aria-modal="true" aria-labelledby="stratEditorTitle" hidden>
   <div class="modal__backdrop"></div>
   <div class="modal__card modal__card--wide">
     <div class="modal__corner modal__corner--tl">┌</div>
@@ -290,14 +290,14 @@
 </div>
 
 <!-- ───────── PROVIDER SETUP WIZARD ───────── -->
-<div class="modal" id="wizardModal" hidden>
+<div class="modal" id="wizardModal" role="dialog" aria-modal="true" aria-labelledby="wizardTitle" hidden>
   <div class="modal__backdrop"></div>
   <div class="modal__card modal__card--wide">
     <div class="modal__corner modal__corner--tl">┌</div>
     <div class="modal__corner modal__corner--tr">┐</div>
     <div class="modal__corner modal__corner--bl">└</div>
     <div class="modal__corner modal__corner--br">┘</div>
-    <h3>SETUP&nbsp;GUIDE</h3>
+    <h3 id="wizardTitle">SETUP&nbsp;GUIDE</h3>
     <div class="wizard__header">
       <span class="wizard__provider-name"></span>
       <span class="wizard__free-tier"></span>
@@ -311,7 +311,7 @@
 </div>
 
 <!-- ───────── PROVIDER SETUP WIZARD (multi-step) ───────── -->
-<div class="modal" id="providerWizardModal" hidden>
+<div class="modal" id="providerWizardModal" role="dialog" aria-modal="true" aria-labelledby="pwTitle" hidden>
   <div class="modal__backdrop"></div>
   <div class="modal__card modal__card--wizard">
     <div class="modal__corner modal__corner--tl">┌</div>
@@ -322,7 +322,7 @@
     <!-- Progress header -->
     <div class="pw__header">
       <div class="pw__title-row">
-        <h3>PROVIDER SETUP</h3>
+        <h3 id="pwTitle">PROVIDER SETUP</h3>
         <span class="pw__counter" id="pwCounter">1 / 6</span>
       </div>
       <div class="pw__progress">
@@ -683,14 +683,14 @@
         <div class="ascii-arrow">└──▶</div>
         <h2 class="panel__title">USER&nbsp;MANAGEMENT</h2>
       </div>
-      <button class="refresh-button" id="refreshUsers">REFRESH</button>
+      <button type="button" class="ghost-button ghost-button--small" id="refreshUsers">REFRESH</button>
     </div>
     <p class="panel__lede">Manage user accounts (max 5). Each user has their own provider keys and API clients.</p>
 
-    <div class="form-row" style="margin-bottom:1rem">
-      <input type="text" id="newUsername" placeholder="username" style="width:10rem" />
-      <input type="password" id="newPassword" placeholder="password (min 8)" style="width:12rem" />
-      <button class="primary-button" id="userCreate">ADD USER</button>
+    <div class="inline-form">
+      <input type="text" id="newUsername" placeholder="username" autocomplete="username" />
+      <input type="password" id="newPassword" placeholder="password (min 8)" autocomplete="new-password" />
+      <button type="button" class="primary-button" id="userCreate">ADD USER</button>
     </div>
 
     <div class="users-kpis kpi-grid" id="usersKpiGrid"></div>
@@ -1251,7 +1251,7 @@ freeai_orchestrator_fallbacks_total{from_provider="mistral",to_provider="groq"} 
   </article>
 </template>
 
-<script src="./charts.js?v=0.5.0"></script>
-<script src="./app.js?v=0.5.0"></script>
+<script src="./charts.js?v=0.5.1"></script>
+<script src="./app.js?v=0.5.1"></script>
 </body>
 </html>
