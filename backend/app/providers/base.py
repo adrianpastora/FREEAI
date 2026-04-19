@@ -1,6 +1,7 @@
 """Base interface for AI providers. All adapters return a normalized ProviderResponse."""
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import AsyncIterator, Optional
@@ -8,6 +9,30 @@ from typing import AsyncIterator, Optional
 import httpx
 
 from ..schemas import ChatMessage
+
+
+# Scrub secrets that providers sometimes echo back in error bodies. We clip
+# to 500 chars upstream; this is the last filter before the message reaches
+# a client response or a log.
+_SECRET_PATTERNS = (
+    re.compile(r"(?i)bearer\s+[A-Za-z0-9._\-+/=]{8,}"),
+    re.compile(r"(?i)(?:api[_-]?key|authorization|x-api-key)\s*[:=]\s*['\"]?[A-Za-z0-9._\-+/=]{8,}['\"]?"),
+    re.compile(r"\bsk-[A-Za-z0-9_\-]{16,}\b"),
+    re.compile(r"\bgsk_[A-Za-z0-9_\-]{16,}\b"),
+    re.compile(r"\bhf_[A-Za-z0-9_\-]{16,}\b"),
+    re.compile(r"\bxai-[A-Za-z0-9_\-]{16,}\b"),
+    re.compile(r"\bAIza[0-9A-Za-z_\-]{30,}\b"),
+    re.compile(r"(?i)[?&](?:key|api_key|access_token)=[^&\s]+"),
+)
+
+
+def _sanitize_error_message(text: str) -> str:
+    if not text:
+        return text
+    out = text
+    for pat in _SECRET_PATTERNS:
+        out = pat.sub("[REDACTED]", out)
+    return out
 
 
 class ErrorKind(str, Enum):
@@ -221,4 +246,10 @@ class BaseProvider:
             )
         except Exception:
             pass
-        raise ProviderError(self.name, body, kind=kind, status=resp.status_code, retry_after=retry_after)
+        raise ProviderError(
+            self.name,
+            _sanitize_error_message(body),
+            kind=kind,
+            status=resp.status_code,
+            retry_after=retry_after,
+        )

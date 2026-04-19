@@ -125,11 +125,15 @@ class Orchestrator:
             timeout=httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0),
         )
         self._strategy_cache = _StrategyCache()
-        # Per-provider in-flight request counters for concurrency-aware scoring.
-        # Penalizes providers with many concurrent requests to spread load.
-        self._in_flight: dict[str, int] = {}
+        # Per-(user, provider) in-flight request counters for concurrency-aware
+        # scoring. Scoped per-user so one tenant's traffic can't skew another's
+        # routing decisions. Bounded at _IN_FLIGHT_MAX_KEYS; entries with a
+        # zero count are popped in _dec_in_flight so the map stays lean.
+        self._in_flight: dict[tuple[int, str], int] = {}
         # In-memory rate counters — avoids COUNT over rate_events on hot path
         self._counter_store = RateCounterStore()
+
+    _IN_FLIGHT_MAX_KEYS = 10_000
 
     @staticmethod
     def _circuit_breaker_kwargs(app_cfg) -> dict:
@@ -148,12 +152,21 @@ class Orchestrator:
                 kwargs[attr] = val
         return kwargs
 
-    def _dec_in_flight(self, name: str) -> None:
-        n = self._in_flight.get(name, 1) - 1
+    def _inc_in_flight(self, user_id: int, name: str) -> None:
+        key = (user_id, name)
+        # Cap the map to guard against unbounded growth from many users/providers.
+        # The penalty is a soft hint; losing a slot occasionally is harmless.
+        if key not in self._in_flight and len(self._in_flight) >= self._IN_FLIGHT_MAX_KEYS:
+            return
+        self._in_flight[key] = self._in_flight.get(key, 0) + 1
+
+    def _dec_in_flight(self, user_id: int, name: str) -> None:
+        key = (user_id, name)
+        n = self._in_flight.get(key, 1) - 1
         if n <= 0:
-            self._in_flight.pop(name, None)
+            self._in_flight.pop(key, None)
         else:
-            self._in_flight[name] = n
+            self._in_flight[key] = n
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -190,6 +203,7 @@ class Orchestrator:
         dto: ProviderConfigDTO,
         snap,
         definition: Optional[Definition],
+        user_id: int,
     ) -> Optional[float]:
         """Compute a provider's total score for a given strategy definition.
 
@@ -223,8 +237,8 @@ class Orchestrator:
             if dsl_score is None:
                 return None
             score = baseline + dsl_score
-        # Penalize providers with concurrent in-flight requests
-        in_flight = self._in_flight.get(dto.name, 0)
+        # Penalize providers with concurrent in-flight requests for this user.
+        in_flight = self._in_flight.get((user_id, dto.name), 0)
         if in_flight > 0:
             score -= 0.5 * in_flight
         return score
@@ -302,7 +316,7 @@ class Orchestrator:
             provider = self._build_provider(dto)
             if not provider:
                 continue
-            score = self._score(dto, snap, definition)
+            score = self._score(dto, snap, definition, user_id)
             if score is None:
                 continue
             if preferred and dto.name == preferred:
@@ -528,7 +542,7 @@ class Orchestrator:
                 strategy=strategy,
                 attempt=len(fallback_chain),
             )
-            self._in_flight[cand.name] = self._in_flight.get(cand.name, 0) + 1
+            self._inc_in_flight(user_id, cand.name)
             max_retries = (
                 cand.config.max_retries
                 if cand.config.max_retries is not None
@@ -548,7 +562,7 @@ class Orchestrator:
                 )
                 reservation_settled = True
             finally:
-                self._dec_in_flight(cand.name)
+                self._dec_in_flight(user_id, cand.name)
                 # Roll back the rate_events row if we never recorded the
                 # outcome — a cancelled request otherwise inflates the RPM
                 # counter against the client forever.
@@ -668,7 +682,7 @@ class Orchestrator:
                 continue
             self._counter_store.record(user_id, cand.name)
             fallback_position += 1
-            self._in_flight[cand.name] = self._in_flight.get(cand.name, 0) + 1
+            self._inc_in_flight(user_id, cand.name)
 
             started = time.perf_counter()
             first_chunk_sent = False
@@ -790,7 +804,7 @@ class Orchestrator:
                 # Always release in-flight counter — otherwise a cancelled
                 # client or unexpected exception would leak the slot forever
                 # and skew scoring until restart.
-                self._dec_in_flight(cand.name)
+                self._dec_in_flight(user_id, cand.name)
                 # If the request was cancelled / raised before we could record
                 # the outcome, roll back the reservation so the rate counters
                 # don't carry a "ghost" in-flight call.
