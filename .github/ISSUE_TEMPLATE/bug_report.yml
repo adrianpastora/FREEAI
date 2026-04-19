@@ -1,0 +1,72 @@
+name: Bug report
+description: Something is misbehaving in FreeAI — routing, fallback, auth, UI, etc.
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. A good report usually has a
+        tight repro, the exact commit you observed it on, and any relevant
+        structured log line (with `request_id`).
+
+        **Security issues**: please don't file them here — see
+        [SECURITY.md](../../SECURITY.md).
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened
+      description: One or two sentences describing the bug.
+      placeholder: Gemini responses stop mid-stream after ~45s and the request never falls back.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: Exact steps, curl commands, or a minimal snippet.
+      render: bash
+      placeholder: |
+        curl -N -X POST http://localhost:8000/v1/chat/completions \
+          -H "Authorization: Bearer fai_..." \
+          -d '{"messages":[{"role":"user","content":"..."}],"stream":true}'
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs actual
+      description: What should have happened, and what actually happened.
+    validations:
+      required: true
+
+  - type: input
+    id: commit
+    attributes:
+      label: Commit / tag
+      description: Output of `git rev-parse HEAD` or the release tag you're on.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: deploy
+    attributes:
+      label: How are you running it?
+      options:
+        - docker compose up (default)
+        - Custom Docker setup
+        - Local Python (uvicorn direct)
+        - Kubernetes
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Paste the JSON log lines around the failure. Scrub any tokens or provider keys first.
+      render: json

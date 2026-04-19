@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/adrianpastora/FREEAI/security/advisories/new
+    about: Please report security issues privately via GitHub Security Advisories. See SECURITY.md for details.
+  - name: Question about how to use FreeAI
+    url: https://github.com/adrianpastora/FREEAI/discussions
+    about: For setup, configuration, and usage questions, please open a Discussion instead of an Issue.

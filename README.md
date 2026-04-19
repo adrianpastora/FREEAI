@@ -136,7 +136,9 @@ If you're **deploying it**, [OPERATIONS.md](docs/OPERATIONS.md) is the one.
 If you're **contributing or extending**, [ARCHITECTURE.md](docs/ARCHITECTURE.md)
 + [DEVELOPMENT.md](docs/DEVELOPMENT.md), and skim
 [REVIEW.md](docs/REVIEW.md) so you know which design decisions are
-load-bearing before you refactor them.
+load-bearing before you refactor them. Also read
+[CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
+Releases are tracked in [CHANGELOG.md](CHANGELOG.md).
 
 ## Status
 
