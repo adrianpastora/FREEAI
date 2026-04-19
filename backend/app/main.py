@@ -161,12 +161,19 @@ async def _run_migrations(database_url: str) -> None:
     )
     stdout, stderr = await proc.communicate()
     if stdout:
+        # Keep the full output at debug only — verbose schema details don't
+        # belong in production logs. If the run fails we print it below.
         for line in stdout.decode().splitlines():
-            log.info("alembic_stdout", line=line)
+            log.debug("alembic_stdout", line=line)
     if proc.returncode != 0:
         err = stderr.decode(errors="replace")
-        log.error("migration_failed", returncode=proc.returncode, stderr=err)
-        raise RuntimeError(f"alembic upgrade failed (exit {proc.returncode}): {err}")
+        log.error(
+            "migration_failed",
+            returncode=proc.returncode,
+            stdout=stdout.decode(errors="replace")[-2000:],
+            stderr=err[-2000:],
+        )
+        raise RuntimeError(f"alembic upgrade failed (exit {proc.returncode})")
     log.info("migrations_done")
 
 
