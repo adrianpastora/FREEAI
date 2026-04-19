@@ -116,7 +116,8 @@ class Orchestrator:
     """Stateless aside from the shared httpx client. Receives repositories per-call."""
 
     _RETRY_BACKOFF_S = 0.4
-    _MAX_RETRIES = 1
+    # Fallback when AppConfigDTO.provider_max_retries is somehow missing.
+    _DEFAULT_MAX_RETRIES = 1
 
     def __init__(self):
         self._client = httpx.AsyncClient(
@@ -129,6 +130,23 @@ class Orchestrator:
         self._in_flight: dict[str, int] = {}
         # In-memory rate counters — avoids COUNT over rate_events on hot path
         self._counter_store = RateCounterStore()
+
+    @staticmethod
+    def _circuit_breaker_kwargs(app_cfg) -> dict:
+        """Pull breaker tunables from AppConfig with safe fallbacks."""
+        if app_cfg is None:
+            return {}
+        kwargs = {}
+        for attr in (
+            "circuit_breaker_threshold",
+            "circuit_breaker_window_s",
+            "circuit_breaker_base_cooldown_s",
+            "circuit_breaker_max_cooldown_s",
+        ):
+            val = getattr(app_cfg, attr, None)
+            if val is not None:
+                kwargs[attr] = val
+        return kwargs
 
     def _dec_in_flight(self, name: str) -> None:
         n = self._in_flight.get(name, 1) - 1
@@ -158,6 +176,7 @@ class Orchestrator:
             weight=dto.weight,
             tags=dto.tags,
             default_model=dto.default_model,
+            max_retries=dto.max_retries,
         )
 
     def _build_provider(self, dto: ProviderConfigDTO) -> Optional[BaseProvider]:
@@ -306,19 +325,28 @@ class Orchestrator:
         )
 
     async def _try_with_retry(
-        self, cand: _Candidate, req: ChatCompletionRequest, provider_model: Optional[str],
+        self,
+        cand: _Candidate,
+        req: ChatCompletionRequest,
+        provider_model: Optional[str],
+        max_retries: int,
     ) -> _AttemptResult:
         started = time.perf_counter()
         last_error: Optional[ProviderError] = None
-        for attempt in range(self._MAX_RETRIES + 1):
+        attempts_budget = max(0, max_retries)
+        for attempt in range(attempts_budget + 1):
             try:
                 resp = await self._attempt(cand.provider, req, provider_model)
                 latency_ms = int((time.perf_counter() - started) * 1000)
                 return _AttemptResult(response=resp, error=None, latency_ms=latency_ms)
             except ProviderError as e:
                 last_error = e
-                if e.is_transient and attempt < self._MAX_RETRIES:
-                    log.info("retrying transient error", provider=cand.name, kind=e.kind.value)
+                if e.is_transient and attempt < attempts_budget:
+                    log.info(
+                        "retrying transient error",
+                        provider=cand.name, kind=e.kind.value,
+                        attempt=attempt + 1, max_retries=attempts_budget,
+                    )
                     await asyncio.sleep(self._RETRY_BACKOFF_S * (2 ** attempt))
                     continue
                 break
@@ -338,6 +366,7 @@ class Orchestrator:
         fallback_position: int,
         client_hash: Optional[str],
         user_id: Optional[int] = None,
+        app_cfg: Optional[object] = None,
     ) -> None:
         """Record the outcome of a provider attempt. Never raises — a DB
         error during commit must not mask a successful provider response."""
@@ -348,6 +377,7 @@ class Orchestrator:
             await self._commit_attempt_inner(
                 rate_repo, usage_repo, reservation, result,
                 strategy, fallback_position, client_hash, user_id,
+                app_cfg=app_cfg,
             )
         except Exception:  # noqa: BLE001
             log.error(
@@ -366,6 +396,7 @@ class Orchestrator:
         fallback_position: int,
         client_hash: Optional[str],
         user_id: Optional[int] = None,
+        app_cfg: Optional[object] = None,
     ) -> None:
         outcome: str
         if result.response is not None:
@@ -399,6 +430,7 @@ class Orchestrator:
         quarantine = err.retry_after if err.kind == ErrorKind.RATE_LIMITED else None
         if err.kind == ErrorKind.AUTH:
             quarantine = 24 * 3600
+        cb_kwargs = self._circuit_breaker_kwargs(app_cfg)
         await rate_repo.commit(
             reservation,
             result.latency_ms,
@@ -406,6 +438,7 @@ class Orchestrator:
             error=err.message,
             error_kind=err.kind.value,
             quarantine_seconds=quarantine,
+            **cb_kwargs,
         )
         await usage_repo.record(
             UsageEvent(
@@ -496,8 +529,13 @@ class Orchestrator:
                 attempt=len(fallback_chain),
             )
             self._in_flight[cand.name] = self._in_flight.get(cand.name, 0) + 1
+            max_retries = (
+                cand.config.max_retries
+                if cand.config.max_retries is not None
+                else getattr(app_cfg, "provider_max_retries", self._DEFAULT_MAX_RETRIES)
+            )
             try:
-                result = await self._try_with_retry(cand, req, provider_model)
+                result = await self._try_with_retry(cand, req, provider_model, max_retries)
             finally:
                 self._dec_in_flight(cand.name)
             await self._commit_attempt(
@@ -506,6 +544,7 @@ class Orchestrator:
                 fallback_position=len(fallback_chain),
                 client_hash=client_hash,
                 user_id=user_id,
+                app_cfg=app_cfg,
             )
 
             if result.response is not None:
@@ -619,6 +658,7 @@ class Orchestrator:
             model_seen: Optional[str] = None
             prompt_tokens = 0
             completion_tokens = 0
+            idle_timeout = getattr(app_cfg, "stream_idle_timeout_s", 45.0)
             try:
                 stream_iter = cand.provider.stream(
                     req.messages,
@@ -627,7 +667,28 @@ class Orchestrator:
                     max_tokens=req.max_tokens,
                     client=self._client,
                 )
-                async for chunk in stream_iter:
+                # Manual iteration so we can enforce a per-chunk idle timeout.
+                # A provider that goes silent after accepting the request
+                # would otherwise hang this coroutine indefinitely.
+                while True:
+                    try:
+                        chunk = await asyncio.wait_for(
+                            stream_iter.__anext__(), timeout=idle_timeout
+                        )
+                    except StopAsyncIteration:
+                        break
+                    except asyncio.TimeoutError as te:
+                        # Close the upstream generator; it owns the httpx
+                        # stream context and must release it.
+                        try:
+                            await stream_iter.aclose()
+                        except Exception:  # noqa: BLE001
+                            pass
+                        raise ProviderError(
+                            cand.name,
+                            f"stream idle for {idle_timeout}s",
+                            kind=ErrorKind.NETWORK,
+                        ) from te
                     if not first_chunk_sent:
                         first_chunk_sent = True
                         ttfb_ms = int((time.perf_counter() - started) * 1000)
@@ -684,6 +745,7 @@ class Orchestrator:
                     reservation, latency_ms, ok=False,
                     error=e.message, error_kind=e.kind.value,
                     quarantine_seconds=quarantine,
+                    **self._circuit_breaker_kwargs(app_cfg),
                 )
                 await usage_repo.record(
                     UsageEvent(

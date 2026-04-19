@@ -29,12 +29,20 @@ class ProviderConfigDTO:
     weight: float = 1.0
     tags: list[str] = field(default_factory=list)
     default_model: Optional[str] = None
+    # User-scoped override for retry budget. None = use AppConfigDTO.provider_max_retries.
+    max_retries: Optional[int] = None
 
 
 @dataclass
 class AppConfigDTO:
     default_strategy: str = "auto"
     enable_fallback: bool = True
+    provider_max_retries: int = 1
+    stream_idle_timeout_s: float = 45.0
+    circuit_breaker_threshold: int = 3
+    circuit_breaker_window_s: int = 300
+    circuit_breaker_base_cooldown_s: int = 30
+    circuit_breaker_max_cooldown_s: int = 3600
 
 
 # Defaults — used to seed an empty database on first run.
@@ -183,6 +191,12 @@ class ConfigRepository:
         return AppConfigDTO(
             default_strategy=row.default_strategy,
             enable_fallback=row.enable_fallback,
+            provider_max_retries=row.provider_max_retries,
+            stream_idle_timeout_s=row.stream_idle_timeout_s,
+            circuit_breaker_threshold=row.circuit_breaker_threshold,
+            circuit_breaker_window_s=row.circuit_breaker_window_s,
+            circuit_breaker_base_cooldown_s=row.circuit_breaker_base_cooldown_s,
+            circuit_breaker_max_cooldown_s=row.circuit_breaker_max_cooldown_s,
         )
 
     async def set_strategy(self, strategy: str) -> None:
