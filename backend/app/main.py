@@ -231,8 +231,44 @@ app.add_middleware(
     allow_origins=settings.cors_origin_list,
     allow_credentials=False,
     allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["*"],
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+        "X-Admin-Token",
+        "X-Bootstrap-Token",
+        "X-Request-ID",
+    ],
 )
+
+
+# Max request body sizes. Audio uploads get a larger budget because they are
+# binary; chat/JSON endpoints are bound tighter to blunt data-URI flooding.
+_MAX_BODY_BYTES_AUDIO = 25 * 1024 * 1024   # 25 MB
+_MAX_BODY_BYTES_DEFAULT = 10 * 1024 * 1024  # 10 MB
+
+
+def _body_limit_for(path: str) -> int:
+    if path.startswith("/v1/audio/"):
+        return _MAX_BODY_BYTES_AUDIO
+    return _MAX_BODY_BYTES_DEFAULT
+
+
+@app.middleware("http")
+async def enforce_body_size(request: Request, call_next):
+    if request.method in ("POST", "PUT", "PATCH"):
+        limit = _body_limit_for(request.url.path)
+        content_length = request.headers.get("content-length")
+        if content_length:
+            try:
+                if int(content_length) > limit:
+                    return Response(
+                        content=f'{{"detail":"request body exceeds {limit} bytes"}}',
+                        status_code=413,
+                        media_type="application/json",
+                    )
+            except ValueError:
+                pass
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -288,12 +324,22 @@ async def setup_status(session: AsyncSession = Depends(get_session)) -> SetupSta
     )
 
 
+_SETUP_ADVISORY_LOCK_KEY = 98172354  # arbitrary but stable; pg_advisory_xact_lock
+
+
 @app.post("/api/setup/initial", status_code=201)
 async def setup_initial(
     body: InitialSetupBody,
     session: AsyncSession = Depends(get_session),
     x_bootstrap_token: Optional[str] = Header(default=None, alias="X-Bootstrap-Token"),
 ) -> dict:
+    # Serialize the full setup flow — two concurrent callers would otherwise
+    # both pass the _needs_initial_setup check and race on set_admin_token_hash.
+    from sqlalchemy import text as _sql_text
+    await session.execute(
+        _sql_text("SELECT pg_advisory_xact_lock(:k)"),
+        {"k": _SETUP_ADVISORY_LOCK_KEY},
+    )
     if not await _needs_initial_setup(session):
         raise HTTPException(
             status_code=403,
@@ -437,6 +483,14 @@ async def register(
     users require a valid admin JWT. The placeholder user created by migration
     0013 does not count as a real user.
     """
+    # Serialize against concurrent registrations so two callers can't both
+    # become the "first" admin by slipping past the count check in parallel.
+    from sqlalchemy import text as _sql_text
+    await session.execute(
+        _sql_text("SELECT pg_advisory_xact_lock(:k)"),
+        {"k": _SETUP_ADVISORY_LOCK_KEY},
+    )
+
     user_repo = UserRepository(session)
     count = await user_repo.count()
 
@@ -522,12 +576,59 @@ async def register(
     return await _issue_tokens(user_dto.id, user_dto.username, user_dto.role, session)
 
 
+_LOGIN_ATTEMPT_WINDOW_SECONDS = 300  # 5 min
+_LOGIN_ATTEMPT_MAX = 10
+# keyed by (ip, username_lower) → deque[timestamp]
+_login_attempts: dict[tuple[str, str], "__import__('collections').deque[float]"] = {}  # type: ignore[assignment]
+
+
+def _client_ip(request: Request) -> str:
+    # Only trust X-Forwarded-For when we know a proxy is in front. Default to
+    # the peer address to prevent header spoofing from bypassing the limit.
+    peer = request.client.host if request.client else "unknown"
+    return peer
+
+
+def _check_login_rate(ip: str, username: str) -> bool:
+    """Return False when the caller has exceeded the window budget."""
+    from collections import deque
+    key = (ip, username.lower())
+    now = time.time()
+    dq = _login_attempts.setdefault(key, deque())
+    while dq and dq[0] < now - _LOGIN_ATTEMPT_WINDOW_SECONDS:
+        dq.popleft()
+    if len(dq) >= _LOGIN_ATTEMPT_MAX:
+        return False
+    dq.append(now)
+    # Opportunistic cleanup of empty deques from other keys.
+    if len(_login_attempts) > 10_000:
+        stale = [k for k, v in _login_attempts.items() if not v]
+        for k in stale:
+            _login_attempts.pop(k, None)
+    return True
+
+
+def _clear_login_attempts(ip: str, username: str) -> None:
+    _login_attempts.pop((ip, username.lower()), None)
+
+
 @app.post("/api/auth/login")
-async def login(body: LoginBody, session: AsyncSession = Depends(get_session)) -> dict:
+async def login(
+    body: LoginBody,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    ip = _client_ip(request)
+    if not _check_login_rate(ip, body.username):
+        raise HTTPException(
+            429,
+            f"too many login attempts — try again in {_LOGIN_ATTEMPT_WINDOW_SECONDS}s",
+        )
     user_repo = UserRepository(session)
     user = await user_repo.find_by_username(body.username)
     if not user or not verify_password(body.password, user.password_hash):
         raise HTTPException(401, "invalid username or password")
+    _clear_login_attempts(ip, body.username)
     return await _issue_tokens(user.id, user.username, user.role, session)
 
 
@@ -1108,6 +1209,11 @@ async def audio_transcriptions(
 
     # ── Prepare audio input (read once, reuse across attempts) ──
     file_bytes = await file.read()
+    if len(file_bytes) > _MAX_BODY_BYTES_AUDIO:
+        raise HTTPException(
+            413,
+            f"audio payload exceeds {_MAX_BODY_BYTES_AUDIO} bytes",
+        )
     audio = AudioInput(
         file_bytes=file_bytes,
         filename=file.filename or "audio.ogg",
@@ -2004,16 +2110,11 @@ async def revoke_client(
 
 
 @app.get("/api/health")
-async def health(session: AsyncSession = Depends(get_session)) -> dict:
-    config_repo = ConfigRepository(session)
-    client_repo = ClientRepository(session)
-    providers = await config_repo.list_providers()
-    return {
-        "status": "ok",
-        "providers_configured": sum(1 for p in providers if p.api_key),
-        "clients_configured": len(await client_repo.list_all()),
-        "auth_required": await client_repo.has_any(),
-    }
+async def health() -> dict:
+    """Public healthcheck — minimal on purpose. Aggregate fleet counts are
+    available to authenticated admins via /api/analytics and /api/providers.
+    """
+    return {"status": "ok"}
 
 
 @app.get("/metrics")

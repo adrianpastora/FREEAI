@@ -31,26 +31,61 @@ class ChatMessage(BaseModel):
 
     @field_validator("content")
     @classmethod
-    def _reject_remote_image_urls(cls, value):
-        """Only accept data: URIs for image_url blocks.
+    def _validate_content(cls, value):
+        """Validate multimodal content: data-URI only images, sane sizes.
 
-        Letting providers fetch arbitrary client-supplied URLs is SSRF — they
-        could be pointed at cloud metadata endpoints, internal services, or
-        private networks. Clients must inline images as data URIs.
+        - Letting providers fetch arbitrary client-supplied URLs is SSRF
+          (cloud metadata, internal services, ...). Clients must inline.
+        - Per-block and per-message caps so a single request cannot exhaust
+          memory or bandwidth when relayed upstream.
         """
+        MAX_BLOCKS_PER_MESSAGE = 32
+        MAX_IMAGES_PER_MESSAGE = 8
+        MAX_TEXT_BLOCK_CHARS = 200_000
+        MAX_IMAGE_URL_CHARS = 6_000_000  # ~4.5 MB once base64-decoded
+
+        if isinstance(value, str):
+            if len(value) > MAX_TEXT_BLOCK_CHARS:
+                raise ValueError(
+                    f"content string exceeds {MAX_TEXT_BLOCK_CHARS} chars"
+                )
+            return value
+
         if not isinstance(value, list):
             return value
+
+        if len(value) > MAX_BLOCKS_PER_MESSAGE:
+            raise ValueError(
+                f"too many content blocks (max {MAX_BLOCKS_PER_MESSAGE})"
+            )
+
+        image_count = 0
         for block in value:
             if not isinstance(block, dict):
                 continue
-            if block.get("type") != "image_url":
-                continue
-            url_obj = block.get("image_url") or {}
-            url = url_obj.get("url", "") if isinstance(url_obj, dict) else ""
-            if url and not url.startswith("data:"):
-                raise ValueError(
-                    "image_url must be a data: URI; remote URLs are not accepted"
-                )
+            btype = block.get("type")
+            if btype == "text":
+                text = block.get("text") or ""
+                if len(text) > MAX_TEXT_BLOCK_CHARS:
+                    raise ValueError(
+                        f"text block exceeds {MAX_TEXT_BLOCK_CHARS} chars"
+                    )
+            elif btype == "image_url":
+                image_count += 1
+                if image_count > MAX_IMAGES_PER_MESSAGE:
+                    raise ValueError(
+                        f"too many image blocks (max {MAX_IMAGES_PER_MESSAGE})"
+                    )
+                url_obj = block.get("image_url") or {}
+                url = url_obj.get("url", "") if isinstance(url_obj, dict) else ""
+                if url and not url.startswith("data:"):
+                    raise ValueError(
+                        "image_url must be a data: URI; remote URLs are not accepted"
+                    )
+                if len(url) > MAX_IMAGE_URL_CHARS:
+                    raise ValueError(
+                        f"image_url payload exceeds {MAX_IMAGE_URL_CHARS} chars"
+                    )
         return value
 
     @property
@@ -95,11 +130,11 @@ class ChatCompletionRequest(BaseModel):
     # conversation built with the full OpenAI SDK.
     model_config = {"extra": "allow"}
 
-    messages: list[ChatMessage]
+    messages: list[ChatMessage] = Field(..., min_length=1, max_length=200)
     model: Optional[str] = None  # pass-through if set; else provider default_model
     strategy: Strategy = "auto"
-    temperature: float = 0.7
-    max_tokens: Optional[int] = None
+    temperature: float = Field(default=0.7, ge=0.0, le=2.0)
+    max_tokens: Optional[int] = Field(default=None, ge=1, le=32_000)
     stream: bool = False
     # advanced
     preferred_provider: Optional[str] = None
