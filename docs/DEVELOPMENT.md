@@ -14,10 +14,11 @@ docker compose up --build
 
 # Or, for local Python dev with auto-reload (needs Postgres reachable from the host)
 cd backend
-pip install -r requirements.txt
-# Si solo levantas Postgres con compose: añade un override local con
-# `ports: ["127.0.0.1:15432:5432"]` y usa ese puerto aquí, o usa Postgres nativo en :5432.
-export FREEAI_DATABASE_URL="postgresql+asyncpg://freeai:freeai@localhost:5432/freeai"
+pip install -r requirements.txt -r requirements-dev.txt
+# Postgres is bound to 127.0.0.1:5444 by docker-compose, so either use that
+# port locally or run a native Postgres on :5432 and point FREEAI_DATABASE_URL
+# at it.
+export FREEAI_DATABASE_URL="postgresql+asyncpg://freeai:freeai@localhost:5444/freeai"
 export FREEAI_MASTER_KEY=devkey
 export FREEAI_ADMIN_TOKEN=adm_devtoken
 python run.py    # uvicorn with --reload
@@ -30,9 +31,8 @@ and refresh the browser. No build step, no watcher.
 
 ### 2.1 Layout
 
-134 tests total in [backend/tests/](../backend/tests/). The test suite
-grew across sprints; this list highlights the main buckets rather than
-every file:
+233 tests total in [backend/tests/](../backend/tests/). This list
+highlights the main buckets rather than every file:
 
 - **Pure** (no DB, no Docker): `test_auto_strategy.py`, `test_crypto.py`,
   `test_known_models.py`, `test_strategy_dsl.py`,

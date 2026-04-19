@@ -13,8 +13,8 @@ semantic search, clustering, deduplication and recommendation systems all
 depend on **embedding vectors** — dense numerical representations of text
 that can be compared with cosine similarity.
 
-Until Sprint 7, FreeAI proxied only chat. `POST /v1/embeddings` closes that
-gap with the same architectural decisions already in place:
+`POST /v1/embeddings` covers embeddings with the same architectural
+decisions used by chat:
 
 - one OpenAI-compatible endpoint,
 - multi-provider fallback with per-user quota enforcement,
@@ -183,7 +183,7 @@ Every call — success or failure — writes one row to `usage_events` with:
 - `completion_tokens` — always 0 for embeddings
 - `fallback_position` — which candidate in the priority chain handled it
 
-The analytics dashboard (Sprint 7) picks these up automatically:
+The analytics dashboard picks these up automatically:
 
 - The **BY STRATEGY** chart shows `embedding` alongside `auto`, `fastest`, etc.
 - The **ERRORS BY KIND** chart groups embedding failures by error type.

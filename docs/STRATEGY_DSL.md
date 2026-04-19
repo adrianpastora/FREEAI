@@ -1,17 +1,17 @@
-# Strategy DSL — design doc
+# Strategy DSL
 
-> Status: **shipped** (commits 1–4 in `main`, finished 2026-04-12).
-> Author: collaborative session, 2026-04-12.
-> Replaces: ad-hoc tag matching in `orchestrator._score()`.
+A reference for the declarative language used to define custom routing
+strategies. Replaces an earlier ad-hoc tag matcher in
+`orchestrator._score()`.
 
-## Why (historical)
+## Background
 
-Before this rework, a strategy was `{name, tags: [str], description}`.
-The orchestrator matched strategy tags against provider tags with
-literal string equality. A user who created a strategy `creative` with
-tags `["creative", "poetic"]` got a strategy that **looked** custom but
-did nothing — no provider had those tags, so the scoring loop added
-zero points and the ranking degraded to `weight + headroom + latency_bonus`.
+In an earlier iteration, a strategy was `{name, tags: [str], description}`.
+The orchestrator matched strategy tags against provider tags with literal
+string equality. A user who created a strategy `creative` with tags
+`["creative", "poetic"]` got a strategy that **looked** custom but did
+nothing — no provider had those tags, so the scoring loop added zero
+points and the ranking degraded to `weight + headroom + latency_bonus`.
 
 The UI didn't tell the user this. The text-input editor accepted any
 string. The result was a feature that was silently a no-op for any tag

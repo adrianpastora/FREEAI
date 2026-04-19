@@ -474,9 +474,9 @@ Returns live status for every registered provider:
 ]
 ```
 
-New fields in Sprint 7: `tpd_limit` (tokens/day limit), `tokens_today`
-(incremental counter, no longer queries `usage_events`), `latency_ema_ms`
-(exponential moving average, alpha=0.3 — smoother than `last_latency_ms`).
+Scoring-related fields: `tpd_limit` (tokens/day limit), `tokens_today`
+(incremental counter, not a query over `usage_events`), `latency_ema_ms`
+(exponential moving average, α=0.3 — smoother than `last_latency_ms`).
 
 ### `PATCH /api/providers/{name}`
 
