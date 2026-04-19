@@ -14,9 +14,13 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db.models import ProviderStatsRow, RateEventRow
+from ..metrics import provider_circuit_breaker_trips_total
 
 # Errors that should NOT count toward the unhealthy streak.
-_BENIGN_ERRORS = {"rate_limited", "client_error"}
+# Outcomes that don't signal provider ill-health — provider is alive and
+# reachable, it just refused this specific request. These must not trip the
+# consecutive_failures streak that quarantines a provider.
+_BENIGN_ERRORS = {"rate_limited", "client_error", "content_filtered"}
 
 
 @dataclass
@@ -83,6 +87,10 @@ class RateRepository:
         quarantine_seconds: Optional[float] = None,
         prompt_tokens: int = 0,
         completion_tokens: int = 0,
+        circuit_breaker_threshold: int = 3,
+        circuit_breaker_window_s: int = 300,
+        circuit_breaker_base_cooldown_s: int = 30,
+        circuit_breaker_max_cooldown_s: int = 3600,
     ) -> None:
         uid = reservation.user_id
         pname = reservation.provider
@@ -123,6 +131,8 @@ class RateRepository:
                     last_error=None,
                     last_error_kind=None,
                     consecutive_failures=0,
+                    recent_failures_started_at=0.0,
+                    cooldown_level=0,
                     healthy=True,
                     quarantined_until=0.0,
                     total_calls=ProviderStatsRow.total_calls + 1,
@@ -153,33 +163,56 @@ class RateRepository:
             )
             return
 
-        # non-benign failure
+        # non-benign failure — feeds the circuit breaker.
+        # Sliding window: if the last failure is older than the window, reset
+        # the streak before counting this one. Exponential cooldown_level
+        # escalates each time the breaker trips; resets on success.
         result = await self.session.execute(
             select(ProviderStatsRow).where(pk_filter)
         )
         row = result.scalar_one_or_none()
-        new_streak = (row.consecutive_failures if row else 0) + 1
+        now = time.time()
+        window_start = (row.recent_failures_started_at if row else 0.0) or 0.0
+        prior_streak = row.consecutive_failures if row else 0
+        within_window = (
+            prior_streak > 0
+            and window_start > 0
+            and (now - window_start) <= circuit_breaker_window_s
+        )
+        new_streak = (prior_streak + 1) if within_window else 1
+        window_started = window_start if within_window else now
         values = {
             "last_latency_ms": latency_ms,
             "last_error": error,
             "last_error_kind": error_kind,
             "consecutive_failures": new_streak,
+            "recent_failures_started_at": window_started,
             "total_calls": ProviderStatsRow.total_calls + 1,
             "total_failures": ProviderStatsRow.total_failures + 1,
         }
-        if new_streak >= 3:
+        threshold = max(1, circuit_breaker_threshold)
+        tripped = new_streak >= threshold
+        if tripped:
             values["healthy"] = False
-            current_quarantine = (row.quarantined_until if row else 0) or 0
-            now = time.time()
-            if current_quarantine <= now:
-                values["quarantined_until"] = now + 30
-            else:
-                extra = min(600, max(60, (current_quarantine - now) * 2))
-                values["quarantined_until"] = now + extra
+            prior_level = row.cooldown_level if row else 0
+            # Cap the exponent so 2**level can't overflow absurdly.
+            level = min(prior_level, 20)
+            cooldown = min(
+                circuit_breaker_max_cooldown_s,
+                circuit_breaker_base_cooldown_s * (2 ** level),
+            )
+            values["quarantined_until"] = now + cooldown
+            values["cooldown_level"] = prior_level + 1
+            # Start a fresh window after tripping so we don't re-trip
+            # instantly on the very next failure.
+            values["consecutive_failures"] = 0
+            values["recent_failures_started_at"] = 0.0
 
         await self.session.execute(
             update(ProviderStatsRow).where(pk_filter).values(**values)
         )
+        if tripped:
+            provider_circuit_breaker_trips_total.labels(provider=pname).inc()
 
     async def rollback(self, reservation: ReservationToken) -> None:
         await self.session.execute(

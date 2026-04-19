@@ -20,7 +20,13 @@ http_request_duration_seconds = Histogram(
 provider_calls_total = Counter(
     "freeai_provider_calls_total",
     "Calls dispatched to a provider",
-    ["provider", "outcome"],  # outcome: success | server_error | rate_limited | auth | network | client_error | parsing | unknown
+    ["provider", "outcome"],  # outcome: success | server_error | rate_limited | auth | network | client_error | parsing | empty_response | content_filtered | unknown
+)
+
+provider_circuit_breaker_trips_total = Counter(
+    "freeai_provider_circuit_breaker_trips_total",
+    "Times a provider crossed the failure threshold and entered cooldown",
+    ["provider"],
 )
 provider_call_duration_seconds = Histogram(
     "freeai_provider_call_duration_seconds",

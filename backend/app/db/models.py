@@ -42,6 +42,12 @@ class AppConfigRow(Base):
     default_strategy: Mapped[str] = mapped_column(String(32), default="auto", nullable=False)
     enable_fallback: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     admin_token_hash: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    provider_max_retries: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    stream_idle_timeout_s: Mapped[float] = mapped_column(Float, default=45.0, nullable=False)
+    circuit_breaker_threshold: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
+    circuit_breaker_window_s: Mapped[int] = mapped_column(Integer, default=300, nullable=False)
+    circuit_breaker_base_cooldown_s: Mapped[int] = mapped_column(Integer, default=30, nullable=False)
+    circuit_breaker_max_cooldown_s: Mapped[int] = mapped_column(Integer, default=3600, nullable=False)
     updated_at: Mapped[float] = mapped_column(
         Float, default=time.time, onupdate=time.time, nullable=False
     )
@@ -77,6 +83,8 @@ class ProviderStatsRow(Base):
     )
     healthy: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     consecutive_failures: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    recent_failures_started_at: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    cooldown_level: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     quarantined_until: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     last_error_kind: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
@@ -239,6 +247,7 @@ class UserProviderRow(Base):
     tpd_limit: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     weight: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     default_model: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    max_retries: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     created_at: Mapped[float] = mapped_column(Float, default=time.time, nullable=False)
     updated_at: Mapped[float] = mapped_column(
         Float, default=time.time, onupdate=time.time, nullable=False

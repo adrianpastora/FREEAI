@@ -29,6 +29,8 @@ class UserProviderDTO:
     weight: float
     tags: list[str] = field(default_factory=list)  # always from catalog
     default_model: Optional[str] = None
+    # None = defer to AppConfigDTO.provider_max_retries at call time.
+    max_retries: Optional[int] = None
 
 
 class UserProviderRepository:
@@ -90,6 +92,7 @@ class UserProviderRepository:
         tpd_limit: Optional[int] = None,
         weight: Optional[float] = None,
         default_model: Optional[str] = None,
+        max_retries: Optional[int] = None,
     ) -> UserProviderDTO:
         # Check catalog exists
         catalog = await self._s.get(ProviderConfigRow, provider_name)
@@ -117,6 +120,8 @@ class UserProviderRepository:
                 existing.weight = weight
             if default_model is not None:
                 existing.default_model = default_model if default_model else None
+            if max_retries is not None:
+                existing.max_retries = max_retries
             existing.updated_at = time.time()
             await self._s.flush()
             return self._merge(existing, catalog)
@@ -131,6 +136,7 @@ class UserProviderRepository:
             tpd_limit=tpd_limit,
             weight=weight,
             default_model=default_model if default_model else None,
+            max_retries=max_retries,
             created_at=time.time(),
             updated_at=time.time(),
         )
@@ -159,6 +165,7 @@ class UserProviderRepository:
             weight=up.weight if up.weight is not None else cat.weight,
             tags=cat.tags or [],
             default_model=up.default_model or cat.default_model,
+            max_retries=up.max_retries,
         )
 
     @staticmethod
@@ -175,4 +182,5 @@ class UserProviderRepository:
             "weight": dto.weight,
             "tags": dto.tags,
             "default_model": dto.default_model,
+            "max_retries": dto.max_retries,
         }

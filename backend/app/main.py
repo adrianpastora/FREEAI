@@ -626,6 +626,7 @@ class UserProviderUpdate(BaseModel):
     tpd_limit: Optional[int] = None
     weight: Optional[float] = None
     default_model: Optional[str] = None
+    max_retries: Optional[int] = None
 
 
 @app.get("/api/me/providers")

@@ -12,6 +12,11 @@ import httpx
 from ..schemas import ChatMessage
 from .base import BaseProvider, ErrorKind, ProviderError, ProviderResponse, StreamChunk
 
+# Tolerate a few malformed SSE frames before bailing out — providers occasionally
+# emit truncated lines under network pressure. Reset the counter on every
+# successfully parsed chunk so isolated glitches don't accumulate.
+_MAX_PARSE_ERRORS = 5
+
 
 class OpenAICompatibleProvider(BaseProvider):
     """Subclasses just set BASE_URL, name, supports_streaming, and (optionally)
@@ -79,14 +84,31 @@ class OpenAICompatibleProvider(BaseProvider):
         try:
             data = resp.json()
             choice = data["choices"][0]
-            content = choice["message"]["content"]
+            message = choice["message"]
+            content = message.get("content")
         except (KeyError, IndexError, ValueError) as e:
             raise ProviderError(
                 self.name, f"unexpected response shape: {e}", kind=ErrorKind.PARSING
             ) from e
+        finish_reason = choice.get("finish_reason")
+        if finish_reason == "content_filter":
+            raise ProviderError(
+                self.name,
+                "content filtered (finish_reason=content_filter)",
+                kind=ErrorKind.CONTENT_FILTERED,
+            )
+        # content may be legitimately empty when the model chose to emit
+        # tool_calls instead — only treat as failure when there are none.
+        has_tool_calls = bool(message.get("tool_calls"))
+        if (not content or not content.strip()) and not has_tool_calls:
+            raise ProviderError(
+                self.name,
+                f"empty response (finish_reason={finish_reason or 'unspecified'})",
+                kind=ErrorKind.EMPTY_RESPONSE,
+            )
         usage = data.get("usage", {})
         return ProviderResponse(
-            content=content,
+            content=content or "",
             model=data.get("model", chosen),
             provider=self.name,
             prompt_tokens=usage.get("prompt_tokens", 0),
@@ -123,6 +145,8 @@ class OpenAICompatibleProvider(BaseProvider):
                         status_code=resp.status_code, headers=resp.headers, content=body
                     )
                     self._raise_for_status(fake)
+                parse_errors = 0
+                saw_content = False
                 async for line in resp.aiter_lines():
                     if not line or not line.startswith("data:"):
                         continue
@@ -132,15 +156,34 @@ class OpenAICompatibleProvider(BaseProvider):
                     try:
                         chunk = json.loads(payload_str)
                     except json.JSONDecodeError:
+                        parse_errors += 1
+                        if parse_errors >= _MAX_PARSE_ERRORS:
+                            raise ProviderError(
+                                self.name,
+                                f"stream emitted {_MAX_PARSE_ERRORS} unparseable frames",
+                                kind=ErrorKind.PARSING,
+                            )
                         continue
                     try:
                         choice = chunk["choices"][0]
                     except (KeyError, IndexError):
                         continue
+                    parse_errors = 0
                     delta = choice.get("delta", {}).get("content") or ""
                     finish = choice.get("finish_reason")
+                    # Bail out to fallback only if the provider filtered before
+                    # we emitted anything useful. After first delta, propagate
+                    # the finish_reason so the caller knows what happened.
+                    if finish == "content_filter" and not saw_content:
+                        raise ProviderError(
+                            self.name,
+                            "content filtered mid-stream before any delta",
+                            kind=ErrorKind.CONTENT_FILTERED,
+                        )
                     usage = chunk.get("usage") or {}
                     if delta or finish or usage:
+                        if delta:
+                            saw_content = True
                         yield StreamChunk(
                             delta=delta,
                             provider=self.name,

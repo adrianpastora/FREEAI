@@ -18,6 +18,8 @@ class ErrorKind(str, Enum):
     SERVER_ERROR = "server_error" # 5xx — transient, retry-then-fallback
     NETWORK = "network"           # connection / timeout — transient
     PARSING = "parsing"           # response shape changed — likely a bug
+    EMPTY_RESPONSE = "empty_response"   # 200 OK but content empty/whitespace — fallback
+    CONTENT_FILTERED = "content_filtered"  # provider blocked output (safety/filter) — fallback
     UNKNOWN = "unknown"
 
 
@@ -39,12 +41,24 @@ class ProviderError(Exception):
 
     @property
     def is_transient(self) -> bool:
-        return self.kind in {ErrorKind.SERVER_ERROR, ErrorKind.NETWORK}
+        # EMPTY_RESPONSE and CONTENT_FILTERED also trigger fallback but — see
+        # is_benign — the orchestrator must NOT count them as health failures.
+        return self.kind in {
+            ErrorKind.SERVER_ERROR,
+            ErrorKind.NETWORK,
+            ErrorKind.EMPTY_RESPONSE,
+            ErrorKind.CONTENT_FILTERED,
+        }
 
     @property
     def is_benign(self) -> bool:
         """Provider is healthy, just don't pick it right now (or ever, for auth)."""
-        return self.kind in {ErrorKind.RATE_LIMITED, ErrorKind.CLIENT_ERROR, ErrorKind.AUTH}
+        return self.kind in {
+            ErrorKind.RATE_LIMITED,
+            ErrorKind.CLIENT_ERROR,
+            ErrorKind.AUTH,
+            ErrorKind.CONTENT_FILTERED,
+        }
 
 
 def classify_status(status: int) -> ErrorKind:

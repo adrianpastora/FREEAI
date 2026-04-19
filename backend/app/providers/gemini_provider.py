@@ -15,8 +15,17 @@ import httpx
 from ..schemas import ChatMessage
 from .base import BaseProvider, EmbeddingResult, ErrorKind, ProviderError, ProviderResponse, StreamChunk
 
+# Tolerate a few malformed SSE frames before failing the whole stream.
+_MAX_PARSE_ERRORS = 5
+
 # Matches data URIs: data:image/png;base64,iVBOR...
 _DATA_URI_RE = re.compile(r"^data:([^;]+);base64,(.+)$", re.DOTALL)
+
+# Gemini finishReason values that mean "no usable content was emitted." The
+# orchestrator treats these as CONTENT_FILTERED so another provider is tried.
+_GEMINI_BLOCKED_FINISH = {
+    "SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII"
+}
 
 
 class GeminiProvider(BaseProvider):
@@ -122,11 +131,31 @@ class GeminiProvider(BaseProvider):
         self._raise_for_status(resp)
         data = resp.json()
         try:
-            text = data["candidates"][0]["content"]["parts"][0]["text"]
+            candidate = data["candidates"][0]
         except (KeyError, IndexError) as e:
             raise ProviderError(
                 self.name, f"unexpected response shape: {e}", kind=ErrorKind.PARSING
             ) from e
+        finish_reason = candidate.get("finishReason")
+        if finish_reason in _GEMINI_BLOCKED_FINISH:
+            raise ProviderError(
+                self.name,
+                f"content filtered (finishReason={finish_reason})",
+                kind=ErrorKind.CONTENT_FILTERED,
+            )
+        try:
+            parts = candidate["content"]["parts"]
+            text = "".join(p.get("text", "") for p in parts)
+        except (KeyError, IndexError, TypeError) as e:
+            raise ProviderError(
+                self.name, f"unexpected response shape: {e}", kind=ErrorKind.PARSING
+            ) from e
+        if not text or not text.strip():
+            raise ProviderError(
+                self.name,
+                f"empty response (finishReason={finish_reason or 'unspecified'})",
+                kind=ErrorKind.EMPTY_RESPONSE,
+            )
         usage = data.get("usageMetadata", {})
         return ProviderResponse(
             content=text,
@@ -159,6 +188,8 @@ class GeminiProvider(BaseProvider):
                         status_code=resp.status_code, headers=resp.headers, content=body
                     )
                     self._raise_for_status(fake)
+                parse_errors = 0
+                saw_content = False
                 async for line in resp.aiter_lines():
                     if not line or not line.startswith("data:"):
                         continue
@@ -168,14 +199,30 @@ class GeminiProvider(BaseProvider):
                     try:
                         chunk = json.loads(payload_str)
                     except json.JSONDecodeError:
+                        parse_errors += 1
+                        if parse_errors >= _MAX_PARSE_ERRORS:
+                            raise ProviderError(
+                                self.name,
+                                f"stream emitted {_MAX_PARSE_ERRORS} unparseable frames",
+                                kind=ErrorKind.PARSING,
+                            )
                         continue
+                    parse_errors = 0
                     try:
                         parts = chunk["candidates"][0]["content"]["parts"]
                         text = "".join(p.get("text", "") for p in parts)
-                    except (KeyError, IndexError):
+                    except (KeyError, IndexError, TypeError):
                         text = ""
                     finish = chunk.get("candidates", [{}])[0].get("finishReason")
+                    if finish in _GEMINI_BLOCKED_FINISH and not saw_content:
+                        raise ProviderError(
+                            self.name,
+                            f"content filtered mid-stream (finishReason={finish})",
+                            kind=ErrorKind.CONTENT_FILTERED,
+                        )
                     if text or finish:
+                        if text:
+                            saw_content = True
                         yield StreamChunk(
                             delta=text,
                             provider=self.name,
