@@ -2095,7 +2095,6 @@ async function refreshAnalytics() {
   renderFallbackChain(data);
   renderTokenSplit(data);
   renderHourlyPattern(data);
-  updateSavingsBadge(data.total_tokens || 0);
 }
 
 // ─────────────── historical analytics (rollups) ───────────────
@@ -2220,29 +2219,216 @@ async function refreshSavings() {
 
 // ─────────────── user management (admin) ───────────────
 
+// Palette cycled across user series (up to 5 users). Picked to read in both themes.
+const USER_SERIES_COLORS = ["#ff7a18", "#14d6c4", "#6da34d", "#ffb066", "#ff4d4d"];
+
+function formatRelative(ts) {
+  if (!ts) return "never";
+  const diff = Date.now() / 1000 - ts;
+  if (diff < 60) return "just now";
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  if (diff < 7 * 86400) return `${Math.floor(diff / 86400)}d ago`;
+  return new Date(ts * 1000).toISOString().slice(0, 10);
+}
+
+function sparkline(daily, color) {
+  if (!daily || !daily.length) return "";
+  const w = 72, h = 22;
+  const max = Math.max(...daily.map(d => d.calls), 1);
+  const stepX = w / Math.max(daily.length - 1, 1);
+  const pts = daily.map((d, i) => [
+    (i * stepX).toFixed(1),
+    (h - (d.calls / max) * (h - 2)).toFixed(1),
+  ]);
+  const path = pts.map((p, i) => (i ? "L" : "M") + p[0] + "," + p[1]).join(" ");
+  const area = `M0,${h} ${path.slice(1)} L${w},${h} Z`;
+  return `<svg class="user-card__spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true">
+    <path d="${area}" fill="${color}" fill-opacity="0.18" />
+    <path d="${path}" fill="none" stroke="${color}" stroke-width="1.4" />
+  </svg>`;
+}
+
+function renderUsersKpis(payload) {
+  const el = document.getElementById("usersKpiGrid");
+  if (!el) return;
+  const users = payload.users;
+  const totalUsers = users.length;
+  const activeToday = users.filter(u => u.last_seen && (Date.now() / 1000 - u.last_seen) < 86400).length;
+  const totalCalls = users.reduce((a, u) => a + u.calls, 0);
+  const totalTokens = users.reduce((a, u) => a + u.tokens, 0);
+  el.innerHTML = `
+    <div class="kpi-card">
+      <div class="kpi-card__label">USERS</div>
+      <div class="kpi-card__value">${totalUsers}<span class="kpi-card__unit">&nbsp;/&nbsp;5</span></div>
+      <div class="kpi-card__sub"><b>${activeToday}</b> active in last 24h</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-card__label">TOTAL&nbsp;CALLS&nbsp;(7D)</div>
+      <div class="kpi-card__value">${totalCalls.toLocaleString()}</div>
+      <div class="kpi-card__sub">across all users</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-card__label">TOTAL&nbsp;TOKENS&nbsp;(7D)</div>
+      <div class="kpi-card__value">${formatTokens(totalTokens)}</div>
+      <div class="kpi-card__sub">prompt + completion</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-card__label">DAYS&nbsp;COVERED</div>
+      <div class="kpi-card__value">${payload.days}<span class="kpi-card__unit">&nbsp;d</span></div>
+      <div class="kpi-card__sub">rolling window</div>
+    </div>
+  `;
+}
+
+function renderUserCards(users) {
+  const list = document.getElementById("userList");
+  if (!list) return;
+  const me = getCurrentUser()?.id;
+  if (!users.length) {
+    list.innerHTML = `<div class="chart-card__empty">no users yet</div>`;
+    return;
+  }
+  list.innerHTML = users.map((u, i) => {
+    const color = USER_SERIES_COLORS[i % USER_SERIES_COLORS.length];
+    const rate = u.success_rate == null
+      ? "&mdash;"
+      : `${(u.success_rate * 100).toFixed(1)}%`;
+    const tokFmt = formatTokens(u.tokens);
+    const isMe = u.id === me;
+    return `
+      <article class="user-card" data-user-color="${color}">
+        <header class="user-card__head">
+          <span class="user-card__chip" style="background:${color}"></span>
+          <div class="user-card__identity">
+            <div class="user-card__name">${escapeHtml(u.username)}${isMe ? ' <span class="user-card__me">(you)</span>' : ''}</div>
+            <div class="user-card__meta">ID&nbsp;${u.id} · ${escapeHtml(u.role)} · joined ${new Date(u.created_at * 1000).toISOString().slice(0, 10)}</div>
+          </div>
+          ${isMe ? '' : `<button class="ghost-button user-card__del" data-delete="${u.id}" data-username="${escapeHtml(u.username)}">DELETE</button>`}
+        </header>
+
+        <dl class="user-card__stats">
+          <div><dt>PROVIDERS</dt><dd><b>${u.providers_active}</b><span class="user-card__stat-sub">&nbsp;/&nbsp;${u.providers_configured}</span></dd></div>
+          <div><dt>CLIENTS</dt><dd><b>${u.clients_enabled}</b><span class="user-card__stat-sub">&nbsp;/&nbsp;${u.clients_configured}</span></dd></div>
+          <div><dt>CALLS&nbsp;7D</dt><dd><b>${u.calls.toLocaleString()}</b></dd></div>
+          <div><dt>TOKENS&nbsp;7D</dt><dd><b>${tokFmt}</b></dd></div>
+          <div><dt>SUCCESS</dt><dd><b>${rate}</b></dd></div>
+          <div><dt>LAST&nbsp;SEEN</dt><dd><b>${formatRelative(u.last_seen)}</b></dd></div>
+        </dl>
+
+        <div class="user-card__spark-wrap">
+          <span class="user-card__spark-label">ACTIVITY&nbsp;7D</span>
+          ${sparkline(u.daily, color)}
+        </div>
+      </article>`;
+  }).join("");
+
+  list.querySelectorAll("[data-delete]").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      if (!confirm(`Delete user ${btn.dataset.username}?`)) return;
+      await adminApi(`/api/users/${btn.dataset.delete}`, { method: "DELETE" });
+      refreshUsers();
+    });
+  });
+}
+
+function renderUserActivityChart(users) {
+  const el = document.getElementById("chartUserActivity");
+  const legend = document.getElementById("chartUserActivityLegend");
+  if (!el) return;
+  if (!users.length || users.every(u => u.daily.every(d => d.calls === 0))) {
+    el.innerHTML = `<div class="chart-card__empty">no activity in the selected window</div>`;
+    if (legend) legend.innerHTML = "";
+    return;
+  }
+
+  const w = 800, h = 240, pad = 36;
+  const days = users[0].daily.map(d => d.day);
+  const maxCalls = Math.max(1, ...users.flatMap(u => u.daily.map(d => d.calls)));
+  const stepX = (w - 2 * pad) / Math.max(days.length - 1, 1);
+
+  const ticks = 4;
+  const grid = [];
+  for (let i = 0; i <= ticks; i++) {
+    const y = pad + (i * (h - 2 * pad)) / ticks;
+    const label = Math.round(maxCalls * (1 - i / ticks));
+    grid.push(
+      `<line class="svg-grid" x1="${pad}" x2="${w - pad}" y1="${y}" y2="${y}" />`,
+      `<text class="svg-label" x="${pad - 6}" y="${y + 3}" text-anchor="end">${label}</text>`,
+    );
+  }
+  const xLabels = [0, Math.floor(days.length / 2), days.length - 1].map(i => {
+    const x = pad + i * stepX;
+    return `<text class="svg-label" x="${x}" y="${h - pad + 14}" text-anchor="middle">${days[i].slice(5)}</text>`;
+  });
+
+  const paths = users.map((u, i) => {
+    const color = USER_SERIES_COLORS[i % USER_SERIES_COLORS.length];
+    const pts = u.daily.map((d, j) => [
+      pad + j * stepX,
+      h - pad - (d.calls / maxCalls) * (h - 2 * pad),
+    ]);
+    const d = pts.map((p, j) => (j ? "L" : "M") + p[0].toFixed(1) + "," + p[1].toFixed(1)).join(" ");
+    const dots = pts.map(p => `<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="2.4" fill="${color}" />`).join("");
+    return `<path d="${d}" fill="none" stroke="${color}" stroke-width="2" />${dots}`;
+  }).join("");
+
+  el.innerHTML = `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="xMidYMid meet">
+    ${grid.join("")}
+    ${paths}
+    ${xLabels.join("")}
+  </svg>`;
+
+  if (legend) {
+    legend.innerHTML = users.map((u, i) => {
+      const color = USER_SERIES_COLORS[i % USER_SERIES_COLORS.length];
+      return `<span class="chart-legend__item"><i style="background:${color}"></i>${escapeHtml(u.username)}</span>`;
+    }).join("");
+  }
+}
+
+function renderUserUsageChart(users) {
+  const el = document.getElementById("chartUserUsage");
+  if (!el) return;
+  const rows = users.slice().sort((a, b) => b.calls - a.calls);
+  const max = Math.max(1, ...rows.map(u => u.calls));
+  if (max === 1 && rows.every(u => u.calls === 0)) {
+    el.innerHTML = `<div class="chart-card__empty">no usage in the selected window</div>`;
+    return;
+  }
+  el.innerHTML = `
+    <ul class="user-usage-list">
+      ${rows.map((u, i) => {
+        const color = USER_SERIES_COLORS[users.indexOf(u) % USER_SERIES_COLORS.length];
+        const wPct = (u.calls / max) * 100;
+        const successPct = u.calls > 0 ? (u.success / u.calls) * 100 : 0;
+        const failPct = 100 - successPct;
+        return `
+        <li class="user-usage-row">
+          <span class="user-usage-row__name" style="border-left-color:${color}">${escapeHtml(u.username)}</span>
+          <div class="user-usage-row__bar" style="width:${wPct.toFixed(1)}%">
+            <span class="user-usage-row__seg user-usage-row__seg--ok" style="flex:${successPct}"></span>
+            <span class="user-usage-row__seg user-usage-row__seg--fail" style="flex:${failPct}"></span>
+          </div>
+          <span class="user-usage-row__stat"><b>${u.calls.toLocaleString()}</b> calls</span>
+          <span class="user-usage-row__stat user-usage-row__stat--dim">${formatTokens(u.tokens)} tk</span>
+        </li>`;
+      }).join("")}
+    </ul>
+  `;
+}
+
 async function refreshUsers() {
   const list = document.getElementById("userList");
   if (!list) return;
   try {
-    const users = await adminApi("/api/users");
-    list.innerHTML = users.map(u => `
-      <div class="client-card" style="display:flex;align-items:center;gap:1rem;padding:.5rem 1rem">
-        <span style="font-weight:600;min-width:10rem">${escapeHtml(u.username)}</span>
-        <span class="tag">${u.role}</span>
-        <span style="opacity:.6;font-size:.85rem">ID: ${u.id}</span>
-        <span style="flex:1"></span>
-        ${u.id !== getCurrentUser()?.id ? `<button class="danger-button" data-delete="${u.id}" style="font-size:.75rem">DELETE</button>` : '<span style="opacity:.5;font-size:.75rem">(you)</span>'}
-      </div>
-    `).join("");
-    list.querySelectorAll("[data-delete]").forEach(btn => {
-      btn.addEventListener("click", async () => {
-        if (!confirm(`Delete user ${btn.closest(".client-card").querySelector("span").textContent}?`)) return;
-        await adminApi(`/api/users/${btn.dataset.delete}`, { method: "DELETE" });
-        refreshUsers();
-      });
-    });
+    const payload = await adminApi("/api/users/analytics?days=7");
+    renderUsersKpis(payload);
+    renderUserCards(payload.users);
+    renderUserActivityChart(payload.users);
+    renderUserUsageChart(payload.users);
   } catch (e) {
-    list.innerHTML = `<p style="color:#ff4444">${escapeHtml(e.message)}</p>`;
+    list.innerHTML = `<div class="chart-card__empty" style="color:var(--rose)">${escapeHtml(e.message)}</div>`;
   }
 }
 

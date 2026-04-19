@@ -674,7 +674,24 @@
       <button class="primary-button" id="userCreate">ADD USER</button>
     </div>
 
-    <div id="userList"></div>
+    <div class="users-kpis kpi-grid" id="usersKpiGrid"></div>
+
+    <div class="user-card-grid" id="userList"></div>
+
+    <div class="chart-row" style="margin-top:24px">
+      <div class="chart-card chart-card--wide">
+        <div class="chart-card__title">ACTIVITY&nbsp;BY&nbsp;USER <span class="chart-card__subtitle">calls/day · last 7 days</span></div>
+        <div class="chart-card__body" id="chartUserActivity"></div>
+        <div class="chart-legend" id="chartUserActivityLegend"></div>
+      </div>
+    </div>
+
+    <div class="chart-row">
+      <div class="chart-card chart-card--wide">
+        <div class="chart-card__title">USAGE&nbsp;BY&nbsp;USER <span class="chart-card__subtitle">success vs failed · last 7 days</span></div>
+        <div class="chart-card__body" id="chartUserUsage"></div>
+      </div>
+    </div>
   </section>
 
   <!-- ───────── API ───────── -->
@@ -702,12 +719,45 @@
       and never reach the client &mdash; they only surface if every provider fails.
     </p>
 
+    <nav class="api-index" aria-label="Endpoint index">
+      <div class="api-index__head">
+        <strong>INDEX</strong>
+        <span>12 ENDPOINTS &middot; JUMP &#x2193;</span>
+      </div>
+      <ul class="api-index__list">
+        <li><a href="#ep-chat">POST&nbsp;/v1/chat/completions</a></li>
+        <li><a href="#ep-embed">POST&nbsp;/v1/embeddings</a></li>
+        <li><a href="#ep-audio">POST&nbsp;/v1/audio/transcriptions</a></li>
+        <li><a href="#ep-models">GET&nbsp;/v1/models</a></li>
+        <li><a href="#ep-me-providers">GET&nbsp;/api/me/providers</a></li>
+        <li><a href="#ep-me-provider-patch">PATCH&nbsp;/api/me/providers/{name}</a></li>
+        <li><a href="#ep-clients">POST&nbsp;/api/clients</a></li>
+        <li><a href="#ep-providers">GET&nbsp;/api/providers</a></li>
+        <li><a href="#ep-strategies">GET&nbsp;/api/strategies</a></li>
+        <li><a href="#ep-analytics">GET&nbsp;/api/analytics</a></li>
+        <li><a href="#ep-health">GET&nbsp;/api/health</a></li>
+        <li><a href="#ep-metrics">GET&nbsp;/metrics</a></li>
+      </ul>
+    </nav>
+
     <div class="api-cards">
       <!-- ═══════ CLIENT ROUTES (Authorization: Bearer fai_...) ═══════ -->
+      <div class="api-section">
+        <span class="api-section__tag api-section__tag--client">CLIENT&nbsp;ROUTES</span>
+        <span>Authorization: Bearer fai_&hellip;</span>
+        <span class="api-section__rule"></span>
+        <span class="api-section__count">04&nbsp;/&nbsp;12</span>
+      </div>
 
-      <article class="api-card">
-        <header><span class="api-card__verb">POST</span><span class="api-card__path">/v1/chat/completions</span></header>
-        <pre>{
+      <article class="api-card" id="ep-chat" data-group="client">
+        <header>
+          <span class="api-card__verb">POST</span>
+          <span class="api-card__path">/v1/chat/completions</span>
+          <span class="api-card__access">CLIENT</span>
+        </header>
+        <details open>
+          <summary><span>REQUEST&nbsp;BODY</span></summary>
+          <pre>{
   "messages": [
     {"role": "system", "content": "You are helpful."},
     {"role": "user", "content": "Hello!"}
@@ -720,6 +770,7 @@
   "stream": false,
   "fallback": true
 }</pre>
+        </details>
         <p>OpenAI-compatible chat with multi-provider fallback.
         <code>strategy</code> controls routing (<code>auto</code>, <code>fastest</code>, <code>best_quality</code>, <code>coding</code>, custom&hellip;).
         <code>preferred_provider</code> boosts a specific provider; <code>fallback: true</code> tries the next candidate on failure.</p>
@@ -756,9 +807,15 @@ freeai-code      freeai-reasoning</pre>
         a stalled upstream falls back only if no bytes were flushed yet.</p>
       </article>
 
-      <article class="api-card">
-        <header><span class="api-card__verb">POST</span><span class="api-card__path">/v1/embeddings</span></header>
-        <pre>// Request:
+      <article class="api-card" id="ep-embed" data-group="client">
+        <header>
+          <span class="api-card__verb">POST</span>
+          <span class="api-card__path">/v1/embeddings</span>
+          <span class="api-card__access">CLIENT</span>
+        </header>
+        <details open>
+          <summary><span>REQUEST&nbsp;/&nbsp;RESPONSE</span></summary>
+          <pre>// Request:
 {
   "input": ["first doc", "second doc"],
   "model": "mistral-embed",
@@ -778,6 +835,7 @@ freeai-code      freeai-reasoning</pre>
   "usage": {"prompt_tokens": 14, "total_tokens": 14},
   "fallback_position": 1
 }</pre>
+        </details>
         <p>OpenAI-compatible embeddings with Mistral &rarr; Gemini fallback.
         <code>input</code> accepts a string or a list; vectors are aligned with the list order.</p>
 
@@ -792,9 +850,15 @@ freeai-code      freeai-reasoning</pre>
         doesn't corrupt your index.</p>
       </article>
 
-      <article class="api-card">
-        <header><span class="api-card__verb">POST</span><span class="api-card__path">/v1/audio/transcriptions</span></header>
-        <pre>// multipart/form-data
+      <article class="api-card" id="ep-audio" data-group="client">
+        <header>
+          <span class="api-card__verb">POST</span>
+          <span class="api-card__path">/v1/audio/transcriptions</span>
+          <span class="api-card__access">CLIENT</span>
+        </header>
+        <details open>
+          <summary><span>MULTIPART&nbsp;/&nbsp;RESPONSE</span></summary>
+          <pre>// multipart/form-data
 file: &lt;audio file&gt;
 model: "whisper-1"    // optional, ignored
 language: "en"        // optional (ISO 639-1)
@@ -807,14 +871,21 @@ language: "en"        // optional (ISO 639-1)
   "latency_ms": 1230,
   "fallback_position": 1
 }</pre>
+        </details>
         <p>Audio transcription with fallback: Groq Whisper &rarr; Gemini.
         Accepts mp3, wav, ogg, flac, webm, m4a, aac. Max 20 MB for Gemini inline.
         Same auth as chat completions.</p>
       </article>
 
-      <article class="api-card">
-        <header><span class="api-card__verb">GET</span><span class="api-card__path">/v1/models</span></header>
-        <pre>{
+      <article class="api-card" id="ep-models" data-group="public">
+        <header>
+          <span class="api-card__verb api-card__verb--get">GET</span>
+          <span class="api-card__path">/v1/models</span>
+          <span class="api-card__access">PUBLIC</span>
+        </header>
+        <details open>
+          <summary><span>RESPONSE</span></summary>
+          <pre>{
   "object": "list",
   "data": [
     {"id": "freeai-auto",    "object": "model", "owned_by": "freeai"},
@@ -824,16 +895,29 @@ language: "en"        // optional (ISO 639-1)
     ...
   ]
 }</pre>
+        </details>
         <p>OpenAI-compatible model list. <strong>Public &mdash; no auth required.</strong>
         Returns the 8 virtual models (strategies) exposed for chat completions.
         Intended for SDK model-picker UIs.</p>
       </article>
 
       <!-- ═══════ USER ROUTES (JWT, multi-user) ═══════ -->
+      <div class="api-section">
+        <span class="api-section__tag api-section__tag--user">USER&nbsp;ROUTES</span>
+        <span>JWT cookie &middot; multi-user scope</span>
+        <span class="api-section__rule"></span>
+        <span class="api-section__count">03&nbsp;/&nbsp;12</span>
+      </div>
 
-      <article class="api-card">
-        <header><span class="api-card__verb">GET</span><span class="api-card__path">/api/me/providers</span></header>
-        <pre>[
+      <article class="api-card" id="ep-me-providers" data-group="user">
+        <header>
+          <span class="api-card__verb api-card__verb--get">GET</span>
+          <span class="api-card__path">/api/me/providers</span>
+          <span class="api-card__access">USER</span>
+        </header>
+        <details open>
+          <summary><span>RESPONSE</span></summary>
+          <pre>[
   {
     "provider_name": "groq",
     "has_key": true,
@@ -848,15 +932,22 @@ language: "en"        // optional (ISO 639-1)
     "max_retries": null
   }, ...
 ]</pre>
+        </details>
         <p>Per-user provider credentials and overrides. Every field (except <code>tags</code> and <code>provider_name</code>)
         can override the catalog default.
         <code>max_retries</code> overrides <code>app_config.provider_max_retries</code> for this user+provider;
         <code>null</code> = use the global.</p>
       </article>
 
-      <article class="api-card">
-        <header><span class="api-card__verb">PATCH</span><span class="api-card__path">/api/me/providers/{name}</span></header>
-        <pre>{
+      <article class="api-card" id="ep-me-provider-patch" data-group="user">
+        <header>
+          <span class="api-card__verb api-card__verb--patch">PATCH</span>
+          <span class="api-card__path">/api/me/providers/{name}</span>
+          <span class="api-card__access">USER</span>
+        </header>
+        <details open>
+          <summary><span>REQUEST&nbsp;BODY</span></summary>
+          <pre>{
   "api_key": "sk-...",          // empty string to remove
   "enabled": true,
   "rpm_limit": 30,
@@ -866,13 +957,20 @@ language: "en"        // optional (ISO 639-1)
   "default_model": "llama-3.1-8b-instant",
   "max_retries": 2              // override global retry budget
 }</pre>
+        </details>
         <p>Upsert your credentials for a provider. All fields optional &mdash;
         send only what you want to change. The raw key is encrypted at rest (Fernet).</p>
       </article>
 
-      <article class="api-card">
-        <header><span class="api-card__verb">POST</span><span class="api-card__path">/api/clients</span></header>
-        <pre>// Request:
+      <article class="api-card" id="ep-clients" data-group="user">
+        <header>
+          <span class="api-card__verb">POST</span>
+          <span class="api-card__path">/api/clients</span>
+          <span class="api-card__access">USER</span>
+        </header>
+        <details open>
+          <summary><span>REQUEST&nbsp;/&nbsp;RESPONSE</span></summary>
+          <pre>// Request:
 { "name": "my-app", "rpm_limit": 60 }
 
 // Response:
@@ -882,16 +980,29 @@ language: "en"        // optional (ISO 639-1)
   "key_hash": "a1b2c3...",
   "rpm_limit": 60
 }</pre>
+        </details>
         <p>Issue a client API key for <code>/v1/*</code>. The raw key is shown <b>only once</b> &mdash;
         save it immediately. Clients use <code>Authorization: Bearer fai_...</code>.
         Keys are scoped to the issuing user; each user sees only their own.</p>
       </article>
 
       <!-- ═══════ ADMIN ROUTES ═══════ -->
+      <div class="api-section">
+        <span class="api-section__tag api-section__tag--admin">ADMIN&nbsp;ROUTES</span>
+        <span>X-Admin-Token or JWT (admin role)</span>
+        <span class="api-section__rule"></span>
+        <span class="api-section__count">03&nbsp;/&nbsp;12</span>
+      </div>
 
-      <article class="api-card">
-        <header><span class="api-card__verb">GET</span><span class="api-card__path">/api/providers</span></header>
-        <pre>[{
+      <article class="api-card" id="ep-providers" data-group="admin">
+        <header>
+          <span class="api-card__verb api-card__verb--get">GET</span>
+          <span class="api-card__path">/api/providers</span>
+          <span class="api-card__access">ADMIN</span>
+        </header>
+        <details open>
+          <summary><span>RESPONSE</span></summary>
+          <pre>[{
   "name": "groq",
   "enabled": true,
   "has_key": true,
@@ -908,14 +1019,21 @@ language: "en"        // optional (ISO 639-1)
   "tags": ["fast", "cheap", "audio"],
   "default_model": "llama-3.3-70b-versatile"
 }]</pre>
+        </details>
         <p><strong>Admin only.</strong> Live health + rate status for every provider (for the current user).
         <code>latency_ema_ms</code> is a smoother average than <code>last_latency_ms</code>; the ranker
         uses it for scoring.</p>
       </article>
 
-      <article class="api-card">
-        <header><span class="api-card__verb">GET</span><span class="api-card__path">/api/strategies</span></header>
-        <pre>[
+      <article class="api-card" id="ep-strategies" data-group="admin">
+        <header>
+          <span class="api-card__verb api-card__verb--get">GET</span>
+          <span class="api-card__path">/api/strategies</span>
+          <span class="api-card__access">ADMIN</span>
+        </header>
+        <details open>
+          <summary><span>RESPONSE</span></summary>
+          <pre>[
   {
     "name": "fastest",
     "description": "Lowest observed latency",
@@ -927,14 +1045,21 @@ language: "en"        // optional (ISO 639-1)
     }
   }, ...
 ]</pre>
+        </details>
         <p><strong>Admin only.</strong> Lists every routing strategy. Built-ins can be edited but not
         deleted. Custom strategies go via <code>POST /api/strategies</code>.
         DSL reference: <a href="https://github.com/adrianpastora/FREEAI/blob/main/docs/STRATEGY_DSL.md" target="_blank" rel="noopener">docs/STRATEGY_DSL.md</a>.</p>
       </article>
 
-      <article class="api-card">
-        <header><span class="api-card__verb">GET</span><span class="api-card__path">/api/analytics</span></header>
-        <pre>GET /api/analytics?window_seconds=86400&amp;bucket_count=24
+      <article class="api-card" id="ep-analytics" data-group="admin">
+        <header>
+          <span class="api-card__verb api-card__verb--get">GET</span>
+          <span class="api-card__path">/api/analytics</span>
+          <span class="api-card__access">ADMIN</span>
+        </header>
+        <details open>
+          <summary><span>QUERY&nbsp;/&nbsp;RESPONSE</span></summary>
+          <pre>GET /api/analytics?window_seconds=86400&amp;bucket_count=24
 
 {
   "total_calls": 142,
@@ -945,6 +1070,7 @@ language: "en"        // optional (ISO 639-1)
   "by_client": [...],
   "time_buckets": [...]
 }</pre>
+        </details>
         <p><strong>Admin only.</strong> Aggregated telemetry with breakdowns by provider, strategy, outcome,
         and client. <code>window_seconds</code>: 60&ndash;604800 (7 d).
         <code>bucket_count</code>: 1&ndash;168. Windows &gt; 30 d are served from
@@ -952,29 +1078,49 @@ language: "en"        // optional (ISO 639-1)
       </article>
 
       <!-- ═══════ PUBLIC / HEALTH ═══════ -->
+      <div class="api-section">
+        <span class="api-section__tag api-section__tag--public">PUBLIC&nbsp;/&nbsp;HEALTH</span>
+        <span>No auth &middot; probes &amp; metrics</span>
+        <span class="api-section__rule"></span>
+        <span class="api-section__count">02&nbsp;/&nbsp;12</span>
+      </div>
 
-      <article class="api-card">
-        <header><span class="api-card__verb">GET</span><span class="api-card__path">/api/health</span></header>
-        <pre>{
+      <article class="api-card" id="ep-health" data-group="public">
+        <header>
+          <span class="api-card__verb api-card__verb--get">GET</span>
+          <span class="api-card__path">/api/health</span>
+          <span class="api-card__access">PUBLIC</span>
+        </header>
+        <details open>
+          <summary><span>RESPONSE</span></summary>
+          <pre>{
   "status": "ok",
   "providers_configured": 6,
   "clients_configured": 3,
   "auth_required": true
 }</pre>
+        </details>
         <p><strong>Public.</strong> Liveness probe. No auth. Useful for k8s
         <code>livenessProbe</code> and <code>readinessProbe</code>.
         <code>auth_required: false</code> means the server is in bootstrap mode
         &mdash; create a client via the Users tab before exposing it publicly.</p>
       </article>
 
-      <article class="api-card">
-        <header><span class="api-card__verb">GET</span><span class="api-card__path">/metrics</span></header>
-        <pre># HELP freeai_provider_calls_total ...
+      <article class="api-card" id="ep-metrics" data-group="public">
+        <header>
+          <span class="api-card__verb api-card__verb--get">GET</span>
+          <span class="api-card__path">/metrics</span>
+          <span class="api-card__access">PUBLIC</span>
+        </header>
+        <details open>
+          <summary><span>PROMETHEUS&nbsp;EXPOSITION</span></summary>
+          <pre># HELP freeai_provider_calls_total ...
 # TYPE freeai_provider_calls_total counter
 freeai_provider_calls_total{provider="groq",outcome="success"} 1847
 freeai_provider_circuit_breaker_trips_total{provider="mistral"} 2
 freeai_orchestrator_fallbacks_total{from_provider="mistral",to_provider="groq"} 14
 ...</pre>
+        </details>
         <p><strong>Public.</strong> Prometheus exposition format.
         See <a href="https://github.com/adrianpastora/FREEAI/blob/main/docs/OPERATIONS.md#32-prometheus-metrics" target="_blank" rel="noopener">docs/OPERATIONS.md § 3.2</a>
         for the full metric inventory and the Grafana dashboard bundled under the
