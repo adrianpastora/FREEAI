@@ -534,19 +534,37 @@ class Orchestrator:
                 if cand.config.max_retries is not None
                 else getattr(app_cfg, "provider_max_retries", self._DEFAULT_MAX_RETRIES)
             )
+            reservation_settled = False
+            result: Optional[_AttemptResult] = None
             try:
                 result = await self._try_with_retry(cand, req, provider_model, max_retries)
+                await self._commit_attempt(
+                    rate_repo, usage_repo, reservation, result,
+                    strategy=strategy,
+                    fallback_position=len(fallback_chain),
+                    client_hash=client_hash,
+                    user_id=user_id,
+                    app_cfg=app_cfg,
+                )
+                reservation_settled = True
             finally:
                 self._dec_in_flight(cand.name)
-            await self._commit_attempt(
-                rate_repo, usage_repo, reservation, result,
-                strategy=strategy,
-                fallback_position=len(fallback_chain),
-                client_hash=client_hash,
-                user_id=user_id,
-                app_cfg=app_cfg,
-            )
+                # Roll back the rate_events row if we never recorded the
+                # outcome — a cancelled request otherwise inflates the RPM
+                # counter against the client forever.
+                if not reservation_settled:
+                    try:
+                        await rate_repo.rollback(reservation)
+                    except Exception:  # noqa: BLE001
+                        log.warning(
+                            "reservation rollback failed",
+                            provider=cand.name, exc_info=True,
+                        )
 
+            if result is None:
+                # _try_with_retry always returns an _AttemptResult; this only
+                # happens if the request was cancelled mid-flight.
+                break
             if result.response is not None:
                 resp = result.response
                 latency_ms = int((time.perf_counter() - started_total) * 1000)
@@ -658,113 +676,140 @@ class Orchestrator:
             model_seen: Optional[str] = None
             prompt_tokens = 0
             completion_tokens = 0
+            reservation_settled = False
+            stream_iter = None
             idle_timeout = getattr(app_cfg, "stream_idle_timeout_s", 45.0)
             try:
-                stream_iter = cand.provider.stream(
-                    req.messages,
-                    model=provider_model,
-                    temperature=req.temperature,
-                    max_tokens=req.max_tokens,
-                    client=self._client,
-                )
-                # Manual iteration so we can enforce a per-chunk idle timeout.
-                # A provider that goes silent after accepting the request
-                # would otherwise hang this coroutine indefinitely.
-                while True:
-                    try:
-                        chunk = await asyncio.wait_for(
-                            stream_iter.__anext__(), timeout=idle_timeout
-                        )
-                    except StopAsyncIteration:
-                        break
-                    except asyncio.TimeoutError as te:
-                        # Close the upstream generator; it owns the httpx
-                        # stream context and must release it.
+                try:
+                    stream_iter = cand.provider.stream(
+                        req.messages,
+                        model=provider_model,
+                        temperature=req.temperature,
+                        max_tokens=req.max_tokens,
+                        client=self._client,
+                    )
+                    # Manual iteration so we can enforce a per-chunk idle timeout.
+                    # A provider that goes silent after accepting the request
+                    # would otherwise hang this coroutine indefinitely.
+                    while True:
                         try:
-                            await stream_iter.aclose()
-                        except Exception:  # noqa: BLE001
-                            pass
-                        raise ProviderError(
-                            cand.name,
-                            f"stream idle for {idle_timeout}s",
-                            kind=ErrorKind.NETWORK,
-                        ) from te
-                    if not first_chunk_sent:
-                        first_chunk_sent = True
-                        ttfb_ms = int((time.perf_counter() - started) * 1000)
-                    model_seen = chunk.model
-                    if chunk.prompt_tokens:
-                        prompt_tokens = chunk.prompt_tokens
-                    if chunk.completion_tokens:
-                        completion_tokens = chunk.completion_tokens
-                    # Override model name in SSE chunks when using virtual models
-                    if virtual_model_id:
-                        chunk = StreamChunk(
-                            delta=chunk.delta,
-                            provider=chunk.provider,
-                            model=virtual_model_id,
-                            finish_reason=chunk.finish_reason,
-                            prompt_tokens=chunk.prompt_tokens,
-                            completion_tokens=chunk.completion_tokens,
-                        )
-                    yield self._format_sse_chunk(chunk, completion_id, created, strategy)
-                latency_ms = int((time.perf_counter() - started) * 1000)
-                provider_call_duration_seconds.labels(provider=cand.name).observe(latency_ms / 1000.0)
-                provider_calls_total.labels(provider=cand.name, outcome="success").inc()
-                await rate_repo.commit(
-                    reservation, latency_ms, ok=True,
-                    prompt_tokens=prompt_tokens,
-                    completion_tokens=completion_tokens,
-                )
-                await usage_repo.record(
-                    UsageEvent(
-                        provider=cand.name,
-                        model=model_seen,
-                        strategy=strategy,
-                        outcome="success",
-                        latency_ms=latency_ms,
+                            chunk = await asyncio.wait_for(
+                                stream_iter.__anext__(), timeout=idle_timeout
+                            )
+                        except StopAsyncIteration:
+                            break
+                        except asyncio.TimeoutError as te:
+                            # Close the upstream generator; it owns the httpx
+                            # stream context and must release it.
+                            try:
+                                await stream_iter.aclose()
+                            except Exception:  # noqa: BLE001
+                                pass
+                            raise ProviderError(
+                                cand.name,
+                                f"stream idle for {idle_timeout}s",
+                                kind=ErrorKind.NETWORK,
+                            ) from te
+                        if not first_chunk_sent:
+                            first_chunk_sent = True
+                            ttfb_ms = int((time.perf_counter() - started) * 1000)
+                        model_seen = chunk.model
+                        if chunk.prompt_tokens:
+                            prompt_tokens = chunk.prompt_tokens
+                        if chunk.completion_tokens:
+                            completion_tokens = chunk.completion_tokens
+                        # Override model name in SSE chunks when using virtual models
+                        if virtual_model_id:
+                            chunk = StreamChunk(
+                                delta=chunk.delta,
+                                provider=chunk.provider,
+                                model=virtual_model_id,
+                                finish_reason=chunk.finish_reason,
+                                prompt_tokens=chunk.prompt_tokens,
+                                completion_tokens=chunk.completion_tokens,
+                            )
+                        yield self._format_sse_chunk(chunk, completion_id, created, strategy)
+                    latency_ms = int((time.perf_counter() - started) * 1000)
+                    provider_call_duration_seconds.labels(provider=cand.name).observe(latency_ms / 1000.0)
+                    provider_calls_total.labels(provider=cand.name, outcome="success").inc()
+                    await rate_repo.commit(
+                        reservation, latency_ms, ok=True,
                         prompt_tokens=prompt_tokens,
                         completion_tokens=completion_tokens,
-                        ttfb_ms=ttfb_ms,
-                        fallback_position=fallback_position,
-                        client_hash=client_hash,
-                        user_id=user_id,
                     )
-                )
-                self._dec_in_flight(cand.name)
-                yield self._format_sse_done(completion_id, created, cand.name, strategy)
-                return
-            except ProviderError as e:
-                self._dec_in_flight(cand.name)
-                latency_ms = int((time.perf_counter() - started) * 1000)
-                provider_calls_total.labels(provider=cand.name, outcome=e.kind.value).inc()
-                quarantine = e.retry_after if e.kind == ErrorKind.RATE_LIMITED else None
-                if e.kind == ErrorKind.AUTH:
-                    quarantine = 24 * 3600
-                await rate_repo.commit(
-                    reservation, latency_ms, ok=False,
-                    error=e.message, error_kind=e.kind.value,
-                    quarantine_seconds=quarantine,
-                    **self._circuit_breaker_kwargs(app_cfg),
-                )
-                await usage_repo.record(
-                    UsageEvent(
-                        provider=cand.name,
-                        model=None,
-                        strategy=strategy,
-                        outcome=e.kind.value,
-                        latency_ms=latency_ms,
-                        fallback_position=fallback_position,
-                        client_hash=client_hash,
-                        user_id=user_id,
+                    reservation_settled = True
+                    await usage_repo.record(
+                        UsageEvent(
+                            provider=cand.name,
+                            model=model_seen,
+                            strategy=strategy,
+                            outcome="success",
+                            latency_ms=latency_ms,
+                            prompt_tokens=prompt_tokens,
+                            completion_tokens=completion_tokens,
+                            ttfb_ms=ttfb_ms,
+                            fallback_position=fallback_position,
+                            client_hash=client_hash,
+                            user_id=user_id,
+                        )
                     )
-                )
-                last_error = e
-                if first_chunk_sent:
-                    raise
-                if e.kind == ErrorKind.CLIENT_ERROR:
-                    break
-                continue
+                    yield self._format_sse_done(completion_id, created, cand.name, strategy)
+                    return
+                except ProviderError as e:
+                    latency_ms = int((time.perf_counter() - started) * 1000)
+                    provider_calls_total.labels(provider=cand.name, outcome=e.kind.value).inc()
+                    quarantine = e.retry_after if e.kind == ErrorKind.RATE_LIMITED else None
+                    if e.kind == ErrorKind.AUTH:
+                        quarantine = 24 * 3600
+                    await rate_repo.commit(
+                        reservation, latency_ms, ok=False,
+                        error=e.message, error_kind=e.kind.value,
+                        quarantine_seconds=quarantine,
+                        **self._circuit_breaker_kwargs(app_cfg),
+                    )
+                    reservation_settled = True
+                    await usage_repo.record(
+                        UsageEvent(
+                            provider=cand.name,
+                            model=None,
+                            strategy=strategy,
+                            outcome=e.kind.value,
+                            latency_ms=latency_ms,
+                            fallback_position=fallback_position,
+                            client_hash=client_hash,
+                            user_id=user_id,
+                        )
+                    )
+                    last_error = e
+                    if first_chunk_sent:
+                        raise
+                    if e.kind == ErrorKind.CLIENT_ERROR:
+                        break
+                    continue
+            finally:
+                # Always release in-flight counter — otherwise a cancelled
+                # client or unexpected exception would leak the slot forever
+                # and skew scoring until restart.
+                self._dec_in_flight(cand.name)
+                # If the request was cancelled / raised before we could record
+                # the outcome, roll back the reservation so the rate counters
+                # don't carry a "ghost" in-flight call.
+                if not reservation_settled:
+                    try:
+                        await rate_repo.rollback(reservation)
+                    except Exception:  # noqa: BLE001
+                        log.warning(
+                            "reservation rollback failed",
+                            provider=cand.name, exc_info=True,
+                        )
+                # Make sure the upstream httpx stream is released even on
+                # client disconnect — otherwise the connection stays checked
+                # out of the httpx pool.
+                if stream_iter is not None:
+                    try:
+                        await stream_iter.aclose()
+                    except Exception:  # noqa: BLE001
+                        pass
 
         raise ProviderError(
             "orchestrator",
