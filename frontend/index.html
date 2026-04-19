@@ -123,15 +123,15 @@
     <div class="modal__corner modal__corner--tr">┐</div>
     <div class="modal__corner modal__corner--bl">└</div>
     <div class="modal__corner modal__corner--br">┘</div>
-    <h3 id="loginTitle">INICIAR&nbsp;SESION</h3>
-    <p id="loginSubtitle">Introduce tus credenciales para acceder al panel de control.</p>
-    <input type="text" id="loginUsername" placeholder="usuario" autocomplete="username" />
-    <input type="password" id="loginPassword" placeholder="contraseña" autocomplete="current-password" />
+    <h3 id="loginTitle">SIGN&nbsp;IN</h3>
+    <p id="loginSubtitle">Enter your credentials to access the control panel.</p>
+    <input type="text" id="loginUsername" placeholder="username" autocomplete="username" />
+    <input type="password" id="loginPassword" placeholder="password" autocomplete="current-password" />
     <div id="loginError" style="color:#ff4444;font-size:.85rem;margin-top:.5rem;display:none"></div>
     <div class="modal__actions">
-      <button class="primary-button" id="loginSubmit">ENTRAR</button>
+      <button class="primary-button" id="loginSubmit">LOG&nbsp;IN</button>
     </div>
-    <p class="modal__hint">Se guarda en tu navegador. Haz clic en el candado para cerrar sesion.</p>
+    <p class="modal__hint">Stored in your browser. Click the lock icon to log out.</p>
   </div>
 </div>
 
@@ -143,20 +143,20 @@
     <div class="modal__corner modal__corner--tr">┐</div>
     <div class="modal__corner modal__corner--bl">└</div>
     <div class="modal__corner modal__corner--br">┘</div>
-    <h3>MIGRACION A MULTI-USUARIO</h3>
-    <p>El sistema se ha actualizado. Introduce tu token de admin actual y elige un usuario y contraseña nuevos.</p>
-    <input type="password" id="migrateOldToken" placeholder="token admin actual" />
-    <input type="text" id="migrateUsername" placeholder="nuevo usuario" autocomplete="username" />
-    <input type="password" id="migratePassword" placeholder="nueva contraseña (min 8 chars)" autocomplete="new-password" />
-    <input type="password" id="migratePassword2" placeholder="confirmar contraseña" autocomplete="new-password" />
+    <h3>MIGRATE TO MULTI-USER</h3>
+    <p>The system has been upgraded. Enter your current admin token and choose a new username and password.</p>
+    <input type="password" id="migrateOldToken" placeholder="current admin token" />
+    <input type="text" id="migrateUsername" placeholder="new username" autocomplete="username" />
+    <input type="password" id="migratePassword" placeholder="new password (min 8 chars)" autocomplete="new-password" />
+    <input type="password" id="migratePassword2" placeholder="confirm password" autocomplete="new-password" />
     <div id="migrateError" style="color:#ff4444;font-size:.85rem;margin-top:.5rem;display:none"></div>
     <div class="modal__actions">
-      <button class="primary-button" id="migrateSubmit">MIGRAR</button>
+      <button class="primary-button" id="migrateSubmit">MIGRATE</button>
     </div>
   </div>
 </div>
 
-<!-- ───────── FIRST-RUN SETUP (mismo estilo que admin) ───────── -->
+<!-- ───────── FIRST-RUN SETUP ───────── -->
 <div class="modal" id="setupModal" hidden>
   <div class="modal__backdrop"></div>
   <div class="modal__card modal__card--wide">
@@ -164,70 +164,70 @@
     <div class="modal__corner modal__corner--tr">┐</div>
     <div class="modal__corner modal__corner--bl">└</div>
     <div class="modal__corner modal__corner--br">┘</div>
-    <h3>CONFIGURACIÓN&nbsp;INICIAL</h3>
+    <h3>INITIAL&nbsp;SETUP</h3>
     <div id="setupForm">
       <p class="setup-intro">
-        Es la <strong>primera vez</strong> que se accede a este FreeAI. Define un
-        <strong>token de administrador</strong> (mín. 12 caracteres) y, si quieres,
-        las claves de los proveedores. El token se guarda en la base de datos como
-        <strong>hash</strong> (bcrypt); las claves de API se guardan
-        <strong>cifradas</strong> con el mismo sistema que cuando las añades desde
-        el panel de proveedores.
+        This is the <strong>first time</strong> someone is connecting to this
+        FreeAI. Pick an <strong>admin token</strong> (min. 12 chars) and,
+        optionally, paste your provider API keys. The admin token is stored
+        as a <strong>bcrypt hash</strong>; provider keys are
+        <strong>encrypted at rest</strong> with the same scheme you'd use
+        later from the providers panel.
       </p>
       <label class="field">
-        <span class="field__label">TOKEN&nbsp;DE&nbsp;ARRANQUE</span>
+        <span class="field__label">BOOTSTRAP&nbsp;TOKEN</span>
         <div class="setup-token-row">
-          <input type="password" id="setupBootstrapToken" placeholder="imprimido en los logs del servidor al arrancar" autocomplete="off" />
-          <button type="button" class="ghost-button ghost-button--small setup-toggle" data-target="setupBootstrapToken" aria-label="Mostrar u ocultar token">MOSTRAR</button>
+          <input type="password" id="setupBootstrapToken" placeholder="printed to the server logs on startup" autocomplete="off" />
+          <button type="button" class="ghost-button ghost-button--small setup-toggle" data-target="setupBootstrapToken" aria-label="Show or hide token">SHOW</button>
         </div>
         <small class="field__hint">
-          Busca una línea en los logs del contenedor que empieza por
-          <code>FreeAI bootstrap token</code>. Se consume al completar este formulario.
+          Look for a line in your container logs starting with
+          <code>FreeAI bootstrap token</code>. It is consumed when this form is submitted.
         </small>
       </label>
       <label class="field">
-        <span class="field__label">TOKEN&nbsp;DE&nbsp;ADMINISTRADOR</span>
+        <span class="field__label">ADMIN&nbsp;TOKEN</span>
         <div class="setup-token-row">
-          <input type="password" id="setupAdminToken" placeholder="mínimo 12 caracteres" autocomplete="new-password" />
-          <button type="button" class="ghost-button ghost-button--small setup-toggle" data-target="setupAdminToken" aria-label="Mostrar u ocultar token">MOSTRAR</button>
-          <button type="button" class="ghost-button ghost-button--small" id="setupGenToken">GENERAR</button>
+          <input type="password" id="setupAdminToken" placeholder="at least 12 characters" autocomplete="new-password" />
+          <button type="button" class="ghost-button ghost-button--small setup-toggle" data-target="setupAdminToken" aria-label="Show or hide token">SHOW</button>
+          <button type="button" class="ghost-button ghost-button--small" id="setupGenToken">GENERATE</button>
         </div>
       </label>
       <label class="field">
-        <span class="field__label">CONFIRMAR&nbsp;TOKEN</span>
+        <span class="field__label">CONFIRM&nbsp;TOKEN</span>
         <div class="setup-token-row">
-          <input type="password" id="setupAdminToken2" placeholder="repite el token" autocomplete="new-password" />
-          <button type="button" class="ghost-button ghost-button--small setup-toggle" data-target="setupAdminToken2" aria-label="Mostrar u ocultar token">MOSTRAR</button>
+          <input type="password" id="setupAdminToken2" placeholder="repeat the token" autocomplete="new-password" />
+          <button type="button" class="ghost-button ghost-button--small setup-toggle" data-target="setupAdminToken2" aria-label="Show or hide token">SHOW</button>
         </div>
       </label>
       <div class="setup-provider-block">
-        <p class="setup-provider-lede">Claves de proveedor <em>(opcional; puedes dejarlas para después)</em></p>
+        <p class="setup-provider-lede">Provider keys <em>(optional — you can add them later)</em></p>
         <div id="setupProviderFields" class="setup-provider-fields"></div>
       </div>
       <div class="modal__actions">
-        <button class="primary-button" id="setupSubmit">GUARDAR&nbsp;Y&nbsp;CONTINUAR</button>
+        <button class="primary-button" id="setupSubmit">SAVE&nbsp;AND&nbsp;CONTINUE</button>
       </div>
       <p class="modal__hint" id="setupError" hidden></p>
     </div>
 
-    <!-- reveal-once: se muestra tras guardar con éxito -->
+    <!-- reveal-once: shown after a successful save -->
     <div id="setupTokenReveal" hidden>
       <p class="setup-intro setup-reveal-warning">
-        <strong>GUARDA&nbsp;ESTE&nbsp;TOKEN&nbsp;AHORA.</strong> Se almacena en
-        la base de datos como hash bcrypt, por lo que <strong>no podremos
-        volver a mostrártelo</strong>. Si lo pierdes, tendrás que resetear la
-        configuración inicial.
+        <strong>SAVE&nbsp;THIS&nbsp;TOKEN&nbsp;NOW.</strong> It is stored in
+        the database as a bcrypt hash, so <strong>we will not be able to
+        show it to you again</strong>. If you lose it, you'll have to reset
+        the initial setup.
       </p>
       <label class="field">
-        <span class="field__label">TU&nbsp;TOKEN&nbsp;DE&nbsp;ADMINISTRADOR</span>
+        <span class="field__label">YOUR&nbsp;ADMIN&nbsp;TOKEN</span>
         <div class="setup-token-row">
           <input type="text" id="setupRevealedToken" readonly />
-          <button type="button" class="ghost-button ghost-button--small" id="setupCopyToken">COPIAR</button>
+          <button type="button" class="ghost-button ghost-button--small" id="setupCopyToken">COPY</button>
         </div>
       </label>
-      <p class="modal__hint" id="setupCopyHint" hidden>Copiado al portapapeles.</p>
+      <p class="modal__hint" id="setupCopyHint" hidden>Copied to clipboard.</p>
       <div class="modal__actions">
-        <button class="primary-button" id="setupRevealContinue">YA&nbsp;LO&nbsp;HE&nbsp;GUARDADO</button>
+        <button class="primary-button" id="setupRevealContinue">I&nbsp;SAVED&nbsp;IT</button>
       </div>
     </div>
   </div>
@@ -305,7 +305,7 @@
     <ol class="wizard__steps"></ol>
     <div class="wizard__links"></div>
     <div class="modal__actions">
-      <button class="ghost-button ghost-button--small" id="wizardModalClose">CERRAR</button>
+      <button class="ghost-button ghost-button--small" id="wizardModalClose">CLOSE</button>
     </div>
   </div>
 </div>
@@ -337,12 +337,12 @@
     <!-- Navigation -->
     <div class="pw__nav">
       <button class="ghost-button ghost-button--small" id="pwPrev">
-        <span class="ghost-button__char">←</span> ANTERIOR
+        <span class="ghost-button__char">←</span> BACK
       </button>
       <div class="pw__nav-right">
-        <button class="ghost-button ghost-button--small" id="pwSkip">SALTAR</button>
+        <button class="ghost-button ghost-button--small" id="pwSkip">SKIP</button>
         <button class="primary-button" id="pwNext">
-          SIGUIENTE <span class="primary-button__char">→</span>
+          NEXT <span class="primary-button__char">→</span>
         </button>
       </div>
     </div>
@@ -1247,7 +1247,7 @@ freeai_orchestrator_fallbacks_total{from_provider="mistral",to_provider="groq"} 
         </span>
       </label>
       <div class="provider-card__foot-actions">
-        <button class="ghost-button ghost-button--small wizard-btn" title="Guía de configuración">SETUP&nbsp;GUIDE</button>
+        <button class="ghost-button ghost-button--small wizard-btn" title="Setup guide">SETUP&nbsp;GUIDE</button>
         <button class="ghost-button ghost-button--small reset-btn">RESET</button>
       </div>
     </footer>
