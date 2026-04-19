@@ -51,6 +51,9 @@ async def verify_admin_credentials(session: AsyncSession, presented: Optional[st
     return False
 
 
+_ALLOWED_JWT_ROLES = frozenset({"admin", "user"})
+
+
 def _try_jwt(authorization: Optional[str]) -> Optional[CurrentUser]:
     """Try to decode a JWT from the Authorization header. Returns None if not a JWT."""
     token = _extract_bearer(authorization)
@@ -59,11 +62,20 @@ def _try_jwt(authorization: Optional[str]) -> Optional[CurrentUser]:
     payload = decode_access_token(token)
     if not payload:
         return None
-    return CurrentUser(
-        id=int(payload["sub"]),
-        username=payload["username"],
-        role=payload["role"],
-    )
+    # Defense in depth — the server signs these, so a forged role shouldn't
+    # pass here, but clamp unknown values to the least-privileged role so a
+    # future config accident can't silently elevate privileges.
+    role = payload.get("role")
+    if role not in _ALLOWED_JWT_ROLES:
+        role = "user"
+    try:
+        return CurrentUser(
+            id=int(payload["sub"]),
+            username=str(payload["username"]),
+            role=role,
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 # ──────────────── FastAPI dependencies ────────────────

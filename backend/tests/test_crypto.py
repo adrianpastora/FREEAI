@@ -27,7 +27,9 @@ def test_mask_key():
     from app.crypto import mask_key
     assert mask_key(None) is None
     assert mask_key("") is None
-    assert mask_key("short") == "•••••"
+    assert mask_key("abcd") == "••••"
     masked = mask_key("sk-supersecret-1234567890ab")
     assert "secret" not in masked
-    assert masked.startswith("sk-s")
+    # Prefix must NOT be exposed — only the tail is visible to the UI.
+    assert not masked.startswith("sk-")
+    assert masked.endswith("90ab")

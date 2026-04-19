@@ -102,12 +102,17 @@ def hash_admin_token(plain: str) -> str:
 
 
 def mask_key(key: Optional[str]) -> Optional[str]:
-    """Render an API key safely for the UI — keeps first 4 chars + length."""
+    """Render an API key safely for the UI — only the last 4 chars are shown.
+
+    Showing the provider prefix (sk-, gsk_, AIza…) would let an attacker
+    who glimpses the UI confirm the key format during a bruteforce. Only
+    the tail is exposed so an operator can still distinguish rotations.
+    """
     if not key:
         return None
-    if len(key) <= 8:
+    if len(key) <= 4:
         return "•" * len(key)
-    return f"{key[:4]}{'•' * 8}{key[-2:]}"
+    return f"{'•' * 8}{key[-4:]}"
 
 
 def verify_admin_token_hash(plain: str, stored_hash: str) -> bool:
