@@ -1174,15 +1174,9 @@ async def list_models() -> dict:
 async def chat_completions(
     req: ChatCompletionRequest,
     request: Request,
-    session: AsyncSession = Depends(get_session),
     orch: Orchestrator = Depends(get_orchestrator),
     client=Depends(require_client),
 ):
-    config_repo = ConfigRepository(session)
-    rate_repo = RateRepository(session)
-    usage_repo = UsageRepository(session)
-    strategy_repo = StrategyRepository(session)
-    user_provider_repo = UserProviderRepository(session)
     client_hash = client.key_hash if client else None
     user_id = getattr(request.state, "user_id", None)
 
@@ -1190,19 +1184,36 @@ async def chat_completions(
         raise HTTPException(400, "no user context — authenticate with a client key bound to a user")
 
     if req.stream:
+        # Streaming owns its session for the full lifetime of the generator.
+        # Using Depends(get_session) here would close the session as soon as
+        # the endpoint returns the StreamingResponse, leaving the generator
+        # with a dead session and leaking connections when the client aborts.
+        sessionmaker = request.app.state.sessionmaker
+
         async def event_stream():
-            try:
-                async for chunk in orch.stream(
-                    req, user_id, user_provider_repo,
-                    config_repo, rate_repo, usage_repo, strategy_repo,
-                    client_hash=client_hash,
-                ):
-                    yield f"data: {json.dumps(chunk)}\n\n"
-                yield "data: [DONE]\n\n"
-            except ProviderError as e:
-                err = {"error": {"provider": e.provider, "kind": e.kind.value, "message": e.message}}
-                yield f"data: {json.dumps(err)}\n\n"
-                yield "data: [DONE]\n\n"
+            async with sessionmaker() as stream_session:
+                try:
+                    config_repo = ConfigRepository(stream_session)
+                    rate_repo = RateRepository(stream_session)
+                    usage_repo = UsageRepository(stream_session)
+                    strategy_repo = StrategyRepository(stream_session)
+                    user_provider_repo = UserProviderRepository(stream_session)
+                    try:
+                        async for chunk in orch.stream(
+                            req, user_id, user_provider_repo,
+                            config_repo, rate_repo, usage_repo, strategy_repo,
+                            client_hash=client_hash,
+                        ):
+                            yield f"data: {json.dumps(chunk)}\n\n"
+                        yield "data: [DONE]\n\n"
+                    except ProviderError as e:
+                        err = {"error": {"provider": e.provider, "kind": e.kind.value, "message": e.message}}
+                        yield f"data: {json.dumps(err)}\n\n"
+                        yield "data: [DONE]\n\n"
+                    await stream_session.commit()
+                except BaseException:
+                    await stream_session.rollback()
+                    raise
 
         return StreamingResponse(
             event_stream(),
@@ -1210,14 +1221,26 @@ async def chat_completions(
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
-    try:
-        return await orch.chat(
-            req, user_id, user_provider_repo,
-            config_repo, rate_repo, usage_repo, strategy_repo,
-            client_hash=client_hash,
-        )
-    except ProviderError as e:
-        raise _http_from_provider_error(e)
+    async with request.app.state.sessionmaker() as session:
+        config_repo = ConfigRepository(session)
+        rate_repo = RateRepository(session)
+        usage_repo = UsageRepository(session)
+        strategy_repo = StrategyRepository(session)
+        user_provider_repo = UserProviderRepository(session)
+        try:
+            result = await orch.chat(
+                req, user_id, user_provider_repo,
+                config_repo, rate_repo, usage_repo, strategy_repo,
+                client_hash=client_hash,
+            )
+            await session.commit()
+            return result
+        except ProviderError as e:
+            await session.rollback()
+            raise _http_from_provider_error(e)
+        except BaseException:
+            await session.rollback()
+            raise
 
 
 # ──────────────────────────── audio transcriptions ────────────────────────────
