@@ -1,12 +1,11 @@
-"""Smart orchestrator — Sprint 3 version.
+"""Provider orchestration — ranking, dispatch, retry, and fallback.
 
-What's new vs Sprint 2:
-  • STRATEGY_TAGS is no longer hardcoded — strategies live in the `strategies`
-    table, loaded per-request. Users can add custom ones from the UI.
-  • Auto-strategy uses the new language-aware detector in app.auto_strategy.
-  • Every dispatched completion (success OR failure) writes a row to
-    usage_events via UsageRepository. That's what feeds the analytics panel
-    and Grafana.
+Responsible for turning a ``ChatCompletionRequest`` into an upstream call:
+resolves the strategy (user-defined, stored in ``strategies``), snapshots
+rate-limit + health for each candidate, scores them, dispatches in order,
+and falls back when a provider errors, rate-limits, or returns an empty or
+filtered response. Each attempt (success or failure) lands in
+``usage_events`` so the analytics panel and Grafana dashboards stay honest.
 """
 from __future__ import annotations
 

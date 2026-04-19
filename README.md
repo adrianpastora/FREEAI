@@ -103,10 +103,11 @@ Any OpenAI-compatible client works — point its base URL at
 - **Analytics panel** — the frontend has a live analytics tab reading from
   the `usage_events` table, with KPIs, time series, and breakdowns by
   provider / strategy / outcome.
-- **134 pytest tests** — unit, integration, E2E, streaming, security,
+- **233 pytest tests** — unit, integration, E2E, streaming, security,
   and fallback robustness (empty responses, content filtering, stream
-  idle timeout, circuit breaker, configurable retries). ~60 run without
-  Docker, the rest against a real Postgres via testcontainers.
+  idle timeout, circuit breaker, configurable retries). A handful of pure
+  tests run without Docker; the rest spin up a real Postgres via
+  testcontainers.
 - **Robust fallback chain** — empty 200-OK responses, content-filtered
   finish reasons and stream stalls all trigger automatic fallback to
   the next provider. Per-user sliding-window circuit breaker with
@@ -139,54 +140,40 @@ are documented so you don't accidentally solve the same problem twice.
 
 ## Status
 
-**Sprint 6 shipped** — all critical bugs, performance issues, telemetry
-gaps, and product-polish items from the audit are resolved:
+FreeAI is production-ready and actively maintained. Highlights of what's
+in the box today:
 
-### Sprint 4 (production-readiness)
-1. ✅ **Per-client rate limiting** — dedicated table + plpgsql function.
-2. ✅ **Quarantine self-healing** — `snapshot()` rewrite + plpgsql migration.
-3. ✅ **Custom strategies end-to-end** — `Strategy = str`, orchestrator validates.
+- **Reliability** — atomic reservation inside a Postgres plpgsql function,
+  per-client rate limiting, self-healing quarantine, robust fallback on
+  empty/filtered/stalled responses, per-user sliding-window circuit breaker.
+- **Performance** — bounded-cardinality Prometheus metrics, batched ranking
+  queries (3 per request instead of 2×N), strategy TTL cache, in-memory
+  rate counters, streaming with a single commit at end of request,
+  per-(user, provider) in-flight tracking.
+- **Smart routing** — EMA-based latency scoring, reliability penalty,
+  concurrency-aware load spreading, 8 built-in strategies plus user-defined
+  ones as data.
+- **Multimodal vision** — OpenAI `image_url` blocks accepted as `data:`
+  URIs, translated to Gemini `inlineData` natively, auto-routed to
+  vision-capable providers.
+- **Security by default** — one-time bootstrap token for the setup wizard,
+  per-user provider keys encrypted at rest with Fernet, JWT secret kept
+  independent from the master key, tight body/image size caps, login
+  rate limiting, sanitized error bodies, strict security headers, CORS
+  locked down by default.
 
-### Sprint 5 (performance & scalability)
-4. ✅ **Metrics cardinality bounded** — `route.path` template instead of raw URL.
-5. ✅ **Batched ranking queries** — 3 queries per request instead of 2×N.
-6. ✅ **Streaming per-chunk commit removed** — single commit at end of request.
-7. ✅ **Periodic purge task** — background loop trims event tables every hour.
-8. ✅ **Strategy TTL cache** — 5-second in-process cache, invalidated on CRUD.
-9. ✅ **Streaming token counts** — `stream_options.include_usage` captures real tokens.
-10. ✅ **TTFB tracking** — `ttfb_ms` column on usage_events (migration 0006).
-11. ✅ **Dead code removed** — `config_store.py`, `rate_tracker.py` deleted.
-12. ✅ **Auto-strategy cleanup** — stopwords deduplicated, dead multi-word entries removed.
-
-### Sprint 6 (product polish)
-13. ✅ **Inline strategy editor** — modal form replaces `prompt()` dialogs.
-14. ✅ **Analytics auto-refresh** — polls every 8s while the tab is active.
-15. ✅ **E2E + streaming + security tests** — 3 new test files.
-16. ✅ **Frontend refactored** — chart rendering extracted to `charts.js`.
-17. ✅ **CORS production-ready** — env-configurable, deploy auto-detects server IP.
-18. ✅ **`.env.example` fixed** — correct `FREEAI_` prefix, CORS documented.
-
-### Sprint 7 (scoring optimizations + vision)
-19. ✅ **Latency EMA** — exponential moving average replaces single-sample scoring.
-20. ✅ **Incremental token counter** — eliminates `SUM()` over `usage_events` on hot path.
-21. ✅ **Atomic SQL scoring** — EMA and token counter computed in `CASE WHEN` SQL, no read-then-write races.
-22. ✅ **Rebalanced baseline_score** — latency range `[-1.0, +2.0]`, reliability penalty, wider thresholds.
-23. ✅ **Concurrency-aware scoring** — in-flight request penalty spreads load across providers.
-24. ✅ **In-memory rate counters** — `RateCounterStore` avoids `COUNT(*)` on rate_events hot path.
-25. ✅ **Resilient commit** — `_commit_attempt` never raises; DB errors logged, response delivered.
-26. ✅ **Multimodal vision** — `ChatMessage.content` accepts `str | list[dict]`; Gemini transforms `image_url` to `inlineData`/`fileData`; auto-strategy detects image blocks; orchestrator filters to vision providers.
-27. ✅ **Migration 0011** — `latency_ema_ms`, `tokens_today`, `tokens_day_start` columns.
-
-Full audit and remaining future-work backlog (table
-partitioning, Helm chart, cost tracking, semantic cache) live in
-[docs/REVIEW.md](docs/REVIEW.md).
+Remaining future-work backlog (table partitioning, Helm chart, cost
+tracking, semantic cache) lives in [docs/REVIEW.md](docs/REVIEW.md).
 
 ## Run the tests
 
 ```bash
 cd backend
-pytest                    # all 99, needs Docker for the DB-backed ones
-pytest tests/test_crypto.py tests/test_auto_strategy.py tests/test_known_models.py  # pure (no DB)
+pytest             # full suite (Postgres via testcontainers — needs Docker)
+
+# a few pure unit tests run without Docker:
+pytest tests/test_crypto.py tests/test_auto_strategy.py \
+       tests/test_known_models.py tests/test_schema_tool_calls.py
 ```
 
 ## License

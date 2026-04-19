@@ -1,14 +1,10 @@
-"""FreeAI FastAPI app — Sprint 5.
+"""FreeAI FastAPI entrypoint.
 
-Sprint 5 improvements over Sprint 4:
-  • Prometheus metrics use route templates (bounded cardinality)
-  • Streaming no longer commits the DB session per chunk
-  • _rank() uses batched queries (3 instead of 2×N per request)
-  • Periodic purge task for rate_events, client_rate_events, usage_events
-  • Strategy TTL cache (5s, invalidated on CRUD)
-  • Streaming captures token counts via stream_options.include_usage
-  • TTFB tracking on usage_events
-  • Dead code removed (config_store, rate_tracker)
+Exposes the OpenAI-compatible ``/v1`` surface (chat, embeddings, audio) and
+the private ``/api`` control plane used by the frontend. Responsibilities
+handled here: request/response shape, auth wiring, rate-limit middleware,
+lifespan (migrations + bootstrap token), and background purge of event
+tables. Routing, fallback, and provider selection live in ``orchestrator``.
 """
 from __future__ import annotations
 
