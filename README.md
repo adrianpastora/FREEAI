@@ -25,10 +25,14 @@ reliability of a paid API with the cost of a free one.
 ## Quick start
 
 ```bash
+cp backend/.env.example .env
+# generate a strong password for Postgres
+echo "POSTGRES_PASSWORD=$(openssl rand -base64 32)" >> .env
 docker compose up --build
 ```
 
-Opens on [http://localhost:8000](http://localhost:8000). On first run, if you
+Opens on [http://localhost:8000](http://localhost:8000). Postgres is bound to
+`127.0.0.1:5444` — the port is never exposed to public interfaces. On first run, if you
 did not set `FREEAI_ADMIN_TOKEN` (or `data/admin_token`), the UI shows a
 **setup** dialog: choose an admin token and optionally paste provider API keys
 (everything is stored in Postgres — token as a hash, keys encrypted). Otherwise

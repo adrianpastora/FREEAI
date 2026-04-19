@@ -5,6 +5,15 @@ venv/
 .env
 backend/data/config.json
 backend/data/.master_key
+backend/data/.jwt_secret
+backend/data/admin_token
+backend/data/clients.json
+backend/data/test*
+*.log
+*.db
+*.sqlite
+.env.local
+.env.*.local
 .DS_Store
 .vscode/
 .idea/

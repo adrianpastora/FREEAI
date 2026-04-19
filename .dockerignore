@@ -9,6 +9,7 @@
 **/data/clients.json
 **/data/admin_token
 **/data/.master_key
+**/data/.jwt_secret
 **/data/test*
 **/.git
 **/.gitignore

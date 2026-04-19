@@ -67,6 +67,11 @@ from .auth import (
     hash_password,
     verify_password,
 )
+from .bootstrap import (
+    consume_bootstrap_token,
+    ensure_bootstrap_token,
+    verify_bootstrap_token,
+)
 from .security import get_current_user, require_admin, require_admin_user, require_client
 from .settings import get_settings
 from .strategy_dsl import ParseError, parse_definition
@@ -108,6 +113,28 @@ async def lifespan(app: FastAPI):
                 "bootstrap_mode",
                 message="no API clients configured — /v1/* is open. "
                         "Create a client via POST /api/clients before exposing.",
+            )
+
+        user_repo = UserRepository(session)
+        user_count = await user_repo.count()
+        placeholder = await user_repo.find_by_username("admin")
+        is_placeholder = placeholder and placeholder.password_hash == "__placeholder_needs_migration__"
+        real_users = user_count - (1 if is_placeholder else 0)
+        cfg_row = await session.get(AppConfigRow, 1)
+        has_admin_token = bool(cfg_row and cfg_row.admin_token_hash) or bool(settings.admin_token) or settings.admin_token_path.exists()
+        needs_bootstrap = real_users == 0 and not has_admin_token
+        new_token = ensure_bootstrap_token(needed=needs_bootstrap)
+        if new_token:
+            print(
+                "\n"
+                "============================================================\n"
+                "  FreeAI bootstrap token (one-time, do not share):\n"
+                f"    {new_token}\n"
+                "  Send it in the X-Bootstrap-Token header when calling\n"
+                "  POST /api/setup/initial or POST /api/auth/register.\n"
+                "  Stored at data/.bootstrap_token until consumed.\n"
+                "============================================================\n",
+                flush=True,
             )
 
     log.info("freeai_ready", providers=len(PROVIDER_REGISTRY))
@@ -265,6 +292,7 @@ async def setup_status(session: AsyncSession = Depends(get_session)) -> SetupSta
 async def setup_initial(
     body: InitialSetupBody,
     session: AsyncSession = Depends(get_session),
+    x_bootstrap_token: Optional[str] = Header(default=None, alias="X-Bootstrap-Token"),
 ) -> dict:
     if not await _needs_initial_setup(session):
         raise HTTPException(
@@ -272,6 +300,15 @@ async def setup_initial(
             detail=(
                 "initial setup is not available — already completed, or set "
                 "FREEAI_ADMIN_TOKEN / data/admin_token"
+            ),
+        )
+    if not verify_bootstrap_token(x_bootstrap_token):
+        raise HTTPException(
+            status_code=401,
+            detail=(
+                "missing or invalid X-Bootstrap-Token header. The one-time "
+                "bootstrap token was printed to the server logs on startup "
+                "(data/.bootstrap_token)."
             ),
         )
     cfg = ConfigRepository(session)
@@ -285,6 +322,7 @@ async def setup_initial(
         if not v:
             continue
         await cfg.patch_provider(kn, api_key=v)
+    consume_bootstrap_token()
     log.info("initial_setup_completed")
     return {
         "ok": True,
@@ -390,12 +428,14 @@ async def register(
     body: RegisterBody,
     session: AsyncSession = Depends(get_session),
     authorization: Optional[str] = Header(default=None),
+    x_bootstrap_token: Optional[str] = Header(default=None, alias="X-Bootstrap-Token"),
 ) -> dict:
     """Register a new user.
 
-    The first real user becomes admin automatically. Subsequent users require
-    a valid admin JWT. The placeholder user created by migration 0013 does not
-    count as a real user.
+    The first real user becomes admin automatically and must present the
+    bootstrap token printed to the server logs on first startup. Subsequent
+    users require a valid admin JWT. The placeholder user created by migration
+    0013 does not count as a real user.
     """
     user_repo = UserRepository(session)
     count = await user_repo.count()
@@ -405,7 +445,18 @@ async def register(
     is_placeholder = placeholder and placeholder.password_hash == "__placeholder_needs_migration__"
     real_count = count - (1 if is_placeholder else 0)
 
-    if real_count > 0:
+    if real_count == 0:
+        # First admin — require bootstrap token to prevent drive-by takeover.
+        if not verify_bootstrap_token(x_bootstrap_token):
+            raise HTTPException(
+                status_code=401,
+                detail=(
+                    "missing or invalid X-Bootstrap-Token header. The one-time "
+                    "bootstrap token was printed to the server logs on startup "
+                    "(data/.bootstrap_token)."
+                ),
+            )
+    else:
         # Require admin JWT for creating additional users
         from .auth import decode_access_token
         token = None
@@ -464,6 +515,9 @@ async def register(
         # Delete the placeholder user
         await user_repo.delete(placeholder.id)
         await session.flush()
+
+    if role == "admin":
+        consume_bootstrap_token()
 
     return await _issue_tokens(user_dto.id, user_dto.username, user_dto.role, session)
 
@@ -769,12 +823,7 @@ async def list_my_providers(
     session: AsyncSession = Depends(get_session),
     user: CurrentUser = Depends(get_current_user),
 ) -> list[dict]:
-    """List the current user's provider configs (keys masked).
-
-    Auto-recovery: if the user has NO providers configured but the catalog
-    still has encrypted keys (migration didn't move them properly), auto-claim
-    them for this admin user.
-    """
+    """List the current user's provider configs (keys masked)."""
     repo = UserProviderRepository(session)
     dtos = await repo.list_for_user(user.id)
     log.info(
@@ -783,51 +832,6 @@ async def list_my_providers(
         providers_found=len(dtos),
         with_key=sum(1 for d in dtos if d.api_key),
     )
-
-    # Auto-recovery for admins: if no user_providers but catalog has keys
-    if not dtos and user.is_admin:
-        config_repo = ConfigRepository(session)
-        catalog = await config_repo.list_providers()
-        orphaned = [p for p in catalog if p.api_key]
-        if orphaned:
-            log.info("auto_recovering_orphaned_keys", user_id=user.id, count=len(orphaned))
-            for p in orphaned:
-                await repo.upsert(
-                    user.id, p.name, api_key=p.api_key, enabled=p.enabled,
-                    rpm_limit=p.rpm_limit, rpd_limit=p.rpd_limit,
-                    tpd_limit=p.tpd_limit, weight=p.weight,
-                    default_model=p.default_model,
-                )
-                # Clear from catalog
-                await config_repo.patch_provider(p.name, api_key=None)
-            await session.commit()
-            dtos = await repo.list_for_user(user.id)
-
-    # Also check if any other user_id has providers but this admin doesn't
-    if not dtos and user.is_admin:
-        from sqlalchemy import select, func
-        from .db.models import UserProviderRow
-        orphan_count = (await session.execute(
-            select(func.count()).select_from(UserProviderRow)
-            .where(UserProviderRow.api_key_encrypted.isnot(None))
-        )).scalar_one()
-        if orphan_count > 0:
-            # Transfer orphaned user_providers from non-existent users
-            from .db.models import UserRow
-            orphan_rows = (await session.execute(
-                select(UserProviderRow).where(
-                    UserProviderRow.user_id.notin_(
-                        select(UserRow.id)
-                    )
-                )
-            )).scalars().all()
-            if orphan_rows:
-                log.info("transferring_orphan_user_providers", user_id=user.id, count=len(orphan_rows))
-                for row in orphan_rows:
-                    row.user_id = user.id
-                await session.commit()
-                dtos = await repo.list_for_user(user.id)
-
     return [repo.mask_dto(d) for d in dtos]
 
 

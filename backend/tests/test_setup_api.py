@@ -50,13 +50,30 @@ def _patch_fresh_settings(monkeypatch):
 
 def test_setup_initial_http_flow(database_url, no_admin_file, session):
     from app.main import app
+    from app.bootstrap import read_bootstrap_token
 
     tok = "adm_integration_setup_token_12"
     with TestClient(app, raise_server_exceptions=False) as client:
         st = client.get("/api/setup/status")
         assert st.json()["needs_initial_setup"] is True
+
+        # Without the bootstrap token the setup wizard refuses.
+        refused = client.post(
+            "/api/setup/initial",
+            json={
+                "admin_token": tok,
+                "admin_token_confirm": tok,
+                "provider_keys": {"groq": "sk-test-freeai-setup-99"},
+            },
+        )
+        assert refused.status_code == 401
+
+        bootstrap = read_bootstrap_token()
+        assert bootstrap, "lifespan should have generated a bootstrap token"
+
         r = client.post(
             "/api/setup/initial",
+            headers={"X-Bootstrap-Token": bootstrap},
             json={
                 "admin_token": tok,
                 "admin_token_confirm": tok,
