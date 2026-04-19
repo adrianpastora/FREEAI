@@ -127,16 +127,16 @@ This README is a pointer. The actual documentation lives in
 | [docs/DATABASE.md](docs/DATABASE.md) | Schema, migrations, the atomic reservation function, useful queries |
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | Deploy, observability, backup/restore, reverse-proxy, troubleshooting |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Contributing, tests, adding providers/strategies, frontend conventions |
-| [docs/REVIEW.md](docs/REVIEW.md) | **Brutally honest audit — known bugs, tradeoffs, prioritized improvement backlog** |
+| [docs/REVIEW.md](docs/REVIEW.md) | Current state, known limitations, design decisions worth preserving, backlog |
 
 If you're **using FreeAI as a client**, start with [API.md](docs/API.md).
 
 If you're **deploying it**, [OPERATIONS.md](docs/OPERATIONS.md) is the one.
 
 If you're **contributing or extending**, [ARCHITECTURE.md](docs/ARCHITECTURE.md)
-+ [DEVELOPMENT.md](docs/DEVELOPMENT.md), and please read
-[REVIEW.md](docs/REVIEW.md) before starting on a refactor — the known issues
-are documented so you don't accidentally solve the same problem twice.
++ [DEVELOPMENT.md](docs/DEVELOPMENT.md), and skim
+[REVIEW.md](docs/REVIEW.md) so you know which design decisions are
+load-bearing before you refactor them.
 
 ## Status
 

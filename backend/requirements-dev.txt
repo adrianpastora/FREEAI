@@ -1,0 +1,8 @@
+# Development / test dependencies. Kept out of requirements.txt so the
+# production image doesn't ship pytest or testcontainers. Install with:
+#   pip install -r requirements.txt -r requirements-dev.txt
+pytest==8.3.3
+pytest-asyncio==0.24.0
+pytest-cov==5.0.0
+respx==0.21.1
+testcontainers[postgres]==4.8.2

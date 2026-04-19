@@ -1,7 +1,7 @@
 # Architecture
 
-> Last updated: Sprint 7 (2026-04). If you've changed the layering, the
-> orchestrator flow or the DB schema, update this document in the same PR.
+> If you change the layering, the orchestrator flow, or the DB schema,
+> please update this document in the same PR.
 
 ## 1. Goals and non-goals
 
@@ -145,10 +145,10 @@ The non-obvious part is step 3. The problem it solves is that naive
 "check capacity → call provider → record call" is racy: two concurrent requests
 can both pass the check before either of them increments the counter.
 
-In Sprint 1 we solved it with a Python `RLock`. That worked for one process.
-In Sprint 2 we moved to Postgres + the plpgsql function `freeai_try_reserve`
-(see [DATABASE.md § 3](DATABASE.md#3-the-atomic-reservation-function)). The
-function does inside a single statement:
+A Python `RLock` would close the race for one process but not for many
+workers. FreeAI uses a Postgres plpgsql function, `freeai_try_reserve`
+(see [DATABASE.md § 3](DATABASE.md#3-the-atomic-reservation-function)),
+which in a single statement:
 
 1. Select (and lock) the `provider_stats` row with `FOR UPDATE`
 2. Check quarantine / health
@@ -289,11 +289,11 @@ See [OPERATIONS.md § 3](OPERATIONS.md#3-observability) for the Grafana setup.
 
 Design decisions worth keeping in mind when evolving the project:
 
-**Postgres as the single backing store.** Sprint 1 used JSON files + in-memory
-counters. That worked for one process, broke the moment you ran
-`uvicorn --workers 4`. Moving to Postgres was expensive but it's what makes
-multi-pod deployments possible. SQLite was considered; the explicit locking
-story + multi-host requirements pointed to Postgres.
+**Postgres as the single backing store.** JSON files + in-memory counters
+would work for one process but fall apart the moment you run
+`uvicorn --workers 4`. Postgres is what makes multi-pod deployments
+possible. SQLite was considered; explicit locking semantics plus the
+multi-host requirement pointed to Postgres.
 
 **plpgsql for the reservation function instead of advisory locks + Python
 logic.** Advisory locks would work, but the function keeps the hot path entirely
@@ -309,9 +309,8 @@ about whether the session is still open. DTOs detach us from that. The
 tradeoff is a `_row_to_dto` conversion — cheap.
 
 **No singletons for orchestrator/repositories.** Everything flows through
-`app.state` and `Depends(...)`. This is the opposite of Sprint 1 (which had
-module-level globals) and was done specifically to make tests trivial: swap
-the session, not the module.
+`app.state` and `Depends(...)` — no module-level globals. This makes
+tests trivial: swap the session, not the module.
 
 **Vanilla JS frontend, no build step.** The frontend needs no toolchain, no
 package.json, no bundler. That keeps "clone → run" fast, and the brutalist

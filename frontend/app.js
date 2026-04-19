@@ -153,22 +153,18 @@ document.getElementById("loginSubmit").addEventListener("click", async () => {
   if (!username || !password) return;
   errEl.style.display = "none";
   try {
-    console.log("[login] attempting", API_BASE + "/api/auth/login", username);
     const res = await fetch(`${API_BASE}/api/auth/login`, {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({ username, password }),
     });
-    console.log("[login] response status", res.status);
     if (!res.ok) {
       const detail = await res.json().catch(() => ({}));
-      console.log("[login] error detail", detail);
       errEl.textContent = detail.detail || "Login failed";
       errEl.style.display = "block";
       return;
     }
     const data = await res.json();
-    console.log("[login] success, user:", data.user, "token length:", data.access_token?.length);
     saveSession(data);
     hideLoginModal();
     document.getElementById("loginUsername").value = "";
@@ -1230,14 +1226,11 @@ async function refreshProviders(fullRender = false) {
       adminApi("/api/me/providers/catalog"),
       adminApi("/api/me/providers"),
     ]);
-    console.log("[providers] catalog:", catalog?.length, "myProviders:", myProviders?.length, myProviders);
     const myMap = {};
     myProviders.forEach(p => { myMap[p.provider_name] = p; });
-    console.log("[providers] myMap keys:", Object.keys(myMap), "catalog names:", catalog.map(c => c.name));
     const data = catalog.map(c => {
       const my = myMap[c.name] || {};
       const hasKey = my.has_key || false;
-      if (!hasKey && my.provider_name) console.warn("[providers] has_key is false for", c.name, "but my object is:", my);
       return {
         name: c.name,
         enabled: my.enabled ?? c.enabled,

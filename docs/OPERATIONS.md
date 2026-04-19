@@ -72,8 +72,8 @@ Or with explicit workers:
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
 ```
 
-Multi-worker safety is why Sprint 2 existed — Postgres holds all state, so
-scaling workers is just a knob.
+Postgres holds all state, so scaling workers is just a knob — rate
+counters, quarantine, and client auth all survive the extra processes.
 
 ### 1.4 Kubernetes
 
@@ -453,11 +453,10 @@ Symptom: `provider_stats.consecutive_failures` keeps growing even though
 no actual provider call fails; `rate_events` has many rows from the same
 user but `usage_events` shows very few.
 
-This was a bug before Sprint 7 — cancelled requests (client timed out and
-gave up) left rate_events reservations uncommitted. The fix (commits
-`08e2f0f` and `8e789f9`) wraps every endpoint in `try/finally` that
-rolls back the reservation on cancel. If you see this on Sprint 7+ code,
-report the exact repro.
+Cancelled requests (client timed out and gave up) used to leave
+`rate_events` reservations uncommitted. Every endpoint now wraps dispatch
+in `try/finally` that rolls back the reservation on cancel. If you see
+this symptom on current code, please report the exact repro.
 
 ### Postgres connection pool exhausted
 
