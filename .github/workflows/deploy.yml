@@ -1,0 +1,153 @@
+name: Deploy FREEAI (Postgres + API + UI estática)
+
+# Requires the following GitHub Actions secrets:
+#   SSH_PRIVATE_KEY      — private key with access to the deploy host
+#   DEPLOY_SSH_HOST      — hostname of the deploy server (e.g. ssh.example.com)
+#   DEPLOY_SSH_PORT      — SSH port (e.g. 22 or 2222)
+#   DEPLOY_SSH_USER      — SSH user on the deploy host
+#   DEPLOY_PROJECT_DIR   — absolute path where the repo should live (e.g. /home/freeai/freeai)
+#   DEPLOY_REPO_URL      — git clone URL (e.g. git@github.com:OWNER/REPO.git)
+#   DEPLOY_CORS_ORIGIN   — (optional) extra public origin to add to CORS, e.g. https://freeai.example.com
+#   POSTGRES_PASSWORD    — strong password for the Postgres container (openssl rand -base64 32)
+#   FREEAI_MASTER_KEY    — Fernet master key for provider-credential encryption
+#   FREEAI_ADMIN_TOKEN   — (optional) preconfigured admin token; leave unset to use setup wizard
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up SSH Key with ssh-agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Add SSH Host Key
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H -p "${{ secrets.DEPLOY_SSH_PORT }}" "${{ secrets.DEPLOY_SSH_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Test SSH Connection
+        run: |
+          ssh -p "${{ secrets.DEPLOY_SSH_PORT }}" "${{ secrets.DEPLOY_SSH_USER }}@${{ secrets.DEPLOY_SSH_HOST }}" "echo 'SSH OK'"
+
+      - name: Deploy to server
+        env:
+          PROJECT_DIR: ${{ secrets.DEPLOY_PROJECT_DIR }}
+          REPO_URL: ${{ secrets.DEPLOY_REPO_URL }}
+          EXTRA_CORS_ORIGIN: ${{ secrets.DEPLOY_CORS_ORIGIN }}
+          FREEAI_MASTER_KEY: ${{ secrets.FREEAI_MASTER_KEY }}
+          FREEAI_ADMIN_TOKEN: ${{ secrets.FREEAI_ADMIN_TOKEN }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+        run: |
+          ssh -p "${{ secrets.DEPLOY_SSH_PORT }}" "${{ secrets.DEPLOY_SSH_USER }}@${{ secrets.DEPLOY_SSH_HOST }}" \
+            "PROJECT_DIR='${PROJECT_DIR}' REPO_URL='${REPO_URL}' EXTRA_CORS_ORIGIN='${EXTRA_CORS_ORIGIN}' FREEAI_MASTER_KEY='${FREEAI_MASTER_KEY}' FREEAI_ADMIN_TOKEN='${FREEAI_ADMIN_TOKEN}' POSTGRES_PASSWORD='${POSTGRES_PASSWORD}' bash -s" << 'DEPLOY_SCRIPT'
+          set -e
+
+          COMPOSE_FILE="$PROJECT_DIR/docker-compose.yml"
+
+          echo "=========================================="
+          echo "    FREEAI - Deploy"
+          echo "=========================================="
+
+          if [ -d "$PROJECT_DIR/.git" ]; then
+            echo "[1/7] Actualizando repositorio..."
+            cd "$PROJECT_DIR"
+            git reset --hard HEAD
+            git clean -fd
+            git pull origin main
+          else
+            echo "[1/7] Clonando repositorio..."
+            rm -rf "$PROJECT_DIR"
+            git clone "$REPO_URL" "$PROJECT_DIR"
+            cd "$PROJECT_DIR"
+          fi
+
+          if [ ! -f "$PROJECT_DIR/.env" ]; then
+            echo "[2/7] Creando .env..."
+            SERVER_IP=$(hostname -I | awk '{print $1}')
+            CORS_VALUE="http://localhost:8000,http://127.0.0.1:8000,http://${SERVER_IP}:8000"
+            if [ -n "${EXTRA_CORS_ORIGIN}" ]; then
+              CORS_VALUE="${CORS_VALUE},${EXTRA_CORS_ORIGIN}"
+            fi
+            printf '%s\n' \
+              "POSTGRES_PASSWORD=${POSTGRES_PASSWORD}" \
+              "FREEAI_MASTER_KEY=${FREEAI_MASTER_KEY}" \
+              "FREEAI_ADMIN_TOKEN=${FREEAI_ADMIN_TOKEN}" \
+              "FREEAI_CORS_ORIGINS=${CORS_VALUE}" \
+              > "$PROJECT_DIR/.env"
+            chmod 600 "$PROJECT_DIR/.env"
+            echo "INFO: CORS configurado: ${CORS_VALUE}"
+          else
+            echo "[2/7] .env ya existe, saltando..."
+            if ! grep -q "^FREEAI_MASTER_KEY=" "$PROJECT_DIR/.env" && [ -n "${FREEAI_MASTER_KEY}" ]; then
+              echo "FREEAI_MASTER_KEY=${FREEAI_MASTER_KEY}" >> "$PROJECT_DIR/.env"
+              echo "INFO: FREEAI_MASTER_KEY añadida al .env existente."
+            fi
+            if ! grep -q "^FREEAI_ADMIN_TOKEN=" "$PROJECT_DIR/.env" && [ -n "${FREEAI_ADMIN_TOKEN}" ]; then
+              echo "FREEAI_ADMIN_TOKEN=${FREEAI_ADMIN_TOKEN}" >> "$PROJECT_DIR/.env"
+              echo "INFO: FREEAI_ADMIN_TOKEN añadida al .env existente."
+            fi
+            if ! grep -q "^POSTGRES_PASSWORD=" "$PROJECT_DIR/.env" && [ -n "${POSTGRES_PASSWORD}" ]; then
+              echo "POSTGRES_PASSWORD=${POSTGRES_PASSWORD}" >> "$PROJECT_DIR/.env"
+              echo "INFO: POSTGRES_PASSWORD añadida al .env existente."
+            fi
+            chmod 600 "$PROJECT_DIR/.env"
+          fi
+
+          cd "$PROJECT_DIR"
+
+          echo "[3/7] Deteniendo contenedores existentes..."
+          docker-compose -f "$COMPOSE_FILE" down --remove-orphans 2>/dev/null || true
+
+          echo "[4/7] Eliminando contenedores conflictivos (nombres típicos compose)..."
+          docker rm -f freeai postgres 2>/dev/null || true
+          docker rm -f freeai-freeai-1 freeai-postgres-1 2>/dev/null || true
+          docker rm -f freeai_freeai_1 freeai_postgres_1 2>/dev/null || true
+
+          echo "[5/7] Construyendo imágenes Docker..."
+          docker-compose -f "$COMPOSE_FILE" build --no-cache
+
+          echo "[6/7] Levantando servicios (postgres + freeai)..."
+          docker rm -f freeai postgres 2>/dev/null || true
+          docker-compose -f "$COMPOSE_FILE" up -d --force-recreate
+
+          echo "[7/7] Verificando servicios..."
+          sleep 15
+
+          echo ""
+          echo "Estado de los servicios:"
+          docker-compose -f "$COMPOSE_FILE" ps
+
+          HEALTH_PY="import urllib.request,sys; u=urllib.request.urlopen('http://127.0.0.1:8000/api/health'); sys.exit(0 if u.status==200 else 1)"
+          for i in $(seq 1 30); do
+            if docker-compose -f "$COMPOSE_FILE" exec -T freeai python -c "$HEALTH_PY" > /dev/null 2>&1; then
+              echo ""
+              echo "Health /api/health: OK"
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo ""
+              echo "WARNING: health check falló tras 30 intentos"
+              docker-compose -f "$COMPOSE_FILE" logs --tail=40 freeai
+            fi
+            sleep 2
+          done
+
+          echo ""
+          echo "=========================================="
+          echo "    Deploy completado"
+          echo "=========================================="
+          echo "  App (API + panel):  http://localhost:8000"
+          echo "  Postgres: solo red Docker (sin puerto en host). psql: docker-compose exec postgres psql -U freeai -d freeai"
+          echo "  Observabilidad: COMPOSE_PROFILES=observability docker compose up -d"
+          echo ""
+          DEPLOY_SCRIPT
