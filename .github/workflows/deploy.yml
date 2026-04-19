@@ -61,9 +61,9 @@ jobs:
           if [ -d "$PROJECT_DIR/.git" ]; then
             echo "[1/7] Actualizando repositorio..."
             cd "$PROJECT_DIR"
-            git reset --hard HEAD
+            git fetch origin main
+            git reset --hard origin/main
             git clean -fd
-            git pull origin main
           else
             echo "[1/7] Clonando repositorio..."
             rm -rf "$PROJECT_DIR"
