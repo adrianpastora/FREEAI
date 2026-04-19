@@ -6,21 +6,34 @@ from pydantic import BaseModel, Field
 
 
 class ChatMessage(BaseModel):
-    """OpenAI-compatible message. ``content`` can be a plain string or a list
-    of content blocks for multimodal requests::
+    """OpenAI-compatible message. ``content`` can be a plain string, a list
+    of content blocks for multimodal requests, or ``None`` (for assistant
+    turns that only emitted tool_calls, or for tool turns mid-conversation)::
 
         content: [
             {"type": "text", "text": "What's in this image?"},
             {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}
         ]
+
+    Tool-calling fields (``tool_calls``, ``tool_call_id``) are accepted so a
+    full OpenAI-compatible conversation history round-trips without 422s.
+    They are currently passed through to providers that natively speak the
+    OpenAI wire format; Gemini silently drops them (no tool-calling support
+    in that adapter yet).
     """
+    model_config = {"extra": "allow"}
+
     role: Literal["system", "user", "assistant", "tool"]
-    content: Union[str, list[dict[str, Any]]]
+    content: Optional[Union[str, list[dict[str, Any]]]] = None
     name: Optional[str] = None
+    tool_calls: Optional[list[dict[str, Any]]] = None
+    tool_call_id: Optional[str] = None
 
     @property
     def text_content(self) -> str:
         """Extract plain text from content (works for both str and multimodal)."""
+        if self.content is None:
+            return ""
         if isinstance(self.content, str):
             return self.content
         return " ".join(
@@ -32,7 +45,7 @@ class ChatMessage(BaseModel):
     @property
     def has_images(self) -> bool:
         """True if content contains image_url blocks."""
-        if isinstance(self.content, str):
+        if not isinstance(self.content, list):
             return False
         return any(
             isinstance(b, dict) and b.get("type") == "image_url"
@@ -51,6 +64,13 @@ Strategy = str
 
 
 class ChatCompletionRequest(BaseModel):
+    # Be lenient with OpenAI SDK extras we don't consume yet (tools,
+    # tool_choice, response_format, seed, top_p, n, stop, presence_penalty,
+    # frequency_penalty, logit_bias, user, ...). Accepting them prevents
+    # 422 Unprocessable Entity at the edge when a client rounds-trips a
+    # conversation built with the full OpenAI SDK.
+    model_config = {"extra": "allow"}
+
     messages: list[ChatMessage]
     model: Optional[str] = None  # pass-through if set; else provider default_model
     strategy: Strategy = "auto"

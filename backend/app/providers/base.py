@@ -184,9 +184,24 @@ class BaseProvider:
         Multimodal content (list of blocks) is passed through as-is — the
         OpenAI API and compatible providers (Groq, OpenRouter, Mistral)
         accept the ``[{"type": "text"}, {"type": "image_url"}]`` format
-        natively.
+        natively. Tool-calling fields are forwarded when present so multi-turn
+        histories with tool_calls round-trip correctly.
         """
-        return [{"role": m.role, "content": m.content} for m in messages]
+        out: list[dict] = []
+        for m in messages:
+            d: dict = {"role": m.role}
+            # OpenAI spec: content is required but MAY be null for assistant
+            # turns that only emit tool_calls. Preserve the null so upstreams
+            # see a valid conversation shape.
+            d["content"] = m.content
+            if m.name:
+                d["name"] = m.name
+            if m.tool_calls:
+                d["tool_calls"] = m.tool_calls
+            if m.tool_call_id:
+                d["tool_call_id"] = m.tool_call_id
+            out.append(d)
+        return out
 
     def _raise_for_status(self, resp: httpx.Response) -> None:
         """Translate an httpx Response into a typed ProviderError."""
