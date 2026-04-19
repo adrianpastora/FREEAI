@@ -42,7 +42,7 @@ class AnalyticsSummary:
     by_outcome: list[dict]    # [{outcome, calls}]
     by_client: list[dict]     # [{client, calls, success, tokens}]
     time_buckets: list[dict]  # [{bucket_start, calls, success}]
-    # ── Enriched fields (Sprint 7 analytics expansion) ─────────────────
+    # ── Latency / token analytics ──────────────────────────────────────
     p99_latency_ms: Optional[int] = None
     avg_ttfb_ms: Optional[int] = None
     prompt_tokens: int = 0

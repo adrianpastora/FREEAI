@@ -18,12 +18,32 @@ Two independent auth layers. Which one applies depends on the route prefix.
 ### Bootstrap mode
 
 If the `clients` table is empty **and** `FREEAI_REQUIRE_AUTH=false` (the
-default), `/v1/*` is open — useful for first-run experimentation. The app logs
-a `bootstrap_mode` warning at startup and `/api/health` returns
-`auth_required: false`.
+default), `/v1/*` is open — useful for first-run experimentation. The app
+logs a `bootstrap_mode` warning at startup.
 
 The moment you create your first client, or set `FREEAI_REQUIRE_AUTH=true`,
 `/v1/*` requires a Bearer key forever.
+
+### Bootstrap token (first-run admin)
+
+On first startup, if no admin and no users exist yet, FreeAI generates a
+one-time **bootstrap token** and prints it to stdout:
+
+```
+============================================================
+  FreeAI bootstrap token (one-time, do not share):
+    a1b2c3d4e5f6…
+  Send it in the X-Bootstrap-Token header when calling
+  POST /api/setup/initial or POST /api/auth/register.
+  Stored at data/.bootstrap_token until consumed.
+============================================================
+```
+
+It must be sent as `X-Bootstrap-Token: <token>` on the very first call to
+`POST /api/setup/initial` or on the first `POST /api/auth/register` (which
+becomes the initial admin). This prevents drive-by takeover of freshly
+deployed instances exposed to the internet before the operator has a
+chance to complete setup. The token file is deleted the moment it's used.
 
 ## Error format
 
@@ -735,16 +755,13 @@ doesn't exist.
 ### `GET /api/health`
 
 ```json
-{
-  "status": "ok",
-  "providers_configured": 3,
-  "clients_configured": 2,
-  "auth_required": true
-}
+{ "status": "ok" }
 ```
 
-`auth_required` is the canonical flag for bootstrap mode — the frontend reads
-it to decide whether to show the admin-token modal immediately.
+Minimal by design — an unauthenticated scanner shouldn't be able to fingerprint
+the deployment from this endpoint. Fleet counts are available to admins via
+`/api/providers` and `/api/analytics`. The frontend uses `/api/setup/status`
+and `/api/auth/status` to decide which onboarding step to show.
 
 ### `GET /metrics`
 
@@ -756,7 +773,9 @@ reverse-proxy rule if you're worried. The metrics exposed are listed in
 
 If you're integrating a different UI, the endpoint set you need is:
 
-- **Bootstrap:** `GET /api/health` (to detect bootstrap mode)
+- **Bootstrap:** `GET /api/setup/status` (to decide whether to show the
+  first-run setup wizard) and `GET /api/auth/status` (to know whether
+  to show login, signup, or migration)
 - **Auth gate:** `GET /api/providers` (401 → show modal)
 - **Providers tab:** `GET/PATCH /api/providers`, `POST /api/providers/{name}/reset`
 - **Strategy tab:** `GET /api/config`, `GET/POST/PATCH/DELETE /api/strategies`, `PUT /api/config/strategy`, `PUT /api/config/fallback`

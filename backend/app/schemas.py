@@ -112,13 +112,9 @@ class ChatMessage(BaseModel):
         )
 
 
-# `Strategy` used to be a `Literal[...]` enumerating the builtin names. In
-# Sprint 3 strategies became data (a Postgres table) so users can create
-# custom names at runtime, but this alias was not updated — any custom name
-# was rejected by pydantic at the /v1/chat/completions boundary. See
-# docs/REVIEW.md § 6.4. Now it's a plain string alias for readability; the
-# orchestrator is the validator: it looks up the strategy row and errors if
-# the name doesn't resolve.
+# Strategies live in the `strategies` table so users can define custom ones
+# at runtime; the orchestrator is the validator and will reject unknown
+# names when it tries to resolve the definition.
 Strategy = str
 
 

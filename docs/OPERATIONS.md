@@ -16,7 +16,10 @@ Two containers:
 - `freeai` — built from [backend/Dockerfile](../backend/Dockerfile), runs
   `uvicorn --workers 2`, healthchecks against `/api/health`
 
-Exposed host port: **`8000`** (freeai). Postgres **no** se publica en el host (solo red Docker); así no choca con otras bases en el mismo servidor. Consultas ad hoc: `docker compose exec postgres psql -U freeai -d freeai`.
+Exposed host ports: **`8000`** (freeai) and **`127.0.0.1:5444`** (postgres).
+Postgres is bound to the loopback interface so it never leaks onto a public
+network — connect from the host with `docker compose exec postgres psql -U
+freeai -d freeai` or by pointing a local client at `127.0.0.1:5444`.
 
 **First run (UI)**: if you do **not** set `FREEAI_ADMIN_TOKEN` and there is no
 `data/admin_token` file, and no provider API keys are stored yet, the web UI
@@ -476,7 +479,8 @@ Fixes:
    migrations automatically
 4. If `auto_migrate=false`, run `alembic upgrade head` before starting traffic
 5. Watch the logs for `freeai_ready` and `migrations_done`
-6. Sanity-check `/api/health` — `providers_configured` should be unchanged
+6. Sanity-check the app is serving: `curl http://localhost:8000/api/health`
+   should return `{"status":"ok"}`
 
 Rollback: migrations have `downgrade()` but we haven't exercised them.
 **If you're rolling back across a migration boundary, restore the backup
