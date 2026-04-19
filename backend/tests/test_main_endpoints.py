@@ -35,9 +35,7 @@ async def test_health_returns_ok(client: AsyncClient):
     resp = await client.get("/api/health")
     assert resp.status_code == 200
     data = resp.json()
-    assert data["status"] == "ok"
-    assert "providers_configured" in data
-    assert "auth_required" in data
+    assert data == {"status": "ok"}
 
 
 # ──────────── setup ────────────
