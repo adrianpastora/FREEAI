@@ -38,7 +38,12 @@ class GeminiProvider(BaseProvider):
     request_timeout = 60.0
 
     def _content_to_parts(self, content) -> list[dict]:
-        """Convert ChatMessage.content (str or multimodal list) to Gemini parts."""
+        """Convert ChatMessage.content (str, multimodal list, or None) to Gemini parts."""
+        if content is None:
+            # Empty content (e.g. an assistant turn that only emitted tool_calls
+            # in the original OpenAI-format history) — Gemini doesn't support
+            # tool_calls in this adapter, so surface as an empty text part.
+            return [{"text": ""}]
         if isinstance(content, str):
             return [{"text": content}]
 
