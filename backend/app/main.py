@@ -271,6 +271,36 @@ async def enforce_body_size(request: Request, call_next):
     return await call_next(request)
 
 
+_SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=(), interest-cohort=()",
+    "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+    # Frontend uses inline style attrs + Google Fonts + fetch() to same origin.
+    # No inline scripts (all JS lives in /frontend/*.js), so script-src stays tight.
+    "Content-Security-Policy": (
+        "default-src 'self'; "
+        "script-src 'self'; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "font-src 'self' https://fonts.gstatic.com; "
+        "img-src 'self' data:; "
+        "connect-src 'self'; "
+        "frame-ancestors 'none'; "
+        "base-uri 'self'; "
+        "form-action 'self'"
+    ),
+}
+
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    for k, v in _SECURITY_HEADERS.items():
+        response.headers.setdefault(k, v)
+    return response
+
+
 @app.middleware("http")
 async def no_cache_static_assets(request: Request, call_next):
     response = await call_next(request)
@@ -666,6 +696,7 @@ async def auth_me(user: CurrentUser = Depends(get_current_user)) -> dict:
 @app.post("/api/auth/migrate-token", status_code=201)
 async def migrate_token(
     body: MigrateTokenBody,
+    request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """One-time migration: verify legacy admin token and create/update admin user.
@@ -676,17 +707,35 @@ async def migrate_token(
     """
     from .security import verify_admin_credentials
 
+    ip = _client_ip(request)
+    if not _check_login_rate(ip, "__migrate_token__"):
+        raise HTTPException(
+            429,
+            f"too many attempts — try again in {_LOGIN_ATTEMPT_WINDOW_SECONDS}s",
+        )
+
+    # Serialize against concurrent calls so only one migration attempt wins.
+    from sqlalchemy import text as _sql_text
+    await session.execute(
+        _sql_text("SELECT pg_advisory_xact_lock(:k)"),
+        {"k": _SETUP_ADVISORY_LOCK_KEY},
+    )
+
     user_repo = UserRepository(session)
 
-    # Check if a real (non-placeholder) user already exists
+    # Migration is only valid while the only real user (if any) is the
+    # placeholder inserted by migration 0013. Once any real user exists —
+    # even alongside the placeholder — this endpoint is permanently closed.
     placeholder = await user_repo.find_by_username("admin")
     is_placeholder = placeholder and placeholder.password_hash == "__placeholder_needs_migration__"
-    real_user_count = await user_repo.count()
-    if not is_placeholder and real_user_count > 0:
+    total_users = await user_repo.count()
+    real_user_count = total_users - (1 if is_placeholder else 0)
+    if real_user_count > 0:
         raise HTTPException(400, "migration already completed — users exist")
 
     if not await verify_admin_credentials(session, body.admin_token):
         raise HTTPException(401, "invalid admin token")
+    _clear_login_attempts(ip, "__migrate_token__")
 
     pwd_hash = hash_password(body.password)
 

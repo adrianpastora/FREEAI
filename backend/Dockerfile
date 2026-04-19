@@ -1,21 +1,37 @@
-FROM python:3.12-slim AS base
+# ── build stage ───────────────────────────────────────────────────────────────
+FROM python:3.12-slim-bookworm AS builder
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-WORKDIR /app
+WORKDIR /build
 
-# System deps for asyncpg + cryptography wheels (most are already manylinux,
-# but build-essential covers the edge cases on slim).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
-    libpq5 \
+    libpq-dev \
  && rm -rf /var/lib/apt/lists/*
 
 COPY backend/requirements.txt ./
-RUN pip install -r requirements.txt
+RUN pip install --prefix=/install -r requirements.txt
+
+
+# ── runtime stage ─────────────────────────────────────────────────────────────
+FROM python:3.12-slim-bookworm AS runtime
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PATH=/usr/local/bin:$PATH
+
+WORKDIR /app
+
+# Only the runtime C libraries — no compilers, no apt caches.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq5 \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /install /usr/local
 
 COPY backend/ ./backend/
 COPY frontend/ ./frontend/
