@@ -1,6 +1,6 @@
 # Architecture
 
-> Last updated: Sprint 3 (v0.4.0). If you've changed the layering, the
+> Last updated: Sprint 7 (2026-04). If you've changed the layering, the
 > orchestrator flow or the DB schema, update this document in the same PR.
 
 ## 1. Goals and non-goals
@@ -182,21 +182,73 @@ has its own streaming path because its API doesn't speak OpenAI-compatible SSE.
 Every provider adapter must translate any failure into a
 `ProviderError(kind=ErrorKind.X)`. The orchestrator then decides what to do:
 
-| Kind | Example | Retry in place? | Fall back? | Quarantine? |
+| Kind | Example | Retry in place? | Fall back? | Counts as health failure? |
 |---|---|---|---|---|
-| `AUTH` | 401, 403, missing key | no | yes | 24h (it's the key) |
-| `RATE_LIMITED` | 429 | no | yes | respect `Retry-After` |
+| `AUTH` | 401, 403, missing key | no | yes | no, but quarantines 24h so the admin notices |
+| `RATE_LIMITED` | 429 | no | yes | no, respects `Retry-After` |
 | `CLIENT_ERROR` | 400, 422 | no | **no** — same request would fail elsewhere | no |
-| `SERVER_ERROR` | 5xx | yes (1 retry) | yes | after 3 streak → 30s → 60s → … 10m |
-| `NETWORK` | timeout, conn reset | yes (1 retry) | yes | same as server_error |
-| `PARSING` | unexpected response shape | no | yes | counts toward streak |
-| `UNKNOWN` | unexpected exception | no | yes | counts toward streak |
+| `SERVER_ERROR` | 5xx | yes (configurable, default 1 retry) | yes | yes, ticks circuit breaker |
+| `NETWORK` | timeout, conn reset, stream idle | yes (configurable) | yes | yes, ticks circuit breaker |
+| `PARSING` | unexpected response shape, 5+ malformed stream frames | no | yes | yes, ticks circuit breaker |
+| `EMPTY_RESPONSE` | 200 OK with `content=""` and no `tool_calls` | yes | yes | yes, ticks circuit breaker |
+| `CONTENT_FILTERED` | `finish_reason="content_filter"`, Gemini `SAFETY`/etc. | no | yes (unless first chunk already sent mid-stream) | **no** — provider is alive, just refused this prompt |
+| `UNKNOWN` | unexpected exception | no | yes | yes, ticks circuit breaker |
 
 The rules live in `rate_repo.commit()`:
-`rate_limited` and `client_error` are **benign** — we never use them as evidence
-that the provider is unhealthy. Benign errors don't count toward the unhealthy
-streak and never trigger quarantine (except `auth`, which quarantines for 24h
-so the admin notices).
+`rate_limited`, `client_error`, `auth` and `content_filtered` are **benign** —
+we never use them as evidence that the provider is unhealthy. Benign errors
+don't count toward the circuit-breaker streak. AUTH is the one benign kind
+that still triggers quarantine (24h), because a bad key won't fix itself.
+
+### Circuit breaker and retry budget
+
+`rate_repo.commit()` implements a sliding-window circuit breaker per
+`(user_id, provider)` pair. Parameters are read from `app_config` at call
+time so operators can tune them without restarting:
+
+| Knob | Default | Meaning |
+|---|---|---|
+| `circuit_breaker_threshold` | 3 | Consecutive non-benign failures that trip the breaker. |
+| `circuit_breaker_window_s` | 300 | Sliding window. Failures older than this are forgotten — an isolated blip every 10 minutes never trips. |
+| `circuit_breaker_base_cooldown_s` | 30 | First cooldown after a trip. |
+| `circuit_breaker_max_cooldown_s` | 3600 | Upper bound. Effective cooldown is `min(base * 2^cooldown_level, max)`. |
+| `provider_max_retries` | 1 | Default retries per provider for transient errors before falling back. |
+| `user_providers.max_retries` | NULL | Per-user-provider override of the retry budget. NULL = use global. |
+
+`cooldown_level` lives in `provider_stats` and escalates on every trip
+without a success in between; a single success resets it. That gives you
+exponential backoff for a genuinely broken provider while healing
+instantly when it recovers.
+
+### Streaming robustness
+
+The orchestrator wraps the upstream chunk iterator in
+`asyncio.wait_for(anext(it), timeout=stream_idle_timeout_s)` (default 45s).
+If the upstream goes silent for longer than that:
+
+- **Before any chunk was flushed to the client** → raised as
+  `ErrorKind.NETWORK`, triggers fallback to the next provider.
+- **After at least one chunk** → propagated to the client as an SSE
+  error; no fallback is possible once bytes are in flight.
+
+Malformed SSE frames are tolerated up to 5 consecutive before giving up
+with `ErrorKind.PARSING`. One valid frame resets the counter.
+
+### Resource cleanup
+
+Every endpoint that reserves a rate slot (`chat`, `stream`,
+`/v1/embeddings`, `/v1/audio/transcriptions`) wraps its critical section
+in `try/finally` that:
+
+1. Decrements the in-flight concurrency counter (`_in_flight`).
+2. Calls `rate_repo.rollback(reservation)` if the outcome was never
+   committed — prevents cancelled client retries from piling up ghost
+   entries in `rate_events` that would falsely exhaust a provider's RPM.
+3. Closes the httpx stream iterator so the connection returns to the pool.
+
+This matters because HTTP clients that time out short and retry hard
+(some OpenAI SDK defaults) can otherwise exhaust reservations faster
+than real traffic.
 
 ### HTTP error mapping
 
@@ -226,9 +278,10 @@ Prometheus histograms live next to the middleware:
 
 - `freeai_http_requests_total{method,path,status}`
 - `freeai_http_request_duration_seconds{method,path}`
-- `freeai_provider_calls_total{provider,outcome}`
+- `freeai_provider_calls_total{provider,outcome}` — `outcome` ∈ {success, server_error, rate_limited, auth, network, client_error, parsing, empty_response, content_filtered, unknown}
 - `freeai_provider_call_duration_seconds{provider}`
 - `freeai_orchestrator_fallbacks_total{from_provider,to_provider}`
+- `freeai_provider_circuit_breaker_trips_total{provider}` — incremented each time the breaker trips for any user of that provider.
 
 See [OPERATIONS.md § 3](OPERATIONS.md#3-observability) for the Grafana setup.
 

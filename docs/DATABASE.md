@@ -4,7 +4,7 @@
 > [backend/alembic/versions/](../backend/alembic/versions/). `FREEAI_AUTO_MIGRATE=true`
 > (the default) runs `alembic upgrade head` on startup.
 
-## 1. Tables (7)
+## 1. Tables (10)
 
 ```
 ┌──────────────┐                    ┌──────────────────┐
@@ -36,10 +36,18 @@
 | `id` | int PK | Always 1. One row. |
 | `default_strategy` | `varchar(32)` | Name of the default strategy (matches `strategies.name`). |
 | `enable_fallback` | bool | Global kill switch for the fallback chain. |
+| `admin_token_hash` | text nullable | SHA-256 of the admin token (migration 0005). |
+| `provider_max_retries` | int | Default retry budget per provider for transient errors. Overridable per user+provider via `user_providers.max_retries`. Default `1`. (migration 0018) |
+| `stream_idle_timeout_s` | float | Seconds without a chunk before the orchestrator treats a streaming upstream as stalled. Default `45.0`. (migration 0018) |
+| `circuit_breaker_threshold` | int | Consecutive non-benign failures that trip the breaker. Default `3`. (migration 0019) |
+| `circuit_breaker_window_s` | int | Sliding window for the streak; older failures are forgotten. Default `300`. (migration 0019) |
+| `circuit_breaker_base_cooldown_s` | int | First cooldown after a trip. Default `30`. (migration 0019) |
+| `circuit_breaker_max_cooldown_s` | int | Upper bound. Effective cooldown is `min(base * 2^level, max)`. Default `3600`. (migration 0019) |
 | `updated_at` | float (epoch) | |
 
-This exists as a table instead of an env var because strategy and fallback
-are flipped from the UI at runtime, and env vars need a restart.
+This exists as a table instead of an env var because strategy, fallback
+and the robustness tunables are flipped from the UI (or a future admin
+API) at runtime, and env vars need a restart.
 
 ### `providers` — provider config
 
@@ -61,12 +69,18 @@ first run of `seed_defaults_if_empty()`, which is called from `lifespan`.
 
 ### `provider_stats` — health and quarantine
 
+Per-user-provider state (composite PK `(user_id, provider_name)` since
+migration 0014 added multi-user isolation).
+
 | Column | Type | Notes |
 |---|---|---|
-| `provider_name` | `varchar(64)` PK, FK providers(name) CASCADE | 1:1 with `providers` |
-| `healthy` | bool | Cleared to false after 3 consecutive non-benign failures |
-| `consecutive_failures` | int | Streak counter, reset on any success |
-| `quarantined_until` | float | Epoch timestamp. 0 = not quarantined |
+| `user_id` | int PK (part 1) | Added by migration 0014 to isolate health/quarantine per user. |
+| `provider_name` | `varchar(64)` PK (part 2), FK providers(name) CASCADE | |
+| `healthy` | bool | Cleared to false when the circuit breaker trips. |
+| `consecutive_failures` | int | Streak counter; resets on success. Also reset to 0 when the breaker actually trips, so the next failure starts a fresh window. |
+| `recent_failures_started_at` | float | Epoch timestamp of the first failure in the current streak. If `now - this > circuit_breaker_window_s`, the streak resets before counting a new failure. (migration 0019) |
+| `cooldown_level` | smallint | How many times the breaker has tripped without a successful call in between. Cooldown is `min(base * 2^level, max)`. Reset to 0 on any success. (migration 0019) |
+| `quarantined_until` | float | Epoch timestamp. 0 = not quarantined. `try_reserve` rejects reservations while `quarantined_until > now`. |
 | `last_error` | text | Human-readable last error message |
 | `last_error_kind` | `varchar(32)` | `ErrorKind.value` from the last failure |
 | `last_latency_ms` | int | Single most recent observed call |
@@ -80,6 +94,11 @@ This row is created lazily by `freeai_try_reserve` the first time a provider
 is used. It's a separate table from `providers` because it's mutated on every
 request — keeping it separate avoids row-level contention on the config row
 and lets operators edit provider config without blocking the hot path.
+
+**Benign error kinds** (`rate_limited`, `client_error`, `auth`, `content_filtered`)
+update `last_error*` but **do not** tick `consecutive_failures` — they're not
+provider health failures, just request-specific refusals. See
+[rate_repo.py:`_BENIGN_ERRORS`](../backend/app/repositories/rate_repo.py).
 
 ### `rate_events` — reservation log
 
@@ -128,6 +147,85 @@ Two indexes: `ix_usage_events_time` on `occurred_at`, and
 service the aggregate queries in
 [usage_repo.summary()](../backend/app/repositories/usage_repo.py).
 
+### `users` — registered accounts (migration 0012)
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | int PK autoincrement | |
+| `username` | `varchar(64)` unique | Login name |
+| `password_hash` | text | bcrypt |
+| `role` | `varchar(16)` | `admin` or `user` |
+| `max_clients` | int | Cap on how many API clients this user can own. Default 5. |
+| `created_at`, `updated_at` | float | |
+
+Seeded empty; the first admin is created via the setup wizard or the
+migrate-token CLI.
+
+### `refresh_tokens` — JWT refresh (migration 0012)
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | int PK autoincrement | |
+| `user_id` | int FK users(id) CASCADE | |
+| `token_hash` | `varchar(64)` unique | SHA-256 of the raw refresh token |
+| `expires_at` | float | Epoch timestamp |
+| `created_at` | float | |
+
+Raw tokens are handed to the client once at login and never re-derivable.
+
+### `user_providers` — per-user credentials (migration 0013)
+
+Per-user overrides for provider config. The global `providers` table became
+a catalog without keys; real credentials live here.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | int PK autoincrement | |
+| `user_id` | int FK users(id) CASCADE, indexed | |
+| `provider_name` | `varchar(64)` FK providers(name) CASCADE | |
+| `api_key_encrypted` | text nullable | Fernet-encrypted |
+| `enabled` | bool | Per-user kill switch |
+| `rpm_limit`, `rpd_limit`, `tpd_limit` | int nullable | Per-user overrides. NULL = use the catalog default. |
+| `weight` | float nullable | |
+| `default_model` | `varchar(256)` nullable | |
+| `max_retries` | int nullable | Per-user override of `app_config.provider_max_retries`. NULL = use the global. (migration 0018) |
+| `created_at`, `updated_at` | float | |
+| `UNIQUE(user_id, provider_name)` | | |
+
+### `client_rate_events` — inbound rate limit log (migration 0004)
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | bigint PK autoincrement | |
+| `client_hash` | `varchar(64)` indexed | |
+| `occurred_at` | float | |
+
+No FK on `client_hash` — revoked clients may still have lingering events
+until the purge job runs. Consumed by the
+`freeai_try_reserve_client` plpgsql function.
+
+### `usage_daily_rollup` — analytics long-retention (migration 0017)
+
+Pre-aggregated daily summaries of `usage_events` keyed by
+`(user_id, day, provider_name, model, strategy)`. Keeps 730 days so the
+analytics dashboard can run year-over-year queries without scanning the
+raw events table (which rotates out at 90 days).
+
+| Column | Type | Notes |
+|---|---|---|
+| `user_id`, `day`, `provider_name`, `model`, `strategy` | composite PK | |
+| `total_calls`, `success_calls`, `failed_calls` | bigint | |
+| `sum_latency_ms` | bigint | For computing average. |
+| `p50_latency_ms`, `p95_latency_ms`, `p99_latency_ms` | int | |
+| `avg_ttfb_ms` | int | |
+| `prompt_tokens`, `completion_tokens` | bigint | |
+| `errors_by_kind` | JSONB | Map of `ErrorKind → count` for that day. |
+| `fallback_position_hist` | JSONB | Histogram of how often each fallback slot was hit. |
+| `updated_at` | float | |
+
+Populated hourly by the `rollup_daily` background task (see `main.py`
+lifespan).
+
 ### `strategies` — routing rules as data
 
 | Column | Type | Notes |
@@ -165,6 +263,21 @@ you never need to put it in `alembic.ini`.
 0010 — tpd_limit column on providers.
 0011 — scoring optimizations: latency_ema_ms, tokens_today, tokens_day_start
        on provider_stats.
+0012 — users + refresh_tokens tables; JWT auth.
+0013 — user_providers table; per-user credentials. Existing provider keys
+       migrate to user_id=1 (placeholder admin).
+0014 — multi-user scoping: composite PK (user_id, provider_name) on
+       provider_stats + rate_events.user_id.
+0015 — backfill user_id on legacy usage_events.
+0016 — data-only fix for orphaned provider keys from 0013.
+0017 — usage_daily_rollup table for long-retention analytics.
+0018 — app_config.provider_max_retries (default 1),
+       app_config.stream_idle_timeout_s (default 45.0),
+       user_providers.max_retries (nullable per-user override).
+0019 — app_config.circuit_breaker_threshold / window_s /
+       base_cooldown_s / max_cooldown_s, plus
+       provider_stats.recent_failures_started_at and
+       provider_stats.cooldown_level for exponential backoff.
 ```
 
 ### Running migrations

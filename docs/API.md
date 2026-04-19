@@ -54,9 +54,21 @@ HTTP status mapping (from `main.py::_KIND_TO_STATUS`):
 | `kind` | HTTP status |
 |---|---|
 | `client_error` | 400 |
-| `auth`, `server_error`, `parsing`, `unknown` | 502 |
+| `auth`, `server_error`, `parsing`, `empty_response`, `content_filtered`, `unknown` | 502 |
 | `rate_limited` | 503 |
 | `network` | 504 |
+
+Two kinds trigger internal fallback but almost never reach the client
+with their own HTTP status (a successful fallback masks them):
+
+- `empty_response` — the upstream returned HTTP 200 but with empty or
+  whitespace-only `content` (and no `tool_calls`). Treated as transient,
+  goes to the next provider, counts as a health failure on the originator.
+- `content_filtered` — the upstream blocked the output
+  (`finish_reason="content_filter"` or Gemini's `SAFETY`/`RECITATION`/
+  `BLOCKLIST`/`PROHIBITED_CONTENT`/`SPII`). Triggers fallback but does
+  **not** count as a health failure — the provider is working fine, it
+  just refused this particular prompt.
 
 Every response carries `X-Request-ID: <hex>` — include it when reporting bugs.
 
@@ -86,7 +98,7 @@ OpenAI-compatible. Accepts the standard chat payload plus FreeAI extras.
 
 | Field | Type | Notes |
 |---|---|---|
-| `messages` | `[{role, content, name?}]` | Required. `role ∈ {system, user, assistant, tool}`. `content` can be a string or a list of content blocks for multimodal (vision) requests — see [Vision requests](#vision-requests) below. |
+| `messages` | `[{role, content, name?, tool_calls?, tool_call_id?}]` | Required. `role ∈ {system, user, assistant, tool}`. `content` is `string \| list[block] \| null` — `null` is valid for assistant turns that only emitted `tool_calls` and for `tool` turns whose content comes from an external tool run. Extra OpenAI-compatible fields on each message are accepted and forwarded to providers that speak the OpenAI wire format. See [Vision requests](#vision-requests) and [Tool calling](#tool-calling) below. |
 | `model` | `string \| null` | Leave `null` to use the provider's `default_model`. If set, it's passed through as-is to whichever provider the router picks — careful mixing `model` with `preferred_provider`. |
 | `strategy` | `string` | Any strategy name from `GET /api/strategies`. `auto` runs the detector. |
 | `temperature` | `float` | Passed to the provider. Default 0.7. |
@@ -94,6 +106,14 @@ OpenAI-compatible. Accepts the standard chat payload plus FreeAI extras.
 | `stream` | `bool` | If `true`, returns SSE (see below). |
 | `preferred_provider` | `string \| null` | Force a specific provider. Still respects rate limits / health; if unavailable, the request still falls back. |
 | `fallback` | `bool` | Set `false` to get a single attempt, no chain. |
+
+Other common OpenAI SDK fields (`tools`, `tool_choice`, `response_format`,
+`seed`, `top_p`, `n`, `stop`, `presence_penalty`, `frequency_penalty`,
+`logit_bias`, `user`) are accepted without erroring so a standard OpenAI
+SDK payload round-trips. Most are forwarded to OpenAI-compatible providers
+(Groq, Mistral, OpenRouter, HuggingFace); the Gemini adapter ignores the
+ones it doesn't understand. `tool_calls` in assistant messages and
+`tool_call_id` in tool messages are preserved end-to-end.
 
 **Non-streaming response:**
 
@@ -200,6 +220,45 @@ or healthy, the orchestrator returns a clear error:
 }
 ```
 
+### Tool calling
+
+Conversation histories that include tool calls round-trip through FreeAI
+unchanged. A typical multi-turn flow looks like this:
+
+```json
+{
+  "messages": [
+    {"role": "user", "content": "What's the weather in Madrid?"},
+    {"role": "assistant", "content": null,
+     "tool_calls": [
+       {"id": "call_1", "type": "function",
+        "function": {"name": "get_weather", "arguments": "{\"city\":\"Madrid\"}"}}
+     ]},
+    {"role": "tool", "tool_call_id": "call_1", "content": "22°C, sunny"},
+    {"role": "user", "content": "And the forecast for tomorrow?"}
+  ],
+  "model": "freeai-fast",
+  "tools": [
+    {"type": "function",
+     "function": {"name": "get_weather",
+                  "parameters": {"type": "object",
+                                 "properties": {"city": {"type": "string"}}}}}
+  ]
+}
+```
+
+- `content: null` on an assistant turn is required when the turn only emitted
+  `tool_calls`. FreeAI preserves it.
+- `tool_call_id` ties a `role: tool` message back to the originating
+  `tool_calls[].id`. Required by the OpenAI spec and preserved here.
+- `tools` / `tool_choice` at the top level are forwarded to OpenAI-compatible
+  providers (Groq, Mistral, OpenRouter, HuggingFace). The Gemini adapter
+  does not implement tool calling yet — requests with `tools` set still
+  succeed when routed through Gemini, but the tool definitions are ignored.
+
+If you don't use tool calling, this section doesn't apply — plain
+`{role, content}` messages work as before.
+
 ### Virtual models
 
 FreeAI exposes virtual model names that map to routing strategies. Use them
@@ -271,9 +330,16 @@ OpenAI-compatible text embeddings with multi-provider fallback. Request body:
 | Field | Type | Required | Default | Notes |
 |-------|------|----------|---------|-------|
 | `input` | `string \| string[]` | yes | — | Single string or list; response vectors are aligned with the list order. |
-| `model` | `string` | no | provider default | Passed through; each provider has its own default (see below). |
+| `model` | `string` | no | provider default | Passed through to the chosen upstream. **Only native model names are valid** (see below). Omit for safe default. |
 | `preferred_provider` | `string` | no | — | Force a specific provider (e.g. `"mistral"`). Must support embeddings. |
 | `fallback` | `boolean` | no | `true` | When `false`, only the first candidate is tried. |
+
+> **Do not pass OpenAI model names.** `text-embedding-3-small`,
+> `text-embedding-3-large` and `text-embedding-ada-002` are forwarded
+> verbatim to Mistral/Gemini, which return `400 invalid model`. Use
+> `mistral-embed` (1024 dim) or `text-embedding-004` (768 dim), or omit
+> `model` to let each provider use its default. See
+> [EMBEDDINGS.md § Only these model names are valid](EMBEDDINGS.md#-only-these-model-names-are-valid).
 
 Response follows OpenAI's shape:
 
@@ -554,6 +620,32 @@ Individual requests can always override.
 
 Kill switch for the whole fallback chain. Use with care — a single provider's
 downtime will surface as 5xx to clients until you flip it back.
+
+### Fallback robustness tunables (app_config)
+
+Stored directly in the `app_config` singleton row; no dedicated endpoint yet
+— edit via SQL or a future admin panel. Defaults cover most installs.
+
+| Column | Default | What it does |
+|---|---|---|
+| `provider_max_retries` | `1` | Retries per provider for transient errors (SERVER_ERROR, NETWORK, EMPTY_RESPONSE) before falling back to the next candidate. Total attempts per provider = `1 + provider_max_retries`. |
+| `stream_idle_timeout_s` | `45.0` | Seconds the orchestrator waits between SSE chunks from a provider before treating the stream as stalled. Triggers fallback if no content has been flushed to the client yet. |
+| `circuit_breaker_threshold` | `3` | Consecutive non-benign failures (SERVER_ERROR, NETWORK, PARSING, UNKNOWN) that trip the breaker for a `(user_id, provider)` pair. |
+| `circuit_breaker_window_s` | `300` | Sliding window for the streak. Older failures are forgotten so isolated blips don't accumulate. |
+| `circuit_breaker_base_cooldown_s` | `30` | First cooldown after a trip. |
+| `circuit_breaker_max_cooldown_s` | `3600` | Upper bound. Cooldown is `min(base * 2^level, max)` where `level` escalates on every re-trip and resets on success. |
+
+RATE_LIMITED, CLIENT_ERROR, AUTH and CONTENT_FILTERED are "benign" failures —
+they trigger fallback but never trip the circuit breaker, because the
+provider itself is alive and the problem is with the request (or a
+per-user quota).
+
+### Per-provider retry override (user_providers)
+
+`user_providers.max_retries` (nullable integer) lets one user's credentials
+for one provider use a different retry budget than the global default.
+`NULL` defers to `app_config.provider_max_retries`. Set via the same admin
+UI / SQL you use for keys and RPM overrides.
 
 ## Admin — analytics
 
