@@ -55,7 +55,10 @@ services:
     profiles: ["observability"]
     environment:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:?GRAFANA_PASSWORD is required when running the observability profile}
+      # Required when the `observability` profile is active. Leave blank in
+      # .env if you never run that profile. Grafana refuses to start without
+      # a non-default password, so setting this is mandatory before using it.
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-}
       GF_AUTH_ANONYMOUS_ENABLED: "false"
       GF_INSTALL_PLUGINS: ""
     volumes:
