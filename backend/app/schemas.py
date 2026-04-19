@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from typing import Any, Literal, Optional, Union
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class ChatMessage(BaseModel):
@@ -28,6 +28,30 @@ class ChatMessage(BaseModel):
     name: Optional[str] = None
     tool_calls: Optional[list[dict[str, Any]]] = None
     tool_call_id: Optional[str] = None
+
+    @field_validator("content")
+    @classmethod
+    def _reject_remote_image_urls(cls, value):
+        """Only accept data: URIs for image_url blocks.
+
+        Letting providers fetch arbitrary client-supplied URLs is SSRF — they
+        could be pointed at cloud metadata endpoints, internal services, or
+        private networks. Clients must inline images as data URIs.
+        """
+        if not isinstance(value, list):
+            return value
+        for block in value:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") != "image_url":
+                continue
+            url_obj = block.get("image_url") or {}
+            url = url_obj.get("url", "") if isinstance(url_obj, dict) else ""
+            if url and not url.startswith("data:"):
+                raise ValueError(
+                    "image_url must be a data: URI; remote URLs are not accepted"
+                )
+        return value
 
     @property
     def text_content(self) -> str:

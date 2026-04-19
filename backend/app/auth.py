@@ -7,6 +7,8 @@ pattern from crypto.py for consistency.
 from __future__ import annotations
 
 import hashlib
+import logging
+import os
 import secrets
 import time
 from dataclasses import dataclass
@@ -18,6 +20,8 @@ import jwt
 from .settings import get_settings
 
 _ALGORITHM = "HS256"
+
+log = logging.getLogger("freeai.auth")
 
 
 # ── password helpers (same pattern as crypto.hash_admin_token) ──
@@ -45,10 +49,26 @@ def _get_jwt_secret() -> str:
     settings = get_settings()
     if settings.jwt_secret:
         return settings.jwt_secret
-    # Derive from master key so deployments that don't set JWT_SECRET still work.
-    from .crypto import _load_master_key
 
-    return hashlib.sha256(_load_master_key()).hexdigest()
+    path = settings.jwt_secret_path
+    if path.exists():
+        secret = path.read_text(encoding="utf-8").strip()
+        if secret:
+            return secret
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    secret = secrets.token_urlsafe(64)
+    path.write_text(secret, encoding="utf-8")
+    try:
+        os.chmod(path, 0o600)
+    except Exception:
+        pass
+    log.warning(
+        "Generated new JWT secret at %s — back this file up. "
+        "Set FREEAI_JWT_SECRET in production instead.",
+        path,
+    )
+    return secret
 
 
 def create_access_token(

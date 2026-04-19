@@ -329,8 +329,15 @@ document.getElementById("setupGenToken").addEventListener("click", () => {
 document.getElementById("setupSubmit").addEventListener("click", async () => {
   const err = document.getElementById("setupError");
   err.hidden = true;
+  const bootstrap = document.getElementById("setupBootstrapToken").value.trim();
   const t1 = document.getElementById("setupAdminToken").value.trim();
   const t2 = document.getElementById("setupAdminToken2").value.trim();
+  if (!bootstrap) {
+    err.textContent =
+      "Introduce el token de arranque impreso en los logs del servidor.";
+    err.hidden = false;
+    return;
+  }
   if (t1.length < 12) {
     err.textContent = "El token debe tener al menos 12 caracteres.";
     err.hidden = false;
@@ -349,7 +356,10 @@ document.getElementById("setupSubmit").addEventListener("click", async () => {
   try {
     const res = await fetch(`${API_BASE}/api/setup/initial`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "X-Bootstrap-Token": bootstrap,
+      },
       body: JSON.stringify({
         admin_token: t1,
         admin_token_confirm: t2,

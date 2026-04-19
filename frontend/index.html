@@ -167,6 +167,17 @@
         el panel de proveedores.
       </p>
       <label class="field">
+        <span class="field__label">TOKEN&nbsp;DE&nbsp;ARRANQUE</span>
+        <div class="setup-token-row">
+          <input type="password" id="setupBootstrapToken" placeholder="imprimido en los logs del servidor al arrancar" autocomplete="off" />
+          <button type="button" class="ghost-button ghost-button--small setup-toggle" data-target="setupBootstrapToken" aria-label="Mostrar u ocultar token">MOSTRAR</button>
+        </div>
+        <small class="field__hint">
+          Busca una línea en los logs del contenedor que empieza por
+          <code>FreeAI bootstrap token</code>. Se consume al completar este formulario.
+        </small>
+      </label>
+      <label class="field">
         <span class="field__label">TOKEN&nbsp;DE&nbsp;ADMINISTRADOR</span>
         <div class="setup-token-row">
           <input type="password" id="setupAdminToken" placeholder="mínimo 12 caracteres" autocomplete="new-password" />

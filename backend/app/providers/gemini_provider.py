@@ -61,24 +61,24 @@ class GeminiProvider(BaseProvider):
                 url = image_url_obj.get("url", "") if isinstance(image_url_obj, dict) else ""
                 if not url:
                     continue
-                # data URI → inlineData
                 match = _DATA_URI_RE.match(url)
-                if match:
-                    mime_type, b64_data = match.group(1), match.group(2)
-                    parts.append({
-                        "inlineData": {
-                            "mimeType": mime_type,
-                            "data": b64_data,
-                        }
-                    })
-                else:
-                    # HTTP(S) URL → fileData (Gemini fetches it)
-                    parts.append({
-                        "fileData": {
-                            "mimeType": "image/jpeg",
-                            "fileUri": url,
-                        }
-                    })
+                if not match:
+                    # Reject http(s) and any other scheme — letting the provider
+                    # fetch a client-supplied URL is SSRF waiting to happen
+                    # (cloud metadata, internal networks, etc). Clients must
+                    # inline images as data URIs.
+                    raise ProviderError(
+                        ErrorKind.CLIENT_ERROR,
+                        "image_url must be a data: URI; remote URLs are not accepted",
+                        http_status=400,
+                    )
+                mime_type, b64_data = match.group(1), match.group(2)
+                parts.append({
+                    "inlineData": {
+                        "mimeType": mime_type,
+                        "data": b64_data,
+                    }
+                })
         return parts or [{"text": ""}]
 
     def _to_gemini_contents(self, messages: list[ChatMessage]) -> tuple[list[dict], Optional[str]]:

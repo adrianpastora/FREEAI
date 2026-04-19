@@ -41,6 +41,7 @@ class Settings(BaseSettings):
 
     # JWT
     jwt_secret: Optional[str] = None
+    jwt_secret_path: Path = Path(__file__).parent.parent / "data" / ".jwt_secret"
     jwt_access_expire_minutes: int = 15
     jwt_refresh_expire_days: int = 7
 
@@ -49,8 +50,14 @@ class Settings(BaseSettings):
     master_key_path: Path = Path(__file__).parent.parent / "data" / ".master_key"
     admin_token_path: Path = Path(__file__).parent.parent / "data" / "admin_token"
 
+    # Bootstrap token — protects the initial setup wizard against drive-by takeover.
+    # Auto-generated on first run when the instance is fresh and no admin exists.
+    # Printed once to stdout; consumed by POST /api/setup/initial or the first
+    # /api/auth/register, then deleted.
+    bootstrap_token_path: Path = Path(__file__).parent.parent / "data" / ".bootstrap_token"
+
     # CORS
-    cors_origins: str = "http://localhost:8000,http://127.0.0.1:8000,https://freeai.example.com"
+    cors_origins: str = "http://localhost:8000,http://127.0.0.1:8000"
 
     # Logging
     log_level: str = "INFO"
