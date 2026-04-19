@@ -687,11 +687,24 @@
     </div>
     <p class="panel__lede">
       OpenAI-compatible endpoints. Point any client at your FreeAI instance and it works.
-      Admin routes use <code>X-Admin-Token</code> header; client routes use <code>Authorization: Bearer &lt;key&gt;</code>.
+      <br>Auth: <code>Authorization: Bearer &lt;fai_...&gt;</code> for <code>/v1/*</code> (created in the Users tab or via <code>POST /api/clients</code>);
+      <code>X-Admin-Token</code> or a JWT cookie for admin routes. For the full reference with
+      edge cases, see <a href="https://github.com/adrianpastora/FREEAI/blob/main/docs/API.md" target="_blank" rel="noopener">docs/API.md</a>.
+    </p>
+
+    <p class="panel__lede">
+      <strong>Error shape:</strong> provider-level failures come back as
+      <code>{"detail": {"provider", "kind", "message"}}</code> where <code>kind</code> is one of
+      <code>auth</code>, <code>rate_limited</code>, <code>client_error</code>, <code>server_error</code>,
+      <code>network</code>, <code>parsing</code>, <code>empty_response</code>, <code>content_filtered</code>,
+      <code>unknown</code>. Branch on <code>kind</code>, not on message strings.
+      <code>empty_response</code> and <code>content_filtered</code> normally trigger internal fallback
+      and never reach the client &mdash; they only surface if every provider fails.
     </p>
 
     <div class="api-cards">
-      <!-- ── Client endpoints (/v1/*) ── -->
+      <!-- ═══════ CLIENT ROUTES (Authorization: Bearer fai_...) ═══════ -->
+
       <article class="api-card">
         <header><span class="api-card__verb">POST</span><span class="api-card__path">/v1/chat/completions</span></header>
         <pre>{
@@ -699,26 +712,84 @@
     {"role": "system", "content": "You are helpful."},
     {"role": "user", "content": "Hello!"}
   ],
+  "model": "freeai-fast",
   "strategy": "auto",
-  "preferred_provider": "groq",
+  "preferred_provider": null,
   "temperature": 0.7,
+  "max_tokens": 512,
   "stream": false,
   "fallback": true
 }</pre>
-        <p>OpenAI-compatible chat. <code>strategy</code> controls routing (auto, fast, quality, or custom).
-        <code>preferred_provider</code> boosts a specific provider. <code>fallback: true</code> tries the next provider on failure.
-        Auth: <code>Bearer &lt;client_key&gt;</code> or admin token. Open in bootstrap mode (no clients).</p>
-        <p><strong>Virtual models:</strong> set <code>"model"</code> to <code>freeai-auto</code>, <code>freeai-fast</code>,
-        <code>freeai-quality</code>, <code>freeai-code</code>, <code>freeai-reasoning</code>,
-        <code>freeai-cheap</code>, <code>freeai-vision</code>, or <code>freeai-long</code> to pick a strategy directly.</p>
-        <p><strong>Vision:</strong> send images via multimodal content blocks:</p>
+        <p>OpenAI-compatible chat with multi-provider fallback.
+        <code>strategy</code> controls routing (<code>auto</code>, <code>fastest</code>, <code>best_quality</code>, <code>coding</code>, custom&hellip;).
+        <code>preferred_provider</code> boosts a specific provider; <code>fallback: true</code> tries the next candidate on failure.</p>
+
+        <p><strong>Virtual models:</strong> put one of these in <code>"model"</code> to pick a strategy directly
+        without setting <code>strategy</code>:</p>
+        <pre>freeai-auto      freeai-cheap
+freeai-fast      freeai-vision
+freeai-quality   freeai-long
+freeai-code      freeai-reasoning</pre>
+        <p>The response echoes the virtual name in <code>model</code> and the upstream's real model in <code>real_model</code>.</p>
+
+        <p><strong>Vision:</strong> multimodal blocks route to vision providers automatically:</p>
         <pre>{"role": "user", "content": [
   {"type": "text", "text": "Describe this"},
   {"type": "image_url", "image_url":
     {"url": "data:image/png;base64,..."}}
 ]}</pre>
-        <p>The orchestrator auto-detects images and routes to vision providers (Gemini, OpenRouter).
-        Works with <code>strategy: "auto"</code> or <code>model: "freeai-vision"</code>.</p>
+
+        <p><strong>Tool calling:</strong> full OpenAI histories round-trip. Assistant turns may use
+        <code>content: null</code> with <code>tool_calls</code>, and <code>role: "tool"</code> messages
+        carry their <code>tool_call_id</code>. Top-level <code>tools</code>, <code>tool_choice</code>,
+        <code>response_format</code>, <code>seed</code>, <code>top_p</code>, <code>stop</code>,
+        <code>presence_penalty</code>, <code>frequency_penalty</code>, <code>logit_bias</code>,
+        <code>user</code>, <code>n</code> are accepted and forwarded to OpenAI-compatible providers.</p>
+
+        <p><strong>Fallback chain:</strong> response includes <code>"fallback_chain": ["mistral", "groq"]</code>
+        so you can tell whether a request needed failover. <code>fallback_position</code> per attempt
+        is logged to <code>usage_events</code>.</p>
+
+        <p><strong>Streaming:</strong> set <code>stream: true</code>. Returns <code>text/event-stream</code>
+        with chunks mirroring OpenAI's format plus <code>provider</code> on every frame. The orchestrator
+        enforces a per-chunk idle timeout (default 45 s, from <code>app_config.stream_idle_timeout_s</code>);
+        a stalled upstream falls back only if no bytes were flushed yet.</p>
+      </article>
+
+      <article class="api-card">
+        <header><span class="api-card__verb">POST</span><span class="api-card__path">/v1/embeddings</span></header>
+        <pre>// Request:
+{
+  "input": ["first doc", "second doc"],
+  "model": "mistral-embed",
+  "preferred_provider": "mistral",
+  "fallback": true
+}
+
+// Response:
+{
+  "object": "list",
+  "data": [
+    {"object": "embedding", "index": 0, "embedding": [...]},
+    {"object": "embedding", "index": 1, "embedding": [...]}
+  ],
+  "model": "mistral-embed",
+  "provider": "mistral",
+  "usage": {"prompt_tokens": 14, "total_tokens": 14},
+  "fallback_position": 1
+}</pre>
+        <p>OpenAI-compatible embeddings with Mistral &rarr; Gemini fallback.
+        <code>input</code> accepts a string or a list; vectors are aligned with the list order.</p>
+
+        <p><strong>⚠ Only native model names are valid.</strong>
+        <code>mistral-embed</code> (1024-dim) or <code>text-embedding-004</code> (Gemini, 768-dim).
+        OpenAI names like <code>text-embedding-3-small</code> are passed verbatim and the
+        upstream returns 400. Omit <code>model</code> to use each provider's default safely.</p>
+
+        <p>Vectors from different models are <strong>not comparable</strong>; tag every stored vector
+        with its <code>provider</code>+<code>model</code>. For production RAG, pin
+        <code>preferred_provider</code> and set <code>fallback: false</code> so a silent provider switch
+        doesn't corrupt your index.</p>
       </article>
 
       <article class="api-card">
@@ -737,11 +808,87 @@ language: "en"        // optional (ISO 639-1)
   "fallback_position": 1
 }</pre>
         <p>Audio transcription with fallback: Groq Whisper &rarr; Gemini.
-        Accepts mp3, wav, ogg, flac, webm, m4a, aac. Max 20MB for Gemini inline.
+        Accepts mp3, wav, ogg, flac, webm, m4a, aac. Max 20 MB for Gemini inline.
         Same auth as chat completions.</p>
       </article>
 
-      <!-- ── Admin endpoints (/api/*) ── -->
+      <article class="api-card">
+        <header><span class="api-card__verb">GET</span><span class="api-card__path">/v1/models</span></header>
+        <pre>{
+  "object": "list",
+  "data": [
+    {"id": "freeai-auto",    "object": "model", "owned_by": "freeai"},
+    {"id": "freeai-fast",    "object": "model", "owned_by": "freeai"},
+    {"id": "freeai-quality", "object": "model", "owned_by": "freeai"},
+    {"id": "freeai-code",    "object": "model", "owned_by": "freeai"},
+    ...
+  ]
+}</pre>
+        <p>OpenAI-compatible model list. <strong>Public &mdash; no auth required.</strong>
+        Returns the 8 virtual models (strategies) exposed for chat completions.
+        Intended for SDK model-picker UIs.</p>
+      </article>
+
+      <!-- ═══════ USER ROUTES (JWT, multi-user) ═══════ -->
+
+      <article class="api-card">
+        <header><span class="api-card__verb">GET</span><span class="api-card__path">/api/me/providers</span></header>
+        <pre>[
+  {
+    "provider_name": "groq",
+    "has_key": true,
+    "key_preview": "gsk_***abc",
+    "enabled": true,
+    "rpm_limit": 30,
+    "rpd_limit": 14400,
+    "tpd_limit": 500000,
+    "weight": 1.0,
+    "tags": ["fast", "cheap"],
+    "default_model": "llama-3.3-70b-versatile",
+    "max_retries": null
+  }, ...
+]</pre>
+        <p>Per-user provider credentials and overrides. Every field (except <code>tags</code> and <code>provider_name</code>)
+        can override the catalog default.
+        <code>max_retries</code> overrides <code>app_config.provider_max_retries</code> for this user+provider;
+        <code>null</code> = use the global.</p>
+      </article>
+
+      <article class="api-card">
+        <header><span class="api-card__verb">PATCH</span><span class="api-card__path">/api/me/providers/{name}</span></header>
+        <pre>{
+  "api_key": "sk-...",          // empty string to remove
+  "enabled": true,
+  "rpm_limit": 30,
+  "rpd_limit": 14400,
+  "tpd_limit": 500000,
+  "weight": 1.2,
+  "default_model": "llama-3.1-8b-instant",
+  "max_retries": 2              // override global retry budget
+}</pre>
+        <p>Upsert your credentials for a provider. All fields optional &mdash;
+        send only what you want to change. The raw key is encrypted at rest (Fernet).</p>
+      </article>
+
+      <article class="api-card">
+        <header><span class="api-card__verb">POST</span><span class="api-card__path">/api/clients</span></header>
+        <pre>// Request:
+{ "name": "my-app", "rpm_limit": 60 }
+
+// Response:
+{
+  "name": "my-app",
+  "api_key": "fai_EzjQ2OcPp_...",
+  "key_hash": "a1b2c3...",
+  "rpm_limit": 60
+}</pre>
+        <p>Issue a client API key for <code>/v1/*</code>. The raw key is shown <b>only once</b> &mdash;
+        save it immediately. Clients use <code>Authorization: Bearer fai_...</code>.
+        Keys are scoped to the issuing user; each user sees only their own.</p>
+      </article>
+
+      <!-- ═══════ ADMIN ROUTES ═══════ -->
+
       <article class="api-card">
         <header><span class="api-card__verb">GET</span><span class="api-card__path">/api/providers</span></header>
         <pre>[{
@@ -761,39 +908,28 @@ language: "en"        // optional (ISO 639-1)
   "tags": ["fast", "cheap", "audio"],
   "default_model": "llama-3.3-70b-versatile"
 }]</pre>
-        <p>Live status of every provider including rate limits, token usage, and health.
-        <code>latency_ema_ms</code> is an exponential moving average (smoother than <code>last_latency_ms</code>).</p>
+        <p><strong>Admin only.</strong> Live health + rate status for every provider (for the current user).
+        <code>latency_ema_ms</code> is a smoother average than <code>last_latency_ms</code>; the ranker
+        uses it for scoring.</p>
       </article>
 
       <article class="api-card">
-        <header><span class="api-card__verb">PATCH</span><span class="api-card__path">/api/providers/{name}</span></header>
-        <pre>{
-  "api_key": "sk-...",
-  "enabled": true,
-  "weight": 1.5,
-  "default_model": "llama-3.1-8b-instant",
-  "rpm_limit": 30,
-  "rpd_limit": 14400,
-  "tpd_limit": 500000,
-  "tags": ["fast", "cheap"]
-}</pre>
-        <p>Update any provider field. All fields optional &mdash; only send what you want to change.
-        Resets health/quarantine on save.</p>
-      </article>
-
-      <article class="api-card">
-        <header><span class="api-card__verb">POST</span><span class="api-card__path">/api/clients</span></header>
-        <pre>// Request:
-{ "name": "my-app", "rpm_limit": 60 }
-
-// Response:
-{
-  "api_key": "fai_xxxx_...",
-  "key_hash": "a1b2c3...",
-  "name": "my-app"
-}</pre>
-        <p>Issue a client API key. The raw key is shown <b>only once</b> &mdash; save it immediately.
-        Clients use <code>Authorization: Bearer &lt;key&gt;</code> to call /v1/* endpoints.</p>
+        <header><span class="api-card__verb">GET</span><span class="api-card__path">/api/strategies</span></header>
+        <pre>[
+  {
+    "name": "fastest",
+    "description": "Lowest observed latency",
+    "is_builtin": true,
+    "definition": {
+      "prefer": [
+        {"when": "latency_ema_ms &lt; 500", "weight": 30}
+      ]
+    }
+  }, ...
+]</pre>
+        <p><strong>Admin only.</strong> Lists every routing strategy. Built-ins can be edited but not
+        deleted. Custom strategies go via <code>POST /api/strategies</code>.
+        DSL reference: <a href="https://github.com/adrianpastora/FREEAI/blob/main/docs/STRATEGY_DSL.md" target="_blank" rel="noopener">docs/STRATEGY_DSL.md</a>.</p>
       </article>
 
       <article class="api-card">
@@ -809,8 +945,40 @@ language: "en"        // optional (ISO 639-1)
   "by_client": [...],
   "time_buckets": [...]
 }</pre>
-        <p>Aggregated usage telemetry. Includes breakdowns by provider, strategy, outcome, and client.
-        <code>window_seconds</code>: 60&ndash;604800. <code>bucket_count</code>: 1&ndash;168.</p>
+        <p><strong>Admin only.</strong> Aggregated telemetry with breakdowns by provider, strategy, outcome,
+        and client. <code>window_seconds</code>: 60&ndash;604800 (7 d).
+        <code>bucket_count</code>: 1&ndash;168. Windows &gt; 30 d are served from
+        <code>usage_daily_rollup</code> so they stay fast.</p>
+      </article>
+
+      <!-- ═══════ PUBLIC / HEALTH ═══════ -->
+
+      <article class="api-card">
+        <header><span class="api-card__verb">GET</span><span class="api-card__path">/api/health</span></header>
+        <pre>{
+  "status": "ok",
+  "providers_configured": 6,
+  "clients_configured": 3,
+  "auth_required": true
+}</pre>
+        <p><strong>Public.</strong> Liveness probe. No auth. Useful for k8s
+        <code>livenessProbe</code> and <code>readinessProbe</code>.
+        <code>auth_required: false</code> means the server is in bootstrap mode
+        &mdash; create a client via the Users tab before exposing it publicly.</p>
+      </article>
+
+      <article class="api-card">
+        <header><span class="api-card__verb">GET</span><span class="api-card__path">/metrics</span></header>
+        <pre># HELP freeai_provider_calls_total ...
+# TYPE freeai_provider_calls_total counter
+freeai_provider_calls_total{provider="groq",outcome="success"} 1847
+freeai_provider_circuit_breaker_trips_total{provider="mistral"} 2
+freeai_orchestrator_fallbacks_total{from_provider="mistral",to_provider="groq"} 14
+...</pre>
+        <p><strong>Public.</strong> Prometheus exposition format.
+        See <a href="https://github.com/adrianpastora/FREEAI/blob/main/docs/OPERATIONS.md#32-prometheus-metrics" target="_blank" rel="noopener">docs/OPERATIONS.md § 3.2</a>
+        for the full metric inventory and the Grafana dashboard bundled under the
+        <code>observability</code> docker-compose profile.</p>
       </article>
     </div>
   </section>
