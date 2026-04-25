@@ -494,6 +494,22 @@ body::before {
   line-height: 1.65;
 }
 .panel__lede em { font-family: var(--serif); font-size: 16px; color: var(--char); }
+.panel__lede a {
+  color: var(--amber);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  text-decoration-color: rgba(255,122,24,0.45);
+  transition: color .12s, text-decoration-color .12s;
+}
+.panel__lede a:hover {
+  color: var(--char);
+  text-decoration-color: var(--char);
+}
+.panel__lede a:focus-visible {
+  outline: 2px solid var(--amber);
+  outline-offset: 2px;
+}
 
 /* ─────────────── BUTTONS ─────────────── */
 

@@ -47,6 +47,14 @@ class Settings(BaseSettings):
 
     # Crypto
     master_key: Optional[str] = None
+    legacy_initial_setup: bool = Field(
+        default=False,
+        description=(
+            "If true, offer the legacy admin-token + provider-keys wizard when "
+            "there are no JWT users. Default false: use master-key confirmation "
+            "then JWT registration."
+        ),
+    )
     master_key_path: Path = Path(__file__).parent.parent / "data" / ".master_key"
     admin_token_path: Path = Path(__file__).parent.parent / "data" / "admin_token"
 

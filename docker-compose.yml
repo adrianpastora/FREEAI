@@ -1,10 +1,12 @@
+# Local dev: Postgres password defaults below if POSTGRES_PASSWORD is unset.
+# Override in .env (e.g. python scripts/ensure_dotenv.py) for anything exposed.
 services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-freeai}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required — set it in .env (see .env.example)}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-freeai_local_dev_not_for_production}
       POSTGRES_DB: ${POSTGRES_DB:-freeai}
     volumes:
       - freeai_pg:/var/lib/postgresql/data
@@ -31,7 +33,7 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      FREEAI_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-freeai}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-freeai}
+      FREEAI_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-freeai}:${POSTGRES_PASSWORD:-freeai_local_dev_not_for_production}@postgres:5432/${POSTGRES_DB:-freeai}
       FREEAI_AUTO_MIGRATE: "true"
       FREEAI_LOG_LEVEL: INFO
       FREEAI_LOG_FORMAT: json

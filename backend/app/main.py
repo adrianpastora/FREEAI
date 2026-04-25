@@ -24,7 +24,7 @@ from typing import Optional, Self, Union
 import structlog
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import delete as sa_delete, func, select, text as sa_text, update as sa_update
@@ -44,7 +44,17 @@ from .bootstrap import (
     ensure_bootstrap_token,
     verify_bootstrap_token,
 )
-from .crypto import MASTER_KEY_PATH, decrypt, hash_admin_token
+from .crypto import (
+    MASTER_KEY_PATH,
+    MasterKeyNotReadyError,
+    confirm_pending_master_key,
+    decrypt,
+    ensure_pending_master_key,
+    hash_admin_token,
+    is_master_key_ready,
+    master_key_confirmation_required,
+    read_pending_master_key_plaintext,
+)
 from .db import create_engine_and_sessionmaker, dispose_engine, get_session
 from .db.models import (
     AppConfigRow,
@@ -133,6 +143,32 @@ async def lifespan(app: FastAPI):
         cfg_row = await session.get(AppConfigRow, 1)
         has_admin_token = bool(cfg_row and cfg_row.admin_token_hash) or bool(settings.admin_token) or settings.admin_token_path.exists()
         needs_bootstrap = real_users == 0 and not has_admin_token
+        mk_plain = ensure_pending_master_key()
+        if mk_plain:
+            print(
+                "\n"
+                "============================================================\n"
+                "  FreeAI encryption master key (paste in the web UI once):\n"
+                f"    {mk_plain}\n"
+                "  Open the web UI once: paste this key, the bootstrap token,\n"
+                "  and your admin username/password (single FIRST SETUP form).\n"
+                "  Pending at data/.master_key.pending until confirmed.\n"
+                "============================================================\n",
+                flush=True,
+            )
+        elif master_key_confirmation_required():
+            pk = read_pending_master_key_plaintext()
+            if pk:
+                print(
+                    "\n"
+                    "============================================================\n"
+                    "  FreeAI master key still awaiting UI confirmation — paste:\n"
+                    f"    {pk}\n"
+                    "  (Server was restarted before you confirmed the key.)\n"
+                    "============================================================\n",
+                    flush=True,
+                )
+
         new_token = ensure_bootstrap_token(needed=needs_bootstrap)
         if new_token:
             print(
@@ -141,7 +177,8 @@ async def lifespan(app: FastAPI):
                 "  FreeAI bootstrap token (one-time, do not share):\n"
                 f"    {new_token}\n"
                 "  Send it in the X-Bootstrap-Token header when calling\n"
-                "  POST /api/setup/initial or POST /api/auth/register.\n"
+                "  POST /api/setup/confirm-master-key, POST /api/setup/initial,\n"
+                "  or POST /api/auth/register (first admin only).\n"
                 "  Stored at data/.bootstrap_token until consumed.\n"
                 "============================================================\n",
                 flush=True,
@@ -240,6 +277,12 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+
+@app.exception_handler(MasterKeyNotReadyError)
+async def _master_key_not_ready_handler(_request: Request, exc: MasterKeyNotReadyError) -> JSONResponse:
+    return JSONResponse(status_code=503, content={"detail": str(exc)})
+
+
 settings = get_settings()
 app.add_middleware(
     CORSMiddleware,
@@ -331,6 +374,7 @@ async def no_cache_static_assets(request: Request, call_next):
 
 class SetupStatusResponse(BaseModel):
     needs_initial_setup: bool
+    needs_master_key_confirm: bool
     provider_names: list[str]
 
 
@@ -357,6 +401,17 @@ async def _needs_initial_setup(session: AsyncSession) -> bool:
     row = await session.get(AppConfigRow, 1)
     if row and row.admin_token_hash:
         return False
+
+    if not is_master_key_ready():
+        return False
+
+    user_repo = UserRepository(session)
+    user_count = await user_repo.count()
+    placeholder = await user_repo.find_by_username("admin")
+    real_users = user_count - (1 if _is_placeholder(placeholder) else 0)
+    if real_users == 0 and not settings.legacy_initial_setup:
+        return False
+
     cfg = ConfigRepository(session)
     return await cfg.count_providers_with_stored_keys() == 0
 
@@ -365,8 +420,138 @@ async def _needs_initial_setup(session: AsyncSession) -> bool:
 async def setup_status(session: AsyncSession = Depends(get_session)) -> SetupStatusResponse:
     return SetupStatusResponse(
         needs_initial_setup=await _needs_initial_setup(session),
+        needs_master_key_confirm=master_key_confirmation_required(),
         provider_names=sorted(DEFAULT_PROVIDERS.keys()),
     )
+
+
+class MasterKeyConfirmBody(BaseModel):
+    master_key: str = Field(..., min_length=1, max_length=512)
+
+
+@app.post("/api/setup/confirm-master-key")
+async def setup_confirm_master_key(
+    body: MasterKeyConfirmBody,
+    session: AsyncSession = Depends(get_session),
+    x_bootstrap_token: Optional[str] = Header(default=None, alias="X-Bootstrap-Token"),
+) -> dict:
+    """Promote ``data/.master_key.pending`` to ``.master_key`` after UI paste.
+
+    Requires the bootstrap token so a drive-by cannot confirm encryption
+    without both secrets from the operator's logs.
+    """
+    await _acquire_setup_lock(session)
+    if not master_key_confirmation_required():
+        raise HTTPException(
+            status_code=403,
+            detail="master key is already active or there is no pending key",
+        )
+    if not verify_bootstrap_token(x_bootstrap_token):
+        raise HTTPException(
+            status_code=401,
+            detail=(
+                "missing or invalid X-Bootstrap-Token header — use the value printed "
+                "with the FreeAI bootstrap token banner."
+            ),
+        )
+    if not confirm_pending_master_key(body.master_key.strip()):
+        raise HTTPException(
+            status_code=400,
+            detail="master key does not match the pending server-generated value",
+        )
+    return {
+        "ok": True,
+        "detail": (
+            "Clave maestra activada. Si existía un archivo .env local y era "
+            "escribible, se añadió FREEAI_MASTER_KEY; comprueba y haz backup."
+        ),
+    }
+
+
+class FirstAdminSetupBody(BaseModel):
+    """One-shot first admin: optional pending master key + JWT user."""
+
+    master_key: Optional[str] = Field(default=None, max_length=512)
+    username: str = Field(..., min_length=3, max_length=64, pattern=r"^[a-zA-Z0-9_.-]+$")
+    password: str = Field(..., min_length=8, max_length=512)
+    password_confirm: str = Field(..., min_length=8, max_length=512)
+
+    @model_validator(mode="after")
+    def _passwords_match(self) -> Self:
+        if self.password != self.password_confirm:
+            raise ValueError("passwords do not match")
+        return self
+
+
+@app.post("/api/setup/first-admin", status_code=201)
+async def setup_first_admin(
+    body: FirstAdminSetupBody,
+    session: AsyncSession = Depends(get_session),
+    x_bootstrap_token: Optional[str] = Header(default=None, alias="X-Bootstrap-Token"),
+) -> dict:
+    """Confirm pending master key (if any) and create the first admin in one step."""
+    await _acquire_setup_lock(session)
+
+    user_repo = UserRepository(session)
+    count = await user_repo.count()
+    placeholder = await user_repo.find_by_username("admin")
+    is_placeholder = _is_placeholder(placeholder)
+    real_count = count - (1 if is_placeholder else 0)
+
+    if real_count != 0:
+        raise HTTPException(403, "first-admin setup is only available on an empty installation")
+    if not verify_bootstrap_token(x_bootstrap_token):
+        raise HTTPException(
+            status_code=401,
+            detail=(
+                "missing or invalid X-Bootstrap-Token header — use the value printed "
+                "with the FreeAI bootstrap token banner."
+            ),
+        )
+
+    if master_key_confirmation_required():
+        mk = (body.master_key or "").strip()
+        if not mk or not confirm_pending_master_key(mk):
+            raise HTTPException(
+                status_code=400,
+                detail="invalid or missing master encryption key — copy the value from the server logs",
+            )
+    elif not is_master_key_ready():
+        raise HTTPException(
+            status_code=503,
+            detail="master encryption key is not active — set FREEAI_MASTER_KEY or complete pending setup",
+        )
+
+    existing = await user_repo.find_by_username(body.username)
+    if existing and not (existing == placeholder and is_placeholder):
+        raise HTTPException(409, f"username '{body.username}' is already taken")
+
+    pwd_hash = hash_password(body.password)
+    user_dto = await user_repo.create(body.username, pwd_hash, role="admin")
+
+    if is_placeholder and placeholder:
+        for tbl, col in [
+            (UserProviderRow, UserProviderRow.user_id),
+            (ClientRow, ClientRow.user_id),
+        ]:
+            await session.execute(
+                sa_update(tbl).where(col == placeholder.id).values(user_id=user_dto.id)
+            )
+        await session.execute(
+            sa_update(RateEventRow).where(RateEventRow.user_id == placeholder.id).values(user_id=user_dto.id)
+        )
+        await session.execute(
+            sa_update(UsageEventRow).where(UsageEventRow.user_id == placeholder.id).values(user_id=user_dto.id)
+        )
+        await session.execute(
+            sa_delete(ProviderStatsRow).where(ProviderStatsRow.user_id == placeholder.id)
+        )
+        await user_repo.delete(placeholder.id)
+        await session.flush()
+
+    consume_bootstrap_token()
+    log.info("first_admin_setup_completed", username=body.username)
+    return await _issue_tokens(user_dto.id, user_dto.username, user_dto.role, session)
 
 
 _SETUP_ADVISORY_LOCK_KEY = 98172354  # arbitrary but stable; pg_advisory_xact_lock
@@ -1018,7 +1203,10 @@ async def debug_my_providers(
     providers_detail = []
     for r in my_rows:
         has_encrypted = r.api_key_encrypted is not None
-        decrypted = decrypt(r.api_key_encrypted) if has_encrypted else None
+        try:
+            decrypted = decrypt(r.api_key_encrypted) if has_encrypted else None
+        except MasterKeyNotReadyError:
+            decrypted = None
         providers_detail.append({
             "name": r.provider_name,
             "has_encrypted_value": has_encrypted,
@@ -1026,9 +1214,14 @@ async def debug_my_providers(
             "has_key": bool(decrypted),
         })
     # Master key info
-    master_key_source = "env" if os.environ.get("FREEAI_MASTER_KEY") else (
-        "file" if MASTER_KEY_PATH.exists() else "auto-generated"
-    )
+    if os.environ.get("FREEAI_MASTER_KEY"):
+        master_key_source = "env"
+    elif MASTER_KEY_PATH.exists():
+        master_key_source = "file"
+    elif master_key_confirmation_required():
+        master_key_source = "pending-confirmation"
+    else:
+        master_key_source = "none"
     return {
         "your_user_id": user.id,
         "your_username": user.username,

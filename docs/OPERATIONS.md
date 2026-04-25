@@ -97,7 +97,7 @@ Full list. All prefixed with `FREEAI_` except provider keys. Parsed by
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `FREEAI_DATABASE_URL` | `postgresql+asyncpg://freeai:freeai@localhost:5432/freeai` | async SQLAlchemy URL. **Must use the `asyncpg` driver.** En Compose el servicio `freeai` usa `...@postgres:5432/...` (red interna). |
+| `FREEAI_DATABASE_URL` | `postgresql+asyncpg://freeai:freeai@localhost:5432/freeai` | async SQLAlchemy URL. **Must use the `asyncpg` driver.** Under Compose the `freeai` service uses `...@postgres:5432/...` (internal Docker network). |
 | `FREEAI_DB_ECHO` | `false` | Log every SQL statement (dev only — very noisy) |
 | `FREEAI_DB_POOL_SIZE` | `10` | Engine pool size per worker |
 | `FREEAI_DB_MAX_OVERFLOW` | `20` | Overflow slots |
@@ -194,7 +194,7 @@ Exposed at `GET /metrics` (public, no auth). Metric inventory:
 **Cardinality warning**: `freeai_http_requests_total` currently uses the raw
 `request.url.path`, so `/api/providers/groq` and `/api/providers/gemini`
 produce different series. If you add user-controlled paths, cardinality will
-explode. See [REVIEW.md § 5](REVIEW.md#5-metrics-cardinality).
+explode — keep label values bounded.
 
 ### 3.3 Grafana dashboard
 
@@ -467,8 +467,8 @@ Fixes:
 
 - Lower `FREEAI_DB_POOL_SIZE` × worker count to fit within Postgres `max_connections`
 - Check for long-running queries: `SELECT pid, query, now() - query_start FROM pg_stat_activity WHERE state = 'active' ORDER BY query_start;`
-- Usually it's the rate tracker under load — batch the snapshot calls in `_rank`
-  ([REVIEW.md § 2](REVIEW.md#2-hot-path-inefficiencies))
+- Run `EXPLAIN ANALYZE` on the slow ones — usually a missing index on a column
+  added in a recent migration.
 
 ## 7. Upgrading
 

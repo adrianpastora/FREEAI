@@ -127,6 +127,14 @@
     <p id="loginSubtitle">Enter your credentials to access the control panel.</p>
     <input type="text" id="loginUsername" placeholder="username" autocomplete="username" />
     <input type="password" id="loginPassword" placeholder="password" autocomplete="current-password" />
+    <div id="loginBootstrapRow" class="field" hidden>
+      <span class="field__label">BOOTSTRAP&nbsp;TOKEN</span>
+      <div class="setup-token-row">
+        <input type="password" id="loginBootstrapToken" placeholder="from server logs (first admin only)" autocomplete="off" />
+        <button type="button" class="ghost-button ghost-button--small setup-toggle" data-target="loginBootstrapToken" aria-label="Show or hide token">SHOW</button>
+      </div>
+      <small class="field__hint">Same one-time value as the <code>FreeAI bootstrap token</code> banner.</small>
+    </div>
     <div id="loginError" class="modal-error" hidden></div>
     <div class="modal__actions">
       <button class="primary-button" id="loginSubmit">LOG&nbsp;IN</button>
@@ -153,6 +161,53 @@
     <div class="modal__actions">
       <button class="primary-button" id="migrateSubmit">MIGRATE</button>
     </div>
+  </div>
+</div>
+
+<!-- ───────── MASTER KEY CONFIRMATION (first run) ───────── -->
+<div class="modal" id="masterKeyModal" role="dialog" aria-modal="true" aria-labelledby="masterKeyTitle" hidden>
+  <div class="modal__backdrop"></div>
+  <div class="modal__card modal__card--wide">
+    <div class="modal__corner modal__corner--tl">┌</div>
+    <div class="modal__corner modal__corner--tr">┐</div>
+    <div class="modal__corner modal__corner--bl">└</div>
+    <div class="modal__corner modal__corner--br">┘</div>
+    <h3 id="masterKeyTitle">FIRST&nbsp;SETUP</h3>
+    <p class="setup-intro">
+      Copy the <strong>bootstrap token</strong> and <strong>encryption master key</strong>
+      from the container logs, choose your admin <strong>username</strong> and
+      <strong>password</strong>, then submit once. No other setup steps are required.
+    </p>
+    <label class="field">
+      <span class="field__label">BOOTSTRAP&nbsp;TOKEN</span>
+      <div class="setup-token-row">
+        <input type="password" id="masterKeyBootstrap" placeholder="FreeAI bootstrap token banner" autocomplete="off" />
+        <button type="button" class="ghost-button ghost-button--small setup-toggle" data-target="masterKeyBootstrap" aria-label="Show or hide token">SHOW</button>
+      </div>
+    </label>
+    <label class="field">
+      <span class="field__label">MASTER&nbsp;KEY</span>
+      <div class="setup-token-row">
+        <input type="password" id="masterKeyPaste" placeholder="paste the full key from server logs" autocomplete="off" />
+        <button type="button" class="ghost-button ghost-button--small setup-toggle" data-target="masterKeyPaste" aria-label="Show or hide key">SHOW</button>
+      </div>
+    </label>
+    <label class="field">
+      <span class="field__label">ADMIN&nbsp;USERNAME</span>
+      <input type="text" id="firstRunUsername" placeholder="e.g. admin" autocomplete="username" />
+    </label>
+    <label class="field">
+      <span class="field__label">PASSWORD</span>
+      <input type="password" id="firstRunPassword" placeholder="min. 8 characters" autocomplete="new-password" />
+    </label>
+    <label class="field">
+      <span class="field__label">CONFIRM&nbsp;PASSWORD</span>
+      <input type="password" id="firstRunPassword2" placeholder="repeat password" autocomplete="new-password" />
+    </label>
+    <div class="modal__actions">
+      <button class="primary-button" id="masterKeySubmit">COMPLETE&nbsp;SETUP</button>
+    </div>
+    <p class="modal__hint" id="masterKeyError" hidden></p>
   </div>
 </div>
 

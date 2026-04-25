@@ -47,8 +47,10 @@ team. What the project actively defends against:
 - Cache-hash and JWT-forgery pivots from a single leaked secret (the
   encryption master key and the JWT secret are independent).
 - Common misconfigurations on the default compose deploy — Postgres
-  is bound to `127.0.0.1` only, `POSTGRES_PASSWORD` is required, CSP
-  and other security headers are set by default.
+  is bound to `127.0.0.1` only, CSP and other security headers are set by default.
+  The bundled `docker-compose.yml` uses a **public default** Postgres password
+  when `POSTGRES_PASSWORD` is unset — fine for localhost only; set a strong
+  secret in `.env` before any non-trusted network can reach the host.
 
 Non-goals — things we do *not* defend against and that you must handle
 at a layer above FreeAI if they matter to you:

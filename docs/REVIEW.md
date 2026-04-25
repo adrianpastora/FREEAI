@@ -16,7 +16,7 @@ behind a reverse proxy. The full matrix of what's in the box:
   200s, content-filtered finish reasons, and stream stalls.
 - **Reliability** — atomic reservation inside a Postgres plpgsql
   function (multi-pod safe), per-client rate limiting, self-healing
-  quarantine, per-user aislamiento of provider keys.
+  quarantine, per-user isolation of provider keys.
 - **Performance** — bounded-cardinality Prometheus metrics, batched
   ranking queries (3 per request instead of 2×N), strategy TTL cache,
   in-memory rate counters, streaming with a single commit at end of
@@ -116,8 +116,8 @@ first to coordinate on approach.
 5. **Semantic cache.** Embedding-based prompt cache in Redis with a
    similarity threshold. Bypass the provider for near-duplicate
    prompts. Careful with privacy — requires opt-in per client.
-6. **End-to-end CI with tests.** The repo has no GitHub Actions test
-   job — intentionally, since every push ran the full suite locally.
+6. **End-to-end CI with tests.** The repo has a deploy workflow but no
+   GitHub Actions test job — the full suite runs locally before each push.
    A fork that wants to move faster should add one.
 7. **Audit log.** Every admin action into a persistent table, viewable
    from the UI. Right now admin actions only land in structured logs.

@@ -23,6 +23,25 @@ def test_decrypt_legacy_plaintext_passes_through():
     assert decrypt("plain-key") == "plain-key"
 
 
+def test_confirm_pending_master_key_flow(tmp_path, monkeypatch):
+    monkeypatch.delenv("FREEAI_MASTER_KEY", raising=False)
+    from app import crypto as cr
+
+    monkeypatch.setattr(cr, "MASTER_KEY_PATH", tmp_path / "m.key")
+    monkeypatch.setattr(cr, "MASTER_KEY_PENDING_PATH", tmp_path / "m.pend")
+    cr.clear_fernet_cache()
+    from cryptography.fernet import Fernet
+
+    raw = Fernet.generate_key().decode("ascii")
+    cr.MASTER_KEY_PENDING_PATH.parent.mkdir(parents=True, exist_ok=True)
+    cr.MASTER_KEY_PENDING_PATH.write_text(raw, encoding="utf-8")
+    assert cr.master_key_confirmation_required() is True
+    assert cr.confirm_pending_master_key("nope") is False
+    assert cr.confirm_pending_master_key(raw) is True
+    assert cr.is_master_key_ready()
+    assert cr.decrypt(cr.encrypt("secret-value")) == "secret-value"
+
+
 def test_mask_key():
     from app.crypto import mask_key
     assert mask_key(None) is None

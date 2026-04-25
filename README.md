@@ -25,20 +25,21 @@ reliability of a paid API with the cost of a free one.
 ## Quick start
 
 ```bash
-cp backend/.env.example .env
-# generate a strong password for Postgres
-echo "POSTGRES_PASSWORD=$(openssl rand -base64 32)" >> .env
 docker compose up --build
 ```
 
-Opens on [http://localhost:8000](http://localhost:8000). Postgres is bound to
-`127.0.0.1:5444` — the port is never exposed to public interfaces. On first run, if you
-did not set `FREEAI_ADMIN_TOKEN` (or `data/admin_token`), the UI shows a
-**setup** dialog: choose an admin token and optionally paste provider API keys
-(everything is stored in Postgres — token as a hash, keys encrypted). Otherwise
-use the lock icon with your preconfigured token. Add keys in the panel if you
-skipped them at setup, create a client from the *Clients* tab, and you have a
-working endpoint:
+No `.env` file is required for a **local** trial: Compose uses a built-in Postgres
+password (see `docker-compose.yml` — override `POSTGRES_PASSWORD` for anything
+beyond localhost). Opens on [http://localhost:8000](http://localhost:8000).
+Postgres listens on `127.0.0.1:5444` only.
+
+**First visit:** if you did not set `FREEAI_MASTER_KEY`, the logs print a
+**bootstrap token** and an **encryption master key**. Open the UI once, paste both,
+pick admin username and password, and submit — that is the only required setup.
+Optional: `python scripts/ensure_dotenv.py` sets a random Postgres password in `.env`;
+`FREEAI_ADMIN_TOKEN` or `FREEAI_LEGACY_INITIAL_SETUP=true` enable the legacy
+admin-token wizard. Add provider keys in the panel, create a client from *Clients*,
+and you have a working endpoint:
 
 ```bash
 curl -X POST http://localhost:8000/v1/chat/completions \

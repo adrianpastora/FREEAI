@@ -19,6 +19,9 @@ const STRATEGY_DESCRIPTIONS = {
   long_context: "Large context windows.",
 };
 
+/** @type {"signin" | "registerFirst"} */
+let loginUiMode = "signin";
+
 // ─────────────── JWT auth ───────────────
 
 const ACCESS_KEY = "freeai_access_token";
@@ -141,6 +144,8 @@ document.getElementById("lockButton").addEventListener("click", () => {
     if (confirm("Log out?")) { clearSession(); boot(); }
     return;
   }
+  loginUiMode = "signin";
+  document.getElementById("loginBootstrapRow").hidden = true;
   showLoginModal();
 });
 
@@ -150,6 +155,53 @@ document.getElementById("loginSubmit").addEventListener("click", async () => {
   const errEl = document.getElementById("loginError");
   if (!username || !password) return;
   errEl.hidden = true;
+
+  if (loginUiMode === "registerFirst") {
+    const bootstrap = document.getElementById("loginBootstrapToken").value.trim();
+    if (!bootstrap) {
+      errEl.textContent = "Enter the bootstrap token from the server logs.";
+      errEl.hidden = false;
+      return;
+    }
+    if (password.length < 8) {
+      errEl.textContent = "Password must be at least 8 characters";
+      errEl.hidden = false;
+      return;
+    }
+    try {
+      const res = await fetch(`${API_BASE}/api/auth/register`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Bootstrap-Token": bootstrap,
+        },
+        body: JSON.stringify({ username, password, password_confirm: password }),
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        errEl.textContent = d.detail || "Registration failed";
+        errEl.hidden = false;
+        return;
+      }
+      saveSession(await res.json());
+      hideLoginModal();
+      document.getElementById("loginUsername").value = "";
+      document.getElementById("loginPassword").value = "";
+      document.getElementById("loginBootstrapToken").value = "";
+      document.getElementById("loginBootstrapRow").hidden = true;
+      loginUiMode = "signin";
+      document.getElementById("loginTitle").textContent = "SIGN IN";
+      document.getElementById("loginSubtitle").textContent =
+        "Enter your credentials to access the control panel.";
+      errEl.hidden = true;
+      await boot();
+    } catch (e) {
+      errEl.textContent = e.message;
+      errEl.hidden = false;
+    }
+    return;
+  }
+
   try {
     const res = await fetch(`${API_BASE}/api/auth/login`, {
       method: "POST",
@@ -265,6 +317,115 @@ function buildSetupProviderFields(names) {
   });
 }
 
+function showMasterKeyModal() {
+  document.getElementById("masterKeyModal").hidden = false;
+}
+
+function hideMasterKeyModal() {
+  document.getElementById("masterKeyModal").hidden = true;
+}
+
+function openMasterKeyConfirm() {
+  const err = document.getElementById("masterKeyError");
+  err.hidden = true;
+  err.textContent = "";
+  err.className = "modal__hint";
+  document.getElementById("masterKeyBootstrap").value = "";
+  document.getElementById("masterKeyPaste").value = "";
+  document.getElementById("firstRunUsername").value = "";
+  document.getElementById("firstRunPassword").value = "";
+  document.getElementById("firstRunPassword2").value = "";
+  document.querySelectorAll("#masterKeyModal .setup-toggle").forEach((btn) => {
+    const input = document.getElementById(btn.dataset.target);
+    if (input) input.type = "password";
+    btn.textContent = "SHOW";
+  });
+  showMasterKeyModal();
+  setTimeout(() => document.getElementById("masterKeyBootstrap").focus(), 50);
+}
+
+document.getElementById("masterKeySubmit").addEventListener("click", async () => {
+  const err = document.getElementById("masterKeyError");
+  err.hidden = true;
+  const bootstrap = document.getElementById("masterKeyBootstrap").value.trim();
+  const mk = document.getElementById("masterKeyPaste").value.trim();
+  const username = document.getElementById("firstRunUsername").value.trim();
+  const password = document.getElementById("firstRunPassword").value;
+  const password2 = document.getElementById("firstRunPassword2").value;
+  if (!bootstrap) {
+    err.textContent = "Enter the bootstrap token from the server logs.";
+    err.className = "modal-error";
+    err.hidden = false;
+    return;
+  }
+  if (!mk) {
+    err.textContent = "Paste the master encryption key from the server logs.";
+    err.className = "modal-error";
+    err.hidden = false;
+    return;
+  }
+  if (!username) {
+    err.textContent = "Choose a username.";
+    err.className = "modal-error";
+    err.hidden = false;
+    return;
+  }
+  if (password.length < 8) {
+    err.textContent = "Password must be at least 8 characters.";
+    err.className = "modal-error";
+    err.hidden = false;
+    return;
+  }
+  if (password !== password2) {
+    err.textContent = "Passwords do not match.";
+    err.className = "modal-error";
+    err.hidden = false;
+    return;
+  }
+  try {
+    const res = await fetch(`${API_BASE}/api/setup/first-admin`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Bootstrap-Token": bootstrap,
+      },
+      body: JSON.stringify({
+        master_key: mk,
+        username,
+        password,
+        password_confirm: password2,
+      }),
+    });
+    if (!res.ok) {
+      let msg = `${res.status}`;
+      try {
+        const j = await res.json();
+        if (Array.isArray(j.detail)) msg = j.detail.map((d) => d.msg || d).join("; ");
+        else if (typeof j.detail === "string") msg = j.detail;
+        else msg = JSON.stringify(j);
+      } catch {
+        msg = await res.text();
+      }
+      err.textContent = msg;
+      err.className = "modal-error";
+      err.hidden = false;
+      return;
+    }
+    saveSession(await res.json());
+    hideMasterKeyModal();
+    document.getElementById("masterKeyBootstrap").value = "";
+    document.getElementById("masterKeyPaste").value = "";
+    document.getElementById("firstRunUsername").value = "";
+    document.getElementById("firstRunPassword").value = "";
+    document.getElementById("firstRunPassword2").value = "";
+    await boot();
+  } catch (e) {
+    err.textContent = String(e.message || e);
+    err.className = "modal-error";
+    err.hidden = false;
+  }
+});
+
 function openFirstRunSetup(providerNames) {
   buildSetupProviderFields(providerNames || []);
   const err = document.getElementById("setupError");
@@ -285,19 +446,19 @@ function openFirstRunSetup(providerNames) {
   setTimeout(() => document.getElementById("setupAdminToken").focus(), 50);
 }
 
-// Toggle password/text for the setup token fields.
-document.querySelectorAll(".setup-toggle").forEach((btn) => {
-  btn.addEventListener("click", () => {
-    const input = document.getElementById(btn.dataset.target);
-    if (!input) return;
-    if (input.type === "password") {
-      input.type = "text";
-      btn.textContent = "OCULTAR";
-    } else {
-      input.type = "password";
-      btn.textContent = "MOSTRAR";
-    }
-  });
+// Toggle password/text for setup / master-key / login bootstrap fields.
+document.body.addEventListener("click", (ev) => {
+  const btn = ev.target.closest(".setup-toggle");
+  if (!btn) return;
+  const input = document.getElementById(btn.dataset.target);
+  if (!input) return;
+  if (input.type === "password") {
+    input.type = "text";
+    btn.textContent = "OCULTAR";
+  } else {
+    input.type = "password";
+    btn.textContent = "MOSTRAR";
+  }
 });
 
 document.getElementById("setupGenToken").addEventListener("click", () => {
@@ -2454,51 +2615,22 @@ async function boot() {
     const authStatus = await publicApi("/api/auth/status");
 
     if (authStatus.status === "needs_setup") {
-      // Fresh install — check old setup wizard
       const st = await publicApi("/api/setup/status");
+      if (st.needs_master_key_confirm) {
+        openMasterKeyConfirm();
+        return;
+      }
       if (st.needs_initial_setup) {
         openFirstRunSetup(st.provider_names);
         return;
       }
-      // No legacy setup needed either — show registration
       if (!isLoggedIn()) {
+        loginUiMode = "registerFirst";
+        document.getElementById("loginBootstrapRow").hidden = false;
         document.getElementById("loginTitle").textContent = "CREATE ADMIN";
-        document.getElementById("loginSubtitle").textContent = "Create the first admin account.";
+        document.getElementById("loginSubtitle").textContent =
+          "Choose username and password, plus the bootstrap token from the server logs.";
         showLoginModal();
-        // Override login to register instead for first user
-        const origHandler = document.getElementById("loginSubmit").onclick;
-        document.getElementById("loginSubmit").onclick = async () => {
-          const username = document.getElementById("loginUsername").value.trim();
-          const password = document.getElementById("loginPassword").value;
-          const errEl = document.getElementById("loginError");
-          if (!username || !password) return;
-          if (password.length < 8) {
-            errEl.textContent = "Password must be at least 8 characters";
-            errEl.hidden = false;
-            return;
-          }
-          try {
-            const res = await fetch(`${API_BASE}/api/auth/register`, {
-              method: "POST",
-              headers: {"Content-Type": "application/json"},
-              body: JSON.stringify({ username, password, password_confirm: password }),
-            });
-            if (!res.ok) {
-              const d = await res.json().catch(() => ({}));
-              errEl.textContent = d.detail || "Registration failed";
-              errEl.hidden = false;
-              return;
-            }
-            saveSession(await res.json());
-            hideLoginModal();
-            document.getElementById("loginTitle").textContent = "SIGN IN";
-            document.getElementById("loginSubtitle").textContent = "Enter your credentials to access the control panel.";
-            await boot();
-          } catch (e) {
-            errEl.textContent = e.message;
-            errEl.hidden = false;
-          }
-        };
         return;
       }
     } else if (authStatus.status === "needs_migration") {
@@ -2510,6 +2642,8 @@ async function boot() {
     } else {
       // Ready — users exist
       if (!isLoggedIn()) {
+        loginUiMode = "signin";
+        document.getElementById("loginBootstrapRow").hidden = true;
         showLoginModal();
         return;
       }
@@ -2522,6 +2656,8 @@ async function boot() {
   } catch {
     // Backend down — try anyway if logged in
     if (!isLoggedIn()) {
+      loginUiMode = "signin";
+      document.getElementById("loginBootstrapRow").hidden = true;
       showLoginModal();
       return;
     }
