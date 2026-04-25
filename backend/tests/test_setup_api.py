@@ -48,7 +48,12 @@ def _patch_fresh_settings(monkeypatch):
         monkeypatch.setattr(target, fresh)
 
 
-def test_setup_initial_http_flow(database_url, no_admin_file, session):
+def test_setup_initial_http_flow(database_url, no_admin_file, session, monkeypatch):
+    """Legacy admin-token wizard (opt-in via FREEAI_LEGACY_INITIAL_SETUP)."""
+    monkeypatch.setenv("FREEAI_LEGACY_INITIAL_SETUP", "true")
+    from app.settings import get_settings
+
+    get_settings.cache_clear()
     from app.main import app
     from app.bootstrap import read_bootstrap_token
 
@@ -100,6 +105,47 @@ def test_setup_initial_http_flow(database_url, no_admin_file, session):
         assert dup.status_code == 403
 
 
+def test_setup_first_admin_without_pending_master(database_url, no_admin_file, monkeypatch):
+    """JWT first admin in one step when master key already comes from env (tests)."""
+    monkeypatch.delenv("FREEAI_LEGACY_INITIAL_SETUP", raising=False)
+    from app.settings import get_settings
+
+    get_settings.cache_clear()
+    from app.bootstrap import read_bootstrap_token
+    from app.main import app
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        b = read_bootstrap_token()
+        assert b
+        r = client.post(
+            "/api/setup/first-admin",
+            headers={"X-Bootstrap-Token": b},
+            json={
+                "username": "firstadm",
+                "password": "longpassword1",
+                "password_confirm": "longpassword1",
+            },
+        )
+        assert r.status_code == 201, r.text
+        st = client.get("/api/auth/status")
+        assert st.json()["status"] == "ready"
+
+
+def test_setup_status_includes_master_key_flag(database_url, no_admin_file, monkeypatch):
+    monkeypatch.delenv("FREEAI_LEGACY_INITIAL_SETUP", raising=False)
+    from app.settings import get_settings
+
+    get_settings.cache_clear()
+    from app.main import app
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        r = client.get("/api/setup/status")
+    assert r.status_code == 200
+    body = r.json()
+    assert "needs_master_key_confirm" in body
+    assert body["needs_master_key_confirm"] in (True, False)
+
+
 def test_setup_status_false_when_env_admin(database_url, monkeypatch):
     monkeypatch.setenv("FREEAI_ADMIN_TOKEN", "adm_only_from_env_test")
     _patch_fresh_settings(monkeypatch)
@@ -110,4 +156,5 @@ def test_setup_status_false_when_env_admin(database_url, monkeypatch):
     assert r.status_code == 200
     body = r.json()
     assert body["needs_initial_setup"] is False
+    assert body.get("needs_master_key_confirm") is False
     assert "groq" in body["provider_names"]

@@ -330,7 +330,7 @@ Things that don't exist yet, mostly on purpose, so nobody goes looking:
 - **No background scheduler.** `usage_events.purge_older_than()` and
   `rate_events` purge exist as methods but nothing calls them yet. Tables grow
   unbounded until an operator runs the cleanup manually. See
-  [REVIEW.md § 3](REVIEW.md#3-scheduled-jobs-missing).
+  [REVIEW.md § 2](REVIEW.md#2-known-limitations).
 - **In-memory rate counters.** `RateCounterStore` keeps per-provider call
   timestamps in a deque to avoid `COUNT(*)` over `rate_events` on every
   ranking. The plpgsql reservation function remains the correctness gate.

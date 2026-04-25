@@ -24,11 +24,11 @@ git clone https://github.com/adrianpastora/FREEAI.git
 cd FREEAI
 
 # Option A — full stack via Docker (easiest)
-cp backend/.env.example .env
-echo "POSTGRES_PASSWORD=$(openssl rand -base64 32)" >> .env
 docker compose up --build
+# optional: cp backend/.env.example .env && python scripts/ensure_dotenv.py
 
 # Option B — Python locally, Postgres via compose
+python scripts/ensure_dotenv.py
 docker compose up postgres -d
 cd backend
 pip install -r requirements.txt -r requirements-dev.txt

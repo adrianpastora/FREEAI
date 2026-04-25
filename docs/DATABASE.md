@@ -115,7 +115,7 @@ rolling window count is a range scan.
 reserves a slot by inserting a row and later either keeps it (successful call)
 or deletes it (rollback). The table has no retention policy — rows older than
 a day contribute nothing to any count, but nothing removes them either. See
-[REVIEW.md § 3](REVIEW.md#3-scheduled-jobs-missing).
+[REVIEW.md § 2](REVIEW.md#2-known-limitations).
 
 ### `clients` — inbound API keys
 
@@ -460,9 +460,8 @@ about indexes or adding queries.
 
 - `list_all()`, `get(name)` — `SELECT * FROM strategies`, PK lookup.
 - `upsert`, `delete` — straightforward.
-- **Note**: `_resolve_strategy` in the orchestrator calls `.get(name)` on every
-  chat completion. That's one extra query per request. An in-process TTL cache
-  would remove it without changing semantics. See [REVIEW.md § 2](REVIEW.md#2-hot-path-inefficiencies).
+- An in-process TTL cache fronts `.get(name)` so `_resolve_strategy` doesn't
+  hit the DB on every chat completion.
 
 ## 5. Backups
 
