@@ -13,6 +13,83 @@ pre-1.0 versions — follow the Unreleased section if you track `main`.
 <!-- Add entries here as they land. Categories used in this changelog:
      Added, Changed, Fixed, Security, Removed, Deprecated. -->
 
+## [0.6.0] — 2026-05-06
+
+Code-quality + onboarding pass on top of 0.5.0. Same product surface, much
+nicer to read, much nicer to install. The big visible win is the new
+zero-friction setup wizard; the rest is the kind of polish that's invisible
+when you use the software but obvious when you read its source.
+
+### Added
+- **Zero-friction first-run setup.** Default mode now creates the master
+  encryption key, auto-confirms it, and stores the bootstrap token where
+  the frontend can fetch it from loopback peers — so a fresh
+  `docker compose up` only asks the operator for username + password. No
+  more copying values from container logs into web-form fields.
+- New `FREEAI_REQUIRE_BOOTSTRAP_HEADER` setting restores the previous
+  manual-paste behaviour for instances exposed directly to the internet
+  on first boot. Documented in `SECURITY.md` and `docs/OPERATIONS.md`.
+- New public endpoint `GET /api/setup/bootstrap-token` returns the
+  on-disk token to loopback peers (`127.0.0.1` / `::1` / `localhost`)
+  in default mode. Refused in paranoid mode and refused for non-loopback
+  peers always. The token is still required in the `X-Bootstrap-Token`
+  header on `POST /api/setup/first-admin` — the protocol is unchanged,
+  only the way the frontend obtains the value moved.
+- `paranoid_mode` field added to `GET /api/setup/status` so the frontend
+  conditionally reveals the bootstrap-token / master-key fields.
+- New `tests` GitHub Actions workflow runs the full suite (243 tests)
+  against a Postgres 16 service container on every push and pull
+  request. CI badge added to README.
+- `BaseProvider.transcribe()` is now part of the public provider
+  contract alongside `complete` / `stream` / `embed`. Adding speech-to-text
+  to a new provider is a method override + a `supports_transcription = True`
+  flag, mirroring how embeddings already worked.
+- `UserProviderDTO.to_provider_config()` projects per-user merged DTOs
+  to the catalog shape the orchestrator's ranker expects — replaces the
+  private `Orchestrator._user_provider_to_config` static method that
+  was being accessed from outside its class.
+- `Orchestrator.http_client` property exposes the shared httpx pool to
+  embeddings + transcription dispatchers without reaching into the
+  private `_client` attribute.
+- `routers/_common.require_user_id` FastAPI dependency replaces three
+  copies of the same `getattr(request.state, "user_id", None)` +
+  `raise HTTPException(400, ...)` block in chat / embeddings /
+  transcriptions.
+
+### Changed
+- **`backend/app/main.py` split into per-resource routers** — 2,397 lines
+  → 192 lines. Endpoint groups now live in `app/routers/{auth,chat,
+  embeddings,transcriptions,setup,users,me_providers,providers_admin,
+  config,strategies,analytics,clients,health}.py` with a shared
+  `_common.py` for cross-cutting helpers.
+- Lifespan, `_run_migrations`, and `_periodic_purge` extracted from
+  `main.py` to a new `app/lifecycle.py` module so the entrypoint reads
+  as a single page of wiring.
+- `transcription.py` slimmed from 313 lines (two free-floating async
+  functions, hardcoded URLs, a parallel `TranscriptionError` type) to
+  61 lines (priority order, capability lookup, MIME helpers). Every
+  provider-specific knob now lives with its provider class.
+- `routers/__init__.py` no longer eagerly re-exports the 14 router
+  modules; `main.py` imports the submodules it needs by name. Cuts
+  cold-start cost when anything touches `app.routers`.
+
+### Fixed
+- `GeminiProvider._content_to_parts` raised `TypeError` when rejecting
+  a non-data-URI `image_url` — the `ProviderError` constructor was
+  called with positional args in the wrong order (`http_status=400`
+  isn't even a valid parameter). Now correctly raises
+  `ProviderError(self.name, ..., kind=ErrorKind.CLIENT_ERROR, status=400)`.
+
+### Removed
+- Free-floating `_transcribe_groq` / `_transcribe_gemini` functions
+  with their own URL / model / timeout constants and a parallel
+  `TranscriptionError` type. Subsumed into `BaseProvider.transcribe`
+  + `ProviderError`.
+- The legacy `setupModal` is no longer the default path for fresh
+  installs. The simplified create-admin flow handles both default and
+  paranoid modes; the old modal is reachable only when
+  `FREEAI_LEGACY_INITIAL_SETUP=true` is set explicitly.
+
 ## [0.5.0] — 2026-04-19
 
 First release prepared for a public, open-source audience. The codebase
@@ -126,5 +203,6 @@ infrastructure.
 - Drop the legacy "Sprint N shipped" changelog section from README —
   replaced with a themed Status section.
 
-[Unreleased]: https://github.com/adrianpastora/FREEAI/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/adrianpastora/FREEAI/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/adrianpastora/FREEAI/releases/tag/v0.6.0
 [0.5.0]: https://github.com/adrianpastora/FREEAI/releases/tag/v0.5.0
