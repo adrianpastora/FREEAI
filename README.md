@@ -154,8 +154,10 @@ Releases are tracked in [CHANGELOG.md](CHANGELOG.md).
 
 ## Status
 
-FreeAI is production-ready and actively maintained. Highlights of what's
-in the box today:
+FreeAI is pre-1.0 (`0.6.0`) but actively maintained and used in
+production by its author. Breaking changes land on `main` between minor
+versions — see [CHANGELOG.md](CHANGELOG.md) before upgrading. Highlights
+of what's in the box today:
 
 - **Reliability** — atomic reservation inside a Postgres plpgsql function,
   per-client rate limiting, self-healing quarantine, robust fallback on
