@@ -68,9 +68,10 @@ class GeminiProvider(BaseProvider):
                     # (cloud metadata, internal networks, etc). Clients must
                     # inline images as data URIs.
                     raise ProviderError(
-                        ErrorKind.CLIENT_ERROR,
+                        self.name,
                         "image_url must be a data: URI; remote URLs are not accepted",
-                        http_status=400,
+                        kind=ErrorKind.CLIENT_ERROR,
+                        status=400,
                     )
                 mime_type, b64_data = match.group(1), match.group(2)
                 parts.append({
