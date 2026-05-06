@@ -47,7 +47,7 @@ from .repositories import (
     UsageRepository,
 )
 from .repositories.rate_repo import ProviderSnapshot
-from .repositories.user_provider_repo import UserProviderDTO, UserProviderRepository
+from .repositories.user_provider_repo import UserProviderRepository
 from .schemas import (
     ChatCompletionRequest,
     ChatCompletionResponse,
@@ -136,6 +136,12 @@ class Orchestrator:
 
     _IN_FLIGHT_MAX_KEYS = 10_000
 
+    @property
+    def http_client(self) -> httpx.AsyncClient:
+        """Shared httpx connection pool — exposed so other dispatchers
+        (embeddings, transcription) can reuse it instead of opening their own."""
+        return self._client
+
     @staticmethod
     def _circuit_breaker_kwargs(app_cfg: Optional[AppConfigDTO]) -> dict:
         """Pull breaker tunables from AppConfig with safe fallbacks."""
@@ -176,22 +182,6 @@ class Orchestrator:
         self._strategy_cache.invalidate(name)
 
     # ──────────────── candidate selection ────────────────
-
-    @staticmethod
-    def _user_provider_to_config(dto: UserProviderDTO) -> ProviderConfigDTO:
-        """Convert a UserProviderDTO to a ProviderConfigDTO for scoring."""
-        return ProviderConfigDTO(
-            name=dto.provider_name,
-            enabled=dto.enabled,
-            api_key=dto.api_key,
-            rpm_limit=dto.rpm_limit,
-            rpd_limit=dto.rpd_limit,
-            tpd_limit=dto.tpd_limit,
-            weight=dto.weight,
-            tags=dto.tags,
-            default_model=dto.default_model,
-            max_retries=dto.max_retries,
-        )
 
     def _build_provider(self, dto: ProviderConfigDTO) -> Optional[BaseProvider]:
         cls = PROVIDER_REGISTRY.get(dto.name)
@@ -301,8 +291,8 @@ class Orchestrator:
         eligible = [dto for dto in user_providers if dto.enabled and dto.api_key]
         if not eligible:
             return []
-        # Convert UserProviderDTO to ProviderConfigDTO for scoring compatibility
-        provider_dtos = [self._user_provider_to_config(dto) for dto in eligible]
+        # Project per-user merged DTOs to the catalog-shaped DTO the ranker expects.
+        provider_dtos = [dto.to_provider_config() for dto in eligible]
         snapshots = await rate_repo.snapshot_all(
             user_id,
             [dto.name for dto in provider_dtos],

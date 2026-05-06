@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import time
 from collections import deque
-from typing import Optional
 
 from fastapi import HTTPException, Request
 from sqlalchemy import text as sa_text
@@ -49,6 +48,23 @@ def status_for_kind(kind: ErrorKind, default: int = 502) -> int:
 def get_orchestrator(request: Request) -> Orchestrator:
     """FastAPI dependency: pull the singleton orchestrator from app state."""
     return request.app.state.orchestrator
+
+
+def require_user_id(request: Request) -> int:
+    """FastAPI dependency: extract user_id bound by require_client.
+
+    The /v1/* auth dependency populates ``request.state.user_id`` from the
+    client API key, JWT, or admin-token bypass. Endpoints that need a
+    user context use this to surface a single, consistent 400 when none
+    of those auth paths matched.
+    """
+    user_id = getattr(request.state, "user_id", None)
+    if user_id is None:
+        raise HTTPException(
+            status_code=400,
+            detail="no user context — authenticate with a client key bound to a user",
+        )
+    return user_id
 
 
 # ──────────────────────────── setup helpers ────────────────────────────
@@ -136,13 +152,9 @@ __all__ = [
     "get_orchestrator",
     "http_from_provider_error",
     "is_placeholder",
+    "require_user_id",
     "status_for_kind",
     "LOGIN_ATTEMPT_WINDOW_SECONDS",
     "MAX_BODY_BYTES_AUDIO",
     "MAX_BODY_BYTES_DEFAULT",
 ]
-
-
-def _user_id_from_request(request: Request) -> Optional[int]:
-    """Pull user_id from request.state — set by require_client when bound."""
-    return getattr(request.state, "user_id", None)

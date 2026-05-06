@@ -14,7 +14,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import get_session
 from ..logging_config import get_logger
-from ..orchestrator import Orchestrator
 from ..providers import ErrorKind
 from ..repositories import (
     ProviderConfigDTO,
@@ -32,7 +31,7 @@ from ..transcription import (
     supports_transcription,
     transcribe,
 )
-from ._common import MAX_BODY_BYTES_AUDIO, status_for_kind
+from ._common import MAX_BODY_BYTES_AUDIO, require_user_id, status_for_kind
 
 router = APIRouter(tags=["audio"])
 log = get_logger("freeai.transcriptions")
@@ -47,6 +46,7 @@ async def audio_transcriptions(
     response_format: Optional[str] = Form(None),
     session: AsyncSession = Depends(get_session),
     client=Depends(require_client),
+    user_id: int = Depends(require_user_id),
 ):
     """OpenAI-compatible audio transcription with multi-provider fallback.
 
@@ -61,10 +61,6 @@ async def audio_transcriptions(
     usage_repo = UsageRepository(session)
     user_provider_repo = UserProviderRepository(session)
     client_hash = client.key_hash if client else None
-    user_id = getattr(request.state, "user_id", None)
-
-    if user_id is None:
-        raise HTTPException(400, "no user context — authenticate with a client key bound to a user")
 
     # ── Prepare audio input (read once, reuse across attempts) ──
     file_bytes = await file.read()
@@ -89,7 +85,7 @@ async def audio_transcriptions(
         # Find in user's providers
         up = next((p for p in user_providers if p.provider_name == name), None)
         if up and up.api_key and up.enabled:
-            dto = Orchestrator._user_provider_to_config(up)
+            dto = up.to_provider_config()
             candidates.append((name, dto))
 
     if not candidates:
@@ -118,7 +114,7 @@ async def audio_transcriptions(
             # Attempt transcription
             result = await transcribe(
                 provider_name, audio, dto.api_key,
-                client=request.app.state.orchestrator._client,
+                client=request.app.state.orchestrator.http_client,
             )
 
             if isinstance(result, TranscriptionResult):
