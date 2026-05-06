@@ -1,3 +1,5 @@
+![FreeAI — orchestrating free intelligence across providers](docs/assets/banner.webp)
+
 # FreeAI
 
 [![tests](https://github.com/adrianpastora/FREEAI/actions/workflows/tests.yml/badge.svg)](https://github.com/adrianpastora/FREEAI/actions/workflows/tests.yml)
@@ -181,6 +183,19 @@ of what's in the box today:
 Remaining future-work backlog (table partitioning, Helm chart, cost
 tracking, semantic cache) lives in [docs/REVIEW.md](docs/REVIEW.md).
 
+## Acceptable use
+
+FreeAI orchestrates provider accounts **that you own**. You bring your
+own API keys, one per provider, and the orchestrator routes between
+them. It does not share keys, pool requests across users, or attempt to
+circumvent any provider's rate limits or quotas — each upstream call
+counts against the account whose key was used.
+
+You are responsible for complying with each provider's Terms of Service
+(Groq, Google Gemini, Mistral, OpenRouter, Cohere, HuggingFace) on the
+accounts you connect. The maintainers of FreeAI are not responsible for
+how you use it.
+
 ## Run the tests
 
 ```bash
@@ -202,3 +217,7 @@ service container in GitHub Actions — see [`.github/workflows/tests.yml`](.git
 ## License
 
 MIT License. See [LICENSE](LICENSE).
+
+---
+
+Maintained by [Adrian Pastora](https://adrianpastora.dev).
