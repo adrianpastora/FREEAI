@@ -325,11 +325,49 @@ function hideMasterKeyModal() {
   document.getElementById("masterKeyModal").hidden = true;
 }
 
-function openMasterKeyConfirm() {
+// Cached bootstrap token from GET /api/setup/bootstrap-token, used in the
+// header of the first-admin POST so the user never has to copy it by hand.
+// When the auto-fetch fails (paranoid mode, or the request didn't come from
+// loopback) this stays null and the visible bootstrap-token field takes over.
+let _autoBootstrapToken = null;
+let _setupParanoidMode = false;
+let _setupNeedsMasterKeyConfirm = false;
+
+function _setSetupFieldsVisibility(showSensitive) {
+  // Two ways "sensitive" fields end up visible: paranoid mode is on, or the
+  // server's setup status flagged a still-pending master key (e.g. the
+  // operator started in default mode, killed the process before lifespan
+  // auto-promoted the key, then restarted with FREEAI_REQUIRE_BOOTSTRAP_HEADER
+  // set to opt back into manual confirmation).
+  document.getElementById("masterKeyBootstrapField").hidden = !showSensitive;
+  document.getElementById("masterKeyPasteField").hidden =
+    !(showSensitive && _setupNeedsMasterKeyConfirm);
+  document.getElementById("masterKeyIntroDefault").hidden = showSensitive;
+  document.getElementById("masterKeyIntroParanoid").hidden = !showSensitive;
+}
+
+async function _tryAutoFetchBootstrapToken() {
+  try {
+    const res = await fetch(`${API_BASE}/api/setup/bootstrap-token`, {
+      method: "GET",
+    });
+    if (!res.ok) return null;
+    const j = await res.json();
+    return typeof j.token === "string" && j.token ? j.token : null;
+  } catch {
+    return null;
+  }
+}
+
+async function openMasterKeyConfirm(setupStatus) {
   const err = document.getElementById("masterKeyError");
   err.hidden = true;
   err.textContent = "";
   err.className = "modal__hint";
+
+  _setupParanoidMode = !!(setupStatus && setupStatus.paranoid_mode);
+  _setupNeedsMasterKeyConfirm = !!(setupStatus && setupStatus.needs_master_key_confirm);
+
   document.getElementById("masterKeyBootstrap").value = "";
   document.getElementById("masterKeyPaste").value = "";
   document.getElementById("firstRunUsername").value = "";
@@ -340,25 +378,49 @@ function openMasterKeyConfirm() {
     if (input) input.type = "password";
     btn.textContent = "SHOW";
   });
+
+  // Default mode + loopback: pull the bootstrap token from the server so the
+  // user doesn't see it. If it fails for any reason, fall back to showing
+  // the manual-paste field.
+  _autoBootstrapToken = null;
+  if (!_setupParanoidMode) {
+    _autoBootstrapToken = await _tryAutoFetchBootstrapToken();
+  }
+  const requireManualPaste =
+    _setupParanoidMode || _autoBootstrapToken === null || _setupNeedsMasterKeyConfirm;
+  _setSetupFieldsVisibility(requireManualPaste);
+
   showMasterKeyModal();
-  setTimeout(() => document.getElementById("masterKeyBootstrap").focus(), 50);
+  setTimeout(() => {
+    const focus = requireManualPaste
+      ? document.getElementById("masterKeyBootstrap")
+      : document.getElementById("firstRunUsername");
+    if (focus) focus.focus();
+  }, 50);
 }
 
 document.getElementById("masterKeySubmit").addEventListener("click", async () => {
   const err = document.getElementById("masterKeyError");
   err.hidden = true;
-  const bootstrap = document.getElementById("masterKeyBootstrap").value.trim();
-  const mk = document.getElementById("masterKeyPaste").value.trim();
+
   const username = document.getElementById("firstRunUsername").value.trim();
   const password = document.getElementById("firstRunPassword").value;
   const password2 = document.getElementById("firstRunPassword2").value;
+  const pastedBootstrap = document.getElementById("masterKeyBootstrap").value.trim();
+  const pastedMasterKey = document.getElementById("masterKeyPaste").value.trim();
+
+  // Pick the bootstrap token: auto-fetched value if we have one, otherwise
+  // whatever the user pasted. If neither is available we'll surface a clear
+  // error before hitting the network.
+  const bootstrap = _autoBootstrapToken || pastedBootstrap;
+
   if (!bootstrap) {
-    err.textContent = "Enter the bootstrap token from the server logs.";
+    err.textContent = "Bootstrap token is required — paste the value printed in the server logs.";
     err.className = "modal-error";
     err.hidden = false;
     return;
   }
-  if (!mk) {
+  if (_setupNeedsMasterKeyConfirm && !pastedMasterKey) {
     err.textContent = "Paste the master encryption key from the server logs.";
     err.className = "modal-error";
     err.hidden = false;
@@ -382,6 +444,10 @@ document.getElementById("masterKeySubmit").addEventListener("click", async () =>
     err.hidden = false;
     return;
   }
+
+  const body = { username, password, password_confirm: password2 };
+  if (pastedMasterKey) body.master_key = pastedMasterKey;
+
   try {
     const res = await fetch(`${API_BASE}/api/setup/first-admin`, {
       method: "POST",
@@ -389,12 +455,7 @@ document.getElementById("masterKeySubmit").addEventListener("click", async () =>
         "Content-Type": "application/json",
         "X-Bootstrap-Token": bootstrap,
       },
-      body: JSON.stringify({
-        master_key: mk,
-        username,
-        password,
-        password_confirm: password2,
-      }),
+      body: JSON.stringify(body),
     });
     if (!res.ok) {
       let msg = `${res.status}`;
@@ -413,6 +474,7 @@ document.getElementById("masterKeySubmit").addEventListener("click", async () =>
     }
     saveSession(await res.json());
     hideMasterKeyModal();
+    _autoBootstrapToken = null;
     document.getElementById("masterKeyBootstrap").value = "";
     document.getElementById("masterKeyPaste").value = "";
     document.getElementById("firstRunUsername").value = "";
@@ -2616,14 +2678,19 @@ async function boot() {
 
     if (authStatus.status === "needs_setup") {
       const st = await publicApi("/api/setup/status");
-      if (st.needs_master_key_confirm) {
-        openMasterKeyConfirm();
-        return;
-      }
+      // Legacy admin-token wizard — only when the operator opted in via
+      // FREEAI_LEGACY_INITIAL_SETUP=true (which makes setup/status return
+      // needs_initial_setup=true). The default path is the simplified
+      // create-admin modal below.
       if (st.needs_initial_setup) {
         openFirstRunSetup(st.provider_names);
         return;
       }
+      // Modern path: zero real users, no legacy wizard. The modal handles
+      // both fresh installs (default mode auto-fetches the bootstrap token)
+      // and paranoid mode (manual paste of master key + bootstrap token).
+      await openMasterKeyConfirm(st);
+      return;
       if (!isLoggedIn()) {
         loginUiMode = "registerFirst";
         document.getElementById("loginBootstrapRow").hidden = false;

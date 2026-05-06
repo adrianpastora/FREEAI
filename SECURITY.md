@@ -32,9 +32,15 @@ before asking for a backport.
 FreeAI is designed to be self-hosted behind a reverse proxy by a single
 team. What the project actively defends against:
 
-- Drive-by takeover of a fresh instance exposed to the public internet
-  (the setup wizard requires a one-time bootstrap token printed to
-  stdout).
+- Drive-by takeover of a fresh instance. The first-admin endpoint always
+  requires a one-time bootstrap token in the `X-Bootstrap-Token` header.
+  In the default mode the frontend reads that token from
+  `GET /api/setup/bootstrap-token` (loopback peers only) so a normal
+  localhost install needs no manual token paste. For instances exposed
+  to the public internet on first boot, set
+  `FREEAI_REQUIRE_BOOTSTRAP_HEADER=true` — the loopback endpoint is then
+  refused and both the master encryption key and the bootstrap token must
+  be copied from the server logs into the UI.
 - Cross-tenant leakage between users (provider keys, client keys, and
   analytics are scoped per user at the repository layer).
 - SSRF through `image_url` content blocks (only `data:` URIs are

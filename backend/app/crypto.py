@@ -172,13 +172,13 @@ def _pending_matches(pasted: str) -> bool:
     return secrets.compare_digest(expected.strip(), pasted.strip())
 
 
-def confirm_pending_master_key(pasted: str) -> bool:
-    """If ``pasted`` matches pending, promote to ``.master_key`` and reload Fernet.
+def _promote_pending_to_active() -> bool:
+    """Move ``.master_key.pending`` → ``.master_key`` and reload Fernet.
 
-    Returns False on mismatch or if there is nothing pending.
+    Internal — callers must already have decided that promotion is safe
+    (either because the operator pasted the matching plaintext, or because
+    the deployment is in default-mode auto-confirmation).
     """
-    if not _pending_matches(pasted):
-        return False
     try:
         raw = read_pending_master_key_plaintext()
         if not raw:
@@ -196,6 +196,35 @@ def confirm_pending_master_key(pasted: str) -> bool:
     try_append_master_key_to_dotenv(raw)
     log.info("master_key_activated", path=str(MASTER_KEY_PATH))
     return True
+
+
+def confirm_pending_master_key(pasted: str) -> bool:
+    """If ``pasted`` matches pending, promote to ``.master_key`` and reload Fernet.
+
+    Returns False on mismatch or if there is nothing pending. Used by the
+    paranoid-mode setup flow where the operator copies the key from logs.
+    """
+    if not _pending_matches(pasted):
+        return False
+    return _promote_pending_to_active()
+
+
+def auto_confirm_pending_master_key() -> bool:
+    """Promote ``.master_key.pending`` → ``.master_key`` without operator input.
+
+    Used during default-mode startup so the first request to the panel sees an
+    active master key without the user having to copy anything from logs.
+    Idempotent: returns False if there's nothing pending or if env / file key
+    already supplies the active material.
+    """
+    if _master_key_material_from_env_or_file() is not None:
+        # Already active via env or file — nothing to do; clean up any stale
+        # pending file so the bootstrap state machine doesn't loop.
+        cleanup_pending_if_master_active()
+        return False
+    if not MASTER_KEY_PENDING_PATH.exists():
+        return False
+    return _promote_pending_to_active()
 
 
 def try_append_master_key_to_dotenv(master_key: str) -> None:
