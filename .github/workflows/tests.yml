@@ -1,0 +1,98 @@
+name: tests
+
+# Runs the full pytest suite on every push and pull request, against a
+# real Postgres 16 service container so the integration tests that exercise
+# the atomic reservation function, alembic migrations, and the per-user
+# repositories actually run — not the fast-only subset.
+#
+# Why a service container instead of testcontainers-in-CI:
+#   • testcontainers would spawn its own postgres container *inside* the
+#     Actions runner, which works but adds 15-20s of cold start per job.
+#   • A service container is brought up once by Actions before the job
+#     starts and is wired to the runner via DNS. We hand its URL to the
+#     conftest via FREEAI_TEST_DATABASE_URL so the `_start_test_postgres`
+#     fixture short-circuits the testcontainers path entirely
+#     (see backend/tests/conftest.py: `pre_set = os.environ.get(...)`).
+#
+# Why the asyncpg URL: alembic's env.py uses async_engine_from_config, so
+# psycopg2 is never needed. Avoiding it keeps the CI install lean.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+
+# Cancel superseded runs on the same branch — saves Actions minutes when
+# you push twice in quick succession or rebase.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: freeai
+          POSTGRES_PASSWORD: freeai_ci
+          POSTGRES_DB: freeai_test
+        ports:
+          - 5432:5432
+        # Wait for `pg_isready` so the test step never races the DB.
+        options: >-
+          --health-cmd "pg_isready -U freeai -d freeai_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      # Hand the service-container URL to conftest.py so it skips the
+      # testcontainers spin-up entirely.
+      FREEAI_TEST_DATABASE_URL: postgresql+asyncpg://freeai:freeai_ci@localhost:5432/freeai_test
+      # Required by app modules at import time (security.py, crypto.py).
+      # Values are throwaway and never leave the runner.
+      FREEAI_ADMIN_TOKEN: adm_ci_token
+      FREEAI_MASTER_KEY: ci-master-key-do-not-use-in-prod
+      FREEAI_AUTO_MIGRATE: "false"
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          # Cache key is invalidated whenever either requirements file
+          # changes — important because requirements-dev.txt pins
+          # testcontainers/pytest etc.
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
+
+      - name: Install dependencies
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Verify the app imports cleanly
+        # Import-time errors (missing module, circular import, syntax) get
+        # caught here in two seconds instead of inside a confusing pytest
+        # collection failure later. Cheap insurance.
+        working-directory: backend
+        run: python -c "from app.main import app; print(f'app loaded with {len(app.routes)} routes')"
+
+      - name: Run pytest
+        working-directory: backend
+        run: pytest -q --tb=short
+
+      # If you want coverage in CI later: `pytest --cov=app --cov-report=xml`
+      # then upload to codecov / artifact. Off by default to keep the run
+      # under a minute on a green main.
