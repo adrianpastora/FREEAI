@@ -31,7 +31,7 @@ and refresh the browser. No build step, no watcher.
 
 ### 2.1 Layout
 
-233 tests total in [backend/tests/](../backend/tests/). This list
+243 tests total in [backend/tests/](../backend/tests/). This list
 highlights the main buckets rather than every file:
 
 - **Pure** (no DB, no Docker): `test_auto_strategy.py`, `test_crypto.py`,
@@ -434,7 +434,7 @@ FreeAI/
 │   │   ├── env.py
 │   │   └── versions/        (migrations)
 │   ├── app/                 (the FastAPI app, 18 modules)
-│   └── tests/               (134 pytest tests)
+│   └── tests/               (243 pytest tests)
 ├── frontend/                (3 files, no build)
 ├── deploy/                  (prometheus + grafana provisioning)
 ├── docker-compose.yml

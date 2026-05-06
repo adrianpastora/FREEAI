@@ -46,7 +46,7 @@ cd backend
 pytest             # full suite — Postgres via testcontainers (needs Docker)
 pytest tests/test_crypto.py tests/test_auto_strategy.py \
        tests/test_known_models.py tests/test_schema_tool_calls.py
-                   # ~42 pure tests, no Docker needed
+                   # 43 pure tests, no Docker needed
 ```
 
 PRs that touch runtime code should add or update tests. If you're
