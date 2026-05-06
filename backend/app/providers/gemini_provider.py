@@ -1,19 +1,30 @@
 """Google Gemini — uses the v1beta generateContent / streamGenerateContent endpoints.
 
-Supports multimodal (vision) requests: OpenAI-format ``image_url`` content
-blocks are translated to Gemini's ``inlineData`` part format.
+Supports multimodal (vision) requests and audio transcription: OpenAI-format
+``image_url`` content blocks are translated to Gemini's ``inlineData`` part
+format, and audio inputs ride the same path with a transcription prompt.
 """
 from __future__ import annotations
 
 import base64
 import json
 import re
+import time
 from typing import AsyncIterator, Optional
 
 import httpx
 
 from ..schemas import ChatMessage
-from .base import BaseProvider, EmbeddingResult, ErrorKind, ProviderError, ProviderResponse, StreamChunk
+from .base import (
+    AudioInput,
+    BaseProvider,
+    EmbeddingResult,
+    ErrorKind,
+    ProviderError,
+    ProviderResponse,
+    StreamChunk,
+    TranscriptionResult,
+)
 
 # Tolerate a few malformed SSE frames before failing the whole stream.
 _MAX_PARSE_ERRORS = 5
@@ -27,6 +38,21 @@ _GEMINI_BLOCKED_FINISH = {
     "SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII"
 }
 
+# MIME types Gemini accepts for inline audio. Anything outside this set is
+# coerced to audio/mpeg, matching the legacy transcription module's behaviour.
+_GEMINI_AUDIO_MIMES = {
+    "audio/ogg", "audio/mpeg", "audio/wav", "audio/flac",
+    "audio/aac", "audio/aiff", "audio/mp3", "audio/webm",
+}
+
+_TRANSCRIPTION_PROMPT = (
+    "Generate a verbatim transcript of the speech in this audio. "
+    "Output ONLY the transcript text, no timestamps, no speaker labels, "
+    "no commentary."
+)
+_DEFAULT_TRANSCRIPTION_MODEL = "gemini-2.5-flash"
+_TRANSCRIPTION_TIMEOUT = 120.0
+
 
 class GeminiProvider(BaseProvider):
     name = "gemini"
@@ -35,6 +61,7 @@ class GeminiProvider(BaseProvider):
     supports_streaming = True
     supports_vision = True
     supports_embeddings = True
+    supports_transcription = True
     request_timeout = 60.0
 
     def _content_to_parts(self, content) -> list[dict]:
@@ -284,5 +311,70 @@ class GeminiProvider(BaseProvider):
             model=chosen,
             provider=self.name,
             prompt_tokens=0,
+            raw=data,
+        )
+
+    async def transcribe(
+        self,
+        audio: AudioInput,
+        *,
+        model: Optional[str] = None,
+        client: httpx.AsyncClient,
+    ) -> TranscriptionResult:
+        """Send audio inline (base64) to generateContent with a transcription prompt.
+
+        Gemini doesn't expose a Whisper-style endpoint, so we ride the same
+        multimodal path used for vision: an audio part alongside a text
+        prompt asking for a verbatim transcript.
+        """
+        if not self.api_key:
+            raise ProviderError(self.name, "missing API key", kind=ErrorKind.AUTH)
+        chosen = model or _DEFAULT_TRANSCRIPTION_MODEL
+
+        mime = audio.content_type
+        if mime not in _GEMINI_AUDIO_MIMES:
+            mime = "audio/mpeg"
+        audio_b64 = base64.standard_b64encode(audio.file_bytes).decode("ascii")
+
+        prompt = _TRANSCRIPTION_PROMPT
+        if audio.language:
+            prompt += f" The audio is in {audio.language}."
+
+        payload = {
+            "contents": [{
+                "parts": [
+                    {"text": prompt},
+                    {"inlineData": {"mimeType": mime, "data": audio_b64}},
+                ],
+            }],
+            "generationConfig": {"temperature": 0.0},
+        }
+        url = f"{self.BASE_URL}/{chosen}:generateContent?key={self.api_key}"
+
+        started = time.perf_counter()
+        try:
+            resp = await client.post(url, json=payload, timeout=_TRANSCRIPTION_TIMEOUT)
+        except httpx.TimeoutException as e:
+            raise ProviderError(self.name, f"timeout: {e}", kind=ErrorKind.NETWORK) from e
+        except httpx.HTTPError as e:
+            raise ProviderError(self.name, f"network: {e}", kind=ErrorKind.NETWORK) from e
+        self._raise_for_status(resp)
+        latency_ms = int((time.perf_counter() - started) * 1000)
+
+        try:
+            data = resp.json()
+            text = data["candidates"][0]["content"]["parts"][0]["text"]
+        except (KeyError, IndexError, ValueError, TypeError) as e:
+            raise ProviderError(
+                self.name,
+                f"unexpected response: {resp.text[:300]}",
+                kind=ErrorKind.PARSING,
+            ) from e
+
+        return TranscriptionResult(
+            text=text.strip(),
+            model=chosen,
+            provider=self.name,
+            latency_ms=latency_ms,
             raw=data,
         )

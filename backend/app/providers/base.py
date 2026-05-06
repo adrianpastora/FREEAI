@@ -149,6 +149,25 @@ class EmbeddingResult:
     raw: dict = field(default_factory=dict)
 
 
+@dataclass
+class AudioInput:
+    """Pre-read audio file ready to be sent to any provider."""
+    file_bytes: bytes
+    filename: str
+    content_type: str
+    language: Optional[str] = None
+
+
+@dataclass
+class TranscriptionResult:
+    """Normalized result of one successful transcription call."""
+    text: str
+    model: str
+    provider: str
+    latency_ms: int = 0
+    raw: dict = field(default_factory=dict)
+
+
 class BaseProvider:
     """Subclass and implement `complete`. Each adapter handles its own auth/payload shape."""
 
@@ -156,6 +175,7 @@ class BaseProvider:
     supports_streaming: bool = False
     supports_vision: bool = False
     supports_embeddings: bool = False
+    supports_transcription: bool = False
 
     def __init__(self, api_key: Optional[str], default_model: Optional[str] = None):
         self.api_key = api_key
@@ -202,6 +222,22 @@ class BaseProvider:
         output vectors are returned in the same order.
         """
         raise NotImplementedError(f"{self.name} does not support embeddings")
+
+    async def transcribe(
+        self,
+        audio: AudioInput,
+        *,
+        model: Optional[str] = None,
+        client: httpx.AsyncClient,
+    ) -> TranscriptionResult:
+        """Transcribe an audio clip to text.
+
+        Override in subclasses that expose a speech-to-text endpoint. Errors
+        must be raised as ``ProviderError`` so the dispatch loop classifies
+        them with the same retry/fallback semantics used by chat and
+        embeddings — there is no separate ``TranscriptionError`` type.
+        """
+        raise NotImplementedError(f"{self.name} does not support transcription")
 
     def _messages_to_dicts(self, messages: list[ChatMessage]) -> list[dict]:
         """Convert ChatMessages to OpenAI-compatible dicts.

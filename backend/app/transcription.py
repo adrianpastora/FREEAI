@@ -1,310 +1,58 @@
-"""Audio transcription with multi-provider fallback.
+"""Audio-transcription dispatch helpers.
 
-Supported providers (in default priority order):
-  1. Groq  — OpenAI-compatible Whisper endpoint, fastest inference.
-  2. Gemini — sends audio inline (base64) to generateContent with a
-             transcription prompt. Slower but very accurate.
+The actual provider adapters live in ``app.providers.*`` — each one that
+supports speech-to-text overrides ``BaseProvider.transcribe()``. This
+module only exports:
 
-Each provider has a `transcribe()` function with the same signature and
-return type, making them interchangeable for the fallback loop.
+  • ``TRANSCRIPTION_PROVIDERS`` — default priority order for the dispatch loop.
+  • ``supports_transcription(name)`` — capability lookup, derived from the
+    provider class flag so a new adapter just sets ``supports_transcription = True``.
+  • ``AUDIO_MIMETYPES`` + ``resolve_content_type`` — file-extension → MIME mapping
+    used by the upload endpoint.
 
-Architecture
-────────────
-The endpoint in main.py calls `transcribe_with_fallback()`, which:
-  1. Collects enabled providers that support transcription.
-  2. Tries each one in priority order, reserving capacity first.
-  3. On success, commits the reservation and returns the result.
-  4. On transient failure, commits the error, logs it, and moves on.
-  5. On auth/client error, stops (nothing else will help).
-
-This follows the same reserve → attempt → commit pattern used by the
-chat orchestrator, keeping error classification and quarantine logic
-consistent across the codebase.
+There is no provider-specific code here; that lives with each provider so
+``transcription`` doesn't need editing every time a new transcription-capable
+adapter joins the registry.
 """
 from __future__ import annotations
 
-import asyncio
-import base64
-import time
-from dataclasses import dataclass
 from typing import Optional
 
-import httpx
-
-from .providers.base import ErrorKind, classify_status, parse_retry_after
+from .providers import PROVIDER_REGISTRY
 
 
-# ─────────────────────────── shared types ───────────────────────────
+# Priority order for fallback when the caller hasn't pinned a provider.
+# First entry is tried first.
+TRANSCRIPTION_PROVIDERS: tuple[str, ...] = ("groq", "gemini")
 
 
-@dataclass
-class TranscriptionResult:
-    """Normalized result returned by every transcription provider."""
-    text: str
-    provider: str
-    model: str
-    latency_ms: int
-
-
-@dataclass
-class TranscriptionError:
-    """Structured error from a failed transcription attempt."""
-    provider: str
-    model: str
-    kind: ErrorKind
-    message: str
-    latency_ms: int
-    retry_after: Optional[float] = None
-
-
-@dataclass
-class AudioInput:
-    """Pre-read audio file ready to be sent to any provider."""
-    file_bytes: bytes
-    filename: str
-    content_type: str
-    language: Optional[str] = None
-
-
-# ─────────────────────────── constants ──────────────────────────────
-
-# Provider priority for transcription. First available wins.
-TRANSCRIPTION_PROVIDERS = ["groq", "gemini"]
-
-# Groq Whisper config
-_GROQ_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
-_GROQ_MODEL = "whisper-large-v3-turbo"
-_GROQ_TIMEOUT = 120.0
-
-# Gemini config
-_GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models"
-_GEMINI_MODEL = "gemini-2.5-flash"
-_GEMINI_TIMEOUT = 120.0
-_GEMINI_PROMPT = (
-    "Generate a verbatim transcript of the speech in this audio. "
-    "Output ONLY the transcript text, no timestamps, no speaker labels, "
-    "no commentary."
-)
-
-# Retry config — transient errors (503, timeouts) get retried with
-# exponential backoff before falling through to the next provider.
-_MAX_RETRIES = 2          # up to 3 total attempts per provider
-_RETRY_BASE_DELAY = 1.5   # seconds: 1.5, 3.0 (total ~4.5s worst case)
-
-# Errors worth retrying within the same provider
-_RETRYABLE_KINDS = {ErrorKind.SERVER_ERROR, ErrorKind.NETWORK, ErrorKind.RATE_LIMITED}
-
-# MIME types we accept (superset of what both providers support)
-AUDIO_MIMETYPES = {
-    "ogg": "audio/ogg",
-    "mp3": "audio/mpeg",
-    "wav": "audio/wav",
+# MIME types accepted on the upload endpoint. Superset of what individual
+# providers support — each provider does its own sanity check before sending.
+AUDIO_MIMETYPES: dict[str, str] = {
+    "ogg":  "audio/ogg",
+    "mp3":  "audio/mpeg",
+    "wav":  "audio/wav",
     "webm": "audio/webm",
-    "m4a": "audio/m4a",
+    "m4a":  "audio/m4a",
     "flac": "audio/flac",
     "mpeg": "audio/mpeg",
     "mpga": "audio/mpeg",
-    "aac": "audio/aac",
+    "aac":  "audio/aac",
     "aiff": "audio/aiff",
-}
-
-# Gemini accepts these MIME types for inline audio
-_GEMINI_AUDIO_MIMES = {"audio/ogg", "audio/mpeg", "audio/wav", "audio/flac",
-                       "audio/aac", "audio/aiff", "audio/mp3", "audio/webm"}
-
-
-# ─────────────────────── provider functions ─────────────────────────
-
-
-async def _transcribe_groq(
-    audio: AudioInput, api_key: str, *, client: httpx.AsyncClient,
-) -> TranscriptionResult | TranscriptionError:
-    """Send audio to Groq's OpenAI-compatible Whisper endpoint.
-
-    Uses multipart/form-data, same wire format as OpenAI's
-    /v1/audio/transcriptions.
-    """
-    files = {"file": (audio.filename, audio.file_bytes, audio.content_type)}
-    data: dict[str, str] = {"model": _GROQ_MODEL}
-    if audio.language:
-        data["language"] = audio.language
-
-    started = time.perf_counter()
-    try:
-        resp = await client.post(
-            _GROQ_URL,
-            headers={"Authorization": f"Bearer {api_key}"},
-            files=files,
-            data=data,
-            timeout=_GROQ_TIMEOUT,
-        )
-    except httpx.TimeoutException:
-        return TranscriptionError(
-            provider="groq", model=_GROQ_MODEL, kind=ErrorKind.NETWORK,
-            message="timeout", latency_ms=_elapsed(started),
-        )
-    except httpx.HTTPError as exc:
-        return TranscriptionError(
-            provider="groq", model=_GROQ_MODEL, kind=ErrorKind.NETWORK,
-            message=str(exc), latency_ms=_elapsed(started),
-        )
-
-    latency_ms = _elapsed(started)
-
-    if resp.status_code >= 400:
-        kind = classify_status(resp.status_code)
-        return TranscriptionError(
-            provider="groq", model=_GROQ_MODEL, kind=kind,
-            message=resp.text[:500], latency_ms=latency_ms,
-            retry_after=parse_retry_after(resp.headers),
-        )
-
-    # Groq returns {"text": "..."} on success
-    try:
-        text = resp.json()["text"]
-    except (KeyError, ValueError):
-        return TranscriptionError(
-            provider="groq", model=_GROQ_MODEL, kind=ErrorKind.PARSING,
-            message=f"unexpected response: {resp.text[:300]}", latency_ms=latency_ms,
-        )
-
-    return TranscriptionResult(
-        text=text, provider="groq", model=_GROQ_MODEL, latency_ms=latency_ms,
-    )
-
-
-async def _transcribe_gemini(
-    audio: AudioInput, api_key: str, *, client: httpx.AsyncClient,
-) -> TranscriptionResult | TranscriptionError:
-    """Send audio to Gemini's generateContent endpoint with a transcription prompt.
-
-    Gemini doesn't have a dedicated Whisper-style endpoint. Instead we
-    send the audio as inline base64 data alongside a text prompt asking
-    for a verbatim transcript. The model returns plain text.
-
-    Authentication: Gemini uses the API key as a query parameter.
-    """
-    # Gemini expects a MIME type it recognises; fall back to audio/mpeg
-    mime = audio.content_type
-    if mime not in _GEMINI_AUDIO_MIMES:
-        mime = "audio/mpeg"
-
-    audio_b64 = base64.standard_b64encode(audio.file_bytes).decode("ascii")
-
-    prompt = _GEMINI_PROMPT
-    if audio.language:
-        prompt += f" The audio is in {audio.language}."
-
-    payload = {
-        "contents": [{
-            "parts": [
-                {"text": prompt},
-                {"inlineData": {"mimeType": mime, "data": audio_b64}},
-            ],
-        }],
-        "generationConfig": {"temperature": 0.0},
-    }
-
-    url = f"{_GEMINI_URL}/{_GEMINI_MODEL}:generateContent?key={api_key}"
-
-    started = time.perf_counter()
-    try:
-        resp = await client.post(url, json=payload, timeout=_GEMINI_TIMEOUT)
-    except httpx.TimeoutException:
-        return TranscriptionError(
-            provider="gemini", model=_GEMINI_MODEL, kind=ErrorKind.NETWORK,
-            message="timeout", latency_ms=_elapsed(started),
-        )
-    except httpx.HTTPError as exc:
-        return TranscriptionError(
-            provider="gemini", model=_GEMINI_MODEL, kind=ErrorKind.NETWORK,
-            message=str(exc), latency_ms=_elapsed(started),
-        )
-
-    latency_ms = _elapsed(started)
-
-    if resp.status_code >= 400:
-        kind = classify_status(resp.status_code)
-        return TranscriptionError(
-            provider="gemini", model=_GEMINI_MODEL, kind=kind,
-            message=resp.text[:500], latency_ms=latency_ms,
-            retry_after=parse_retry_after(resp.headers),
-        )
-
-    # Gemini returns {"candidates": [{"content": {"parts": [{"text": "..."}]}}]}
-    try:
-        text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
-    except (KeyError, IndexError, ValueError):
-        return TranscriptionError(
-            provider="gemini", model=_GEMINI_MODEL, kind=ErrorKind.PARSING,
-            message=f"unexpected response: {resp.text[:300]}", latency_ms=latency_ms,
-        )
-
-    return TranscriptionResult(
-        text=text.strip(), provider="gemini", model=_GEMINI_MODEL,
-        latency_ms=latency_ms,
-    )
-
-
-# ─────────────────────── provider dispatch ──────────────────────────
-
-# Maps provider name → transcription function. Order doesn't matter
-# here; priority is controlled by TRANSCRIPTION_PROVIDERS.
-_TRANSCRIBE_FN = {
-    "groq": _transcribe_groq,
-    "gemini": _transcribe_gemini,
 }
 
 
 def supports_transcription(provider_name: str) -> bool:
-    """Return True if the provider has a transcription implementation."""
-    return provider_name in _TRANSCRIBE_FN
+    """Whether a provider has a transcription implementation.
 
-
-async def transcribe(
-    provider_name: str, audio: AudioInput, api_key: str,
-    *, client: httpx.AsyncClient,
-) -> TranscriptionResult | TranscriptionError:
-    """Dispatch to a provider's transcription function with retry.
-
-    Transient errors (503, timeouts, rate-limits) are retried up to
-    _MAX_RETRIES times with exponential backoff before giving up and
-    returning the last error. Non-transient errors (auth, client error,
-    parsing) are returned immediately.
+    Derived from ``BaseProvider.supports_transcription`` rather than a
+    duplicate list, so adding the capability to a new provider just
+    means setting the flag on its class.
     """
-    fn = _TRANSCRIBE_FN.get(provider_name)
-    if not fn:
-        return TranscriptionError(
-            provider=provider_name, model="unknown", kind=ErrorKind.CLIENT_ERROR,
-            message=f"{provider_name} does not support transcription", latency_ms=0,
-        )
-
-    last_error: Optional[TranscriptionError] = None
-    for attempt in range(_MAX_RETRIES + 1):
-        result = await fn(audio, api_key, client=client)
-
-        if isinstance(result, TranscriptionResult):
-            return result
-
-        last_error = result
-
-        # Only retry on transient errors
-        if result.kind not in _RETRYABLE_KINDS:
-            return result
-
-        # Don't sleep after the last attempt
-        if attempt < _MAX_RETRIES:
-            delay = _RETRY_BASE_DELAY * (2 ** attempt)
-            await asyncio.sleep(delay)
-
-    return last_error  # type: ignore[return-value]
-
-
-# ─────────────────────── helpers ────────────────────────────────────
-
-
-def _elapsed(start: float) -> int:
-    return int((time.perf_counter() - start) * 1000)
+    cls = PROVIDER_REGISTRY.get(provider_name)
+    if cls is None:
+        return False
+    return bool(getattr(cls, "supports_transcription", False))
 
 
 def resolve_content_type(filename: str, fallback: Optional[str] = None) -> str:
