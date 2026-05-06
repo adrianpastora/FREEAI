@@ -1,5 +1,15 @@
 name: Deploy FREEAI (Postgres + API + UI estática)
 
+# Triggered only on a pushed semver tag (e.g. `v0.6.0`). This is deliberately
+# narrower than `push: branches: [main]` so that:
+#   • Public-repo PRs that get merged don't auto-deploy to the maintainer's
+#     server. Only an explicit `git tag -a vX.Y.Z` followed by `git push --tags`
+#     publishes a release.
+#   • The Actions tab clearly shows one deploy run per release rather than one
+#     per merge.
+# Manual runs are also possible via the workflow_dispatch button on the
+# Actions UI when you need to re-deploy without bumping the tag.
+#
 # Requires the following GitHub Actions secrets:
 #   SSH_PRIVATE_KEY      — private key with access to the deploy host
 #   DEPLOY_SSH_HOST      — hostname of the deploy server (e.g. ssh.example.com)
@@ -14,8 +24,9 @@ name: Deploy FREEAI (Postgres + API + UI estática)
 
 on:
   push:
-    branches:
-      - main
+    tags:
+      - "v*"
+  workflow_dispatch:
 
 jobs:
   deploy:

@@ -2,10 +2,12 @@
 
 [![tests](https://github.com/adrianpastora/FREEAI/actions/workflows/tests.yml/badge.svg)](https://github.com/adrianpastora/FREEAI/actions/workflows/tests.yml)
 
-A single OpenAI-compatible endpoint that orchestrates multiple free-tier AI
-providers. Routes each request to the best one based on strategy tags, rate
-limits and health, and falls back on failure — so your app gets the
-reliability of a paid API with the cost of a free one.
+The free tiers of Groq, Gemini, Mistral, OpenRouter, Cohere and HuggingFace
+each give you 10–30 requests per minute and a few hundred per day. FreeAI
+adds them up behind one OpenAI-compatible endpoint and routes each request
+to the best one based on strategy, rate-limit headroom and health, falling
+back on failure — so your app gets the reliability of a paid API at the
+cost of a free one.
 
 ```
 ┌──────────┐    ┌──────────────────────┐    ┌──────────────┐
