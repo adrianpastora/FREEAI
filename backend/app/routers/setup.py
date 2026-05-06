@@ -8,14 +8,19 @@ from __future__ import annotations
 
 from typing import Optional, Self
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import delete as sa_delete, update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth import hash_password
-from ..bootstrap import consume_bootstrap_token, verify_bootstrap_token
+from ..bootstrap import (
+    consume_bootstrap_token,
+    read_bootstrap_token,
+    verify_bootstrap_token,
+)
 from ..crypto import (
+    auto_confirm_pending_master_key,
     confirm_pending_master_key,
     hash_admin_token,
     is_master_key_ready,
@@ -45,6 +50,14 @@ class SetupStatusResponse(BaseModel):
     needs_initial_setup: bool
     needs_master_key_confirm: bool
     provider_names: list[str]
+    # When true, the operator deliberately requested manual confirmation of
+    # the master key + bootstrap token (FREEAI_REQUIRE_BOOTSTRAP_HEADER=true).
+    # The frontend uses this to decide whether to show those fields.
+    paranoid_mode: bool = False
+
+
+class BootstrapTokenResponse(BaseModel):
+    token: str
 
 
 class InitialSetupBody(BaseModel):
@@ -106,11 +119,62 @@ async def _needs_initial_setup(session: AsyncSession) -> bool:
 
 @router.get("/status", response_model=SetupStatusResponse)
 async def setup_status(session: AsyncSession = Depends(get_session)) -> SetupStatusResponse:
+    settings = get_settings()
     return SetupStatusResponse(
         needs_initial_setup=await _needs_initial_setup(session),
         needs_master_key_confirm=master_key_confirmation_required(),
         provider_names=sorted(DEFAULT_PROVIDERS.keys()),
+        paranoid_mode=settings.require_bootstrap_header,
     )
+
+
+# Loopback CIDRs that may receive the bootstrap token automatically. Anything
+# outside these has to use paranoid mode (manual paste from logs).
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+
+
+def _is_loopback(request: Request) -> bool:
+    if not request.client:
+        return False
+    return request.client.host in _LOOPBACK_HOSTS
+
+
+@router.get("/bootstrap-token", response_model=BootstrapTokenResponse)
+async def setup_bootstrap_token(request: Request) -> BootstrapTokenResponse:
+    """Return the on-disk bootstrap token to a loopback client.
+
+    Used by the frontend's first-run setup screen to skip the manual paste
+    when the install is on the operator's own machine. Refused on any
+    non-loopback peer and refused entirely when paranoid mode is on.
+
+    Security model: the token still has to be presented in the
+    ``X-Bootstrap-Token`` header on the create-admin POST, so an attacker
+    who can reach this endpoint must also be on loopback to do anything
+    with the value. Paranoid mode (``FREEAI_REQUIRE_BOOTSTRAP_HEADER=true``)
+    closes the endpoint entirely for installs whose first request might
+    arrive from anywhere on the internet.
+    """
+    settings = get_settings()
+    if settings.require_bootstrap_header:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "paranoid mode active — copy the bootstrap token from the "
+                "server logs and paste it manually."
+            ),
+        )
+    if not _is_loopback(request):
+        raise HTTPException(
+            status_code=403,
+            detail="bootstrap token only readable from loopback (127.0.0.1 / ::1).",
+        )
+    token = read_bootstrap_token()
+    if not token:
+        raise HTTPException(
+            status_code=404,
+            detail="no bootstrap token pending — setup may already be complete.",
+        )
+    return BootstrapTokenResponse(token=token)
 
 
 @router.post("/confirm-master-key")
@@ -178,12 +242,33 @@ async def setup_first_admin(
             ),
         )
 
+    settings = get_settings()
     if master_key_confirmation_required():
         mk = (body.master_key or "").strip()
-        if not mk or not confirm_pending_master_key(mk):
+        if mk:
+            # Operator pasted the key (paranoid mode or recovering from a
+            # restart) — verify and promote.
+            if not confirm_pending_master_key(mk):
+                raise HTTPException(
+                    status_code=400,
+                    detail="invalid master encryption key — copy the value from the server logs",
+                )
+        elif not settings.require_bootstrap_header:
+            # Default mode: auto-confirm now if lifespan didn't (e.g. the
+            # operator hit POST before the lifespan banner finished, or the
+            # process restarted with a leftover pending file).
+            if not auto_confirm_pending_master_key():
+                raise HTTPException(
+                    status_code=503,
+                    detail="master encryption key could not be activated — check server logs",
+                )
+        else:
             raise HTTPException(
                 status_code=400,
-                detail="invalid or missing master encryption key — copy the value from the server logs",
+                detail=(
+                    "missing master encryption key — paranoid mode is on, paste "
+                    "the value printed in the server logs into the master_key field."
+                ),
             )
     elif not is_master_key_ready():
         raise HTTPException(

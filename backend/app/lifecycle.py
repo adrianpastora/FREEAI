@@ -18,6 +18,7 @@ from fastapi import FastAPI
 
 from .bootstrap import ensure_bootstrap_token
 from .crypto import (
+    auto_confirm_pending_master_key,
     ensure_pending_master_key,
     master_key_confirmation_required,
     read_pending_master_key_plaintext,
@@ -87,45 +88,76 @@ async def lifespan(app: FastAPI):
         needs_bootstrap = real_users == 0 and not has_admin_token
 
         mk_plain = ensure_pending_master_key()
+
+        # Default mode: silently promote the pending key so the first request
+        # to the panel sees an active master key — no banner, no copy-paste.
+        # Paranoid mode keeps the legacy "operator pastes the key" flow.
+        if mk_plain and not settings.require_bootstrap_header:
+            if auto_confirm_pending_master_key():
+                log.info(
+                    "master_key_auto_confirmed",
+                    hint="default-mode startup; set FREEAI_REQUIRE_BOOTSTRAP_HEADER=true "
+                         "to require manual confirmation instead",
+                )
+                mk_plain = None  # don't fall through to the paranoid banner
+
         if mk_plain:
             print(
                 "\n"
                 "============================================================\n"
                 "  FreeAI encryption master key (paste in the web UI once):\n"
                 f"    {mk_plain}\n"
-                "  Open the web UI once: paste this key, the bootstrap token,\n"
-                "  and your admin username/password (single FIRST SETUP form).\n"
-                "  Pending at data/.master_key.pending until confirmed.\n"
+                "  FREEAI_REQUIRE_BOOTSTRAP_HEADER is set — paste this key,\n"
+                "  the bootstrap token, and admin credentials in the FIRST\n"
+                "  SETUP form. Pending at data/.master_key.pending until\n"
+                "  confirmed.\n"
                 "============================================================\n",
                 flush=True,
             )
         elif master_key_confirmation_required():
             pk = read_pending_master_key_plaintext()
             if pk:
-                print(
-                    "\n"
-                    "============================================================\n"
-                    "  FreeAI master key still awaiting UI confirmation — paste:\n"
-                    f"    {pk}\n"
-                    "  (Server was restarted before you confirmed the key.)\n"
-                    "============================================================\n",
-                    flush=True,
-                )
+                # Server restarted with a leftover pending key. Try to
+                # auto-promote in default mode; only fall through to the
+                # paranoid banner if the operator opted into manual mode.
+                if not settings.require_bootstrap_header and auto_confirm_pending_master_key():
+                    log.info("master_key_auto_confirmed_on_restart")
+                else:
+                    print(
+                        "\n"
+                        "============================================================\n"
+                        "  FreeAI master key still awaiting UI confirmation — paste:\n"
+                        f"    {pk}\n"
+                        "  (Server was restarted before you confirmed the key.)\n"
+                        "============================================================\n",
+                        flush=True,
+                    )
 
         new_token = ensure_bootstrap_token(needed=needs_bootstrap)
         if new_token:
-            print(
-                "\n"
-                "============================================================\n"
-                "  FreeAI bootstrap token (one-time, do not share):\n"
-                f"    {new_token}\n"
-                "  Send it in the X-Bootstrap-Token header when calling\n"
-                "  POST /api/setup/confirm-master-key, POST /api/setup/initial,\n"
-                "  or POST /api/auth/register (first admin only).\n"
-                "  Stored at data/.bootstrap_token until consumed.\n"
-                "============================================================\n",
-                flush=True,
-            )
+            if settings.require_bootstrap_header:
+                print(
+                    "\n"
+                    "============================================================\n"
+                    "  FreeAI bootstrap token (one-time, do not share):\n"
+                    f"    {new_token}\n"
+                    "  Send it in the X-Bootstrap-Token header when calling\n"
+                    "  POST /api/setup/confirm-master-key, POST /api/setup/initial,\n"
+                    "  or POST /api/auth/register (first admin only).\n"
+                    "  Stored at data/.bootstrap_token until consumed.\n"
+                    "============================================================\n",
+                    flush=True,
+                )
+            else:
+                # Default mode: the frontend reads the token from
+                # GET /api/setup/bootstrap-token (loopback only) so the
+                # operator never has to copy it. Print a one-line breadcrumb
+                # for ops folks who tail logs out of habit.
+                log.info(
+                    "bootstrap_token_ready",
+                    hint="visit http://<host>:8000 to create the first admin "
+                         "(no manual token paste needed on loopback)",
+                )
 
     log.info("freeai_ready", providers=len(PROVIDER_REGISTRY))
     purge_task = asyncio.create_task(_periodic_purge(sessionmaker))
