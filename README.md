@@ -1,5 +1,7 @@
 # FreeAI
 
+[![tests](https://github.com/adrianpastora/FREEAI/actions/workflows/tests.yml/badge.svg)](https://github.com/adrianpastora/FREEAI/actions/workflows/tests.yml)
+
 A single OpenAI-compatible endpoint that orchestrates multiple free-tier AI
 providers. Routes each request to the best one based on strategy tags, rate
 limits and health, and falls back on failure — so your app gets the
@@ -104,11 +106,11 @@ Any OpenAI-compatible client works — point its base URL at
 - **Analytics panel** — the frontend has a live analytics tab reading from
   the `usage_events` table, with KPIs, time series, and breakdowns by
   provider / strategy / outcome.
-- **233 pytest tests** — unit, integration, E2E, streaming, security,
+- **236 pytest tests** — unit, integration, E2E, streaming, security,
   and fallback robustness (empty responses, content filtering, stream
   idle timeout, circuit breaker, configurable retries). A handful of pure
   tests run without Docker; the rest spin up a real Postgres via
-  testcontainers.
+  testcontainers locally, or a service container in CI.
 - **Robust fallback chain** — empty 200-OK responses, content-filtered
   finish reasons and stream stalls all trigger automatic fallback to
   the next provider. Per-user sliding-window circuit breaker with
@@ -174,10 +176,17 @@ tracking, semantic cache) lives in [docs/REVIEW.md](docs/REVIEW.md).
 cd backend
 pytest             # full suite (Postgres via testcontainers — needs Docker)
 
-# a few pure unit tests run without Docker:
+# Already running Postgres? Point pytest at it and skip the testcontainers
+# spin-up (this is exactly what CI does):
+FREEAI_TEST_DATABASE_URL=postgresql+asyncpg://USER:PASS@HOST:5432/DB pytest
+
+# A few pure unit tests run without any Postgres at all:
 pytest tests/test_crypto.py tests/test_auto_strategy.py \
        tests/test_known_models.py tests/test_schema_tool_calls.py
 ```
+
+Every push and pull request runs the full suite against a Postgres 16
+service container in GitHub Actions — see [`.github/workflows/tests.yml`](.github/workflows/tests.yml).
 
 ## License
 
