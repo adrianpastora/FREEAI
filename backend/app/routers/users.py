@@ -1,6 +1,7 @@
 """User management endpoints (admin) — list / delete / reset-password / analytics."""
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -82,8 +83,6 @@ async def users_analytics(
     totals, and a daily activity series (calls/day for the last N days) so the
     frontend can render a comparison chart without N+1 calls.
     """
-    import time
-
     if days < 1 or days > 30:
         raise HTTPException(400, "days must be between 1 and 30")
 

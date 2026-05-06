@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 
 from ..orchestrator import Orchestrator
@@ -24,7 +24,7 @@ from ..repositories.user_provider_repo import UserProviderRepository
 from ..schemas import ChatCompletionRequest
 from ..security import require_client
 from ..virtual_models import VIRTUAL_MODELS
-from ._common import get_orchestrator, http_from_provider_error
+from ._common import get_orchestrator, http_from_provider_error, require_user_id
 
 router = APIRouter(tags=["chat"])
 
@@ -57,12 +57,9 @@ async def chat_completions(
     request: Request,
     orch: Orchestrator = Depends(get_orchestrator),
     client=Depends(require_client),
+    user_id: int = Depends(require_user_id),
 ):
     client_hash = client.key_hash if client else None
-    user_id = getattr(request.state, "user_id", None)
-
-    if user_id is None:
-        raise HTTPException(400, "no user context — authenticate with a client key bound to a user")
 
     if req.stream:
         sessionmaker = request.app.state.sessionmaker

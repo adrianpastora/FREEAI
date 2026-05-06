@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..crypto import decrypt, encrypt, mask_key
 from ..db.models import ProviderConfigRow, UserProviderRow
+from .config_repo import ProviderConfigDTO
 
 
 @dataclass
@@ -31,6 +32,26 @@ class UserProviderDTO:
     default_model: Optional[str] = None
     # None = defer to AppConfigDTO.provider_max_retries at call time.
     max_retries: Optional[int] = None
+
+    def to_provider_config(self) -> ProviderConfigDTO:
+        """Project to a ``ProviderConfigDTO`` for the orchestrator's ranker.
+
+        The ranker scores providers using the catalog-shaped DTO; this is
+        the natural place to do the projection because every field already
+        lives on this object (user override merged with catalog default).
+        """
+        return ProviderConfigDTO(
+            name=self.provider_name,
+            enabled=self.enabled,
+            api_key=self.api_key,
+            rpm_limit=self.rpm_limit,
+            rpd_limit=self.rpd_limit,
+            tpd_limit=self.tpd_limit,
+            weight=self.weight,
+            tags=self.tags,
+            default_model=self.default_model,
+            max_retries=self.max_retries,
+        )
 
 
 class UserProviderRepository:

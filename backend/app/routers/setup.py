@@ -35,6 +35,7 @@ from ..repositories import ConfigRepository, UserRepository
 from ..repositories.config_repo import DEFAULT_PROVIDERS
 from ..settings import get_settings
 from ._common import acquire_setup_lock, is_placeholder
+from .auth import issue_tokens
 
 router = APIRouter(prefix="/api/setup", tags=["setup"])
 log = get_logger("freeai.setup")
@@ -158,10 +159,6 @@ async def setup_first_admin(
     x_bootstrap_token: Optional[str] = Header(default=None, alias="X-Bootstrap-Token"),
 ) -> dict:
     """Confirm pending master key (if any) and create the first admin in one step."""
-    # Imported here to avoid a circular import at module load: auth router
-    # also imports from this module's helpers and we don't want a cycle.
-    from .auth import issue_tokens
-
     await acquire_setup_lock(session)
 
     user_repo = UserRepository(session)

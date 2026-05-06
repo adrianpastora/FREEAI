@@ -16,7 +16,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..db import get_session
 from ..embeddings import EMBEDDING_PROVIDERS, build_embedding_provider, supports_embeddings
 from ..logging_config import get_logger
-from ..orchestrator import Orchestrator
 from ..providers import ErrorKind, ProviderError
 from ..providers.base import EmbeddingResult
 from ..repositories import (
@@ -27,7 +26,7 @@ from ..repositories import (
 from ..repositories.usage_repo import UsageEvent
 from ..repositories.user_provider_repo import UserProviderRepository
 from ..security import require_client
-from ._common import status_for_kind
+from ._common import require_user_id, status_for_kind
 
 router = APIRouter(tags=["embeddings"])
 log = get_logger("freeai.embeddings")
@@ -63,6 +62,7 @@ async def embeddings_endpoint(
     request: Request,
     session: AsyncSession = Depends(get_session),
     client=Depends(require_client),
+    user_id: int = Depends(require_user_id),
 ):
     """OpenAI-compatible embeddings with multi-provider fallback.
 
@@ -88,10 +88,6 @@ async def embeddings_endpoint(
     usage_repo = UsageRepository(session)
     user_provider_repo = UserProviderRepository(session)
     client_hash = client.key_hash if client else None
-    user_id = getattr(request.state, "user_id", None)
-
-    if user_id is None:
-        raise HTTPException(400, "no user context — authenticate with a client key bound to a user")
 
     # Normalize input to a list of strings
     texts: list[str] = [req.input] if isinstance(req.input, str) else list(req.input)
@@ -116,7 +112,7 @@ async def embeddings_endpoint(
             continue
         up = next((p for p in user_providers if p.provider_name == name), None)
         if up and up.api_key and up.enabled:
-            dto = Orchestrator._user_provider_to_config(up)
+            dto = up.to_provider_config()
             candidates.append((name, dto))
 
     if not candidates:
@@ -150,7 +146,7 @@ async def embeddings_endpoint(
         try:
             try:
                 result: EmbeddingResult = await provider.embed(
-                    texts, model=req.model, client=request.app.state.orchestrator._client,
+                    texts, model=req.model, client=request.app.state.orchestrator.http_client,
                 )
             except ProviderError as err:
                 latency_ms = int((time.time() - started) * 1000)
