@@ -1,4 +1,13 @@
-from .base import BaseProvider, EmbeddingResult, ErrorKind, ProviderError, ProviderResponse, StreamChunk
+from .base import (
+    AudioInput,
+    BaseProvider,
+    EmbeddingResult,
+    ErrorKind,
+    ProviderError,
+    ProviderResponse,
+    StreamChunk,
+    TranscriptionResult,
+)
 from .groq_provider import GroqProvider
 from .gemini_provider import GeminiProvider
 from .mistral_provider import MistralProvider
@@ -16,11 +25,13 @@ PROVIDER_REGISTRY: dict[str, type[BaseProvider]] = {
 }
 
 __all__ = [
+    "AudioInput",
     "BaseProvider",
     "EmbeddingResult",
     "ErrorKind",
     "ProviderError",
     "ProviderResponse",
     "StreamChunk",
+    "TranscriptionResult",
     "PROVIDER_REGISTRY",
 ]
