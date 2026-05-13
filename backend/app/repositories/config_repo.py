@@ -47,6 +47,7 @@ class AppConfigDTO:
 
 # Defaults — used to seed an empty database on first run.
 # Limits reflect each provider's free tier as of 2026-04:
+#   Cerebras free:   30 RPM, 14 400 RPD, 1 000 000 TPD (gpt-oss-120b)
 #   Groq free:       30 RPM, 14 400 RPD, 500k TPD (llama-3.3-70b)
 #   Gemini free:     10 RPM,   250 RPD (Flash), ~unlimited TPD at 250k TPM
 #   Mistral exper:    2 RPM, ~unlimited RPD, ~1B tokens/month ≈ 33M/day
@@ -54,6 +55,12 @@ class AppConfigDTO:
 #   Cohere trial:    20 RPM, 1 000/month ≈ 33/day, no TPD
 #   HuggingFace:     ~30 RPM, ~1 000 RPD (varies), no TPD
 DEFAULT_PROVIDERS: dict[str, ProviderConfigDTO] = {
+    "cerebras": ProviderConfigDTO(
+        name="cerebras",
+        rpm_limit=30, rpd_limit=14_400, tpd_limit=1_000_000, weight=0.9,
+        tags=["fast", "reasoning"],
+        default_model="gpt-oss-120b",
+    ),
     "groq": ProviderConfigDTO(
         name="groq",
         rpm_limit=30, rpd_limit=14_400, tpd_limit=500_000, weight=1.0,
