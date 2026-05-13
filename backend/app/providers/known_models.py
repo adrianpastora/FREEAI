@@ -27,6 +27,13 @@ class KnownModel:
 
 
 KNOWN_MODELS: dict[str, list[KnownModel]] = {
+    # Only gpt-oss-120b is registered by default. The other Cerebras models in
+    # docs/providers/cerebras.md §3 are either preview-only or deprecate on
+    # 2026-05-27. Users can still opt in to those via the Providers UI — the
+    # registry is a hint list, not a hard validator.
+    "cerebras": [
+        KnownModel("gpt-oss-120b", 131_000, ["chat", "reasoning"], note="production"),
+    ],
     "groq": [
         KnownModel("llama-3.3-70b-versatile", 128_000, ["chat", "tools"]),
         KnownModel("llama-3.1-70b-versatile", 128_000, ["chat", "tools"], note="legacy"),
