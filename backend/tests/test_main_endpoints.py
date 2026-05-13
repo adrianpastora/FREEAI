@@ -14,7 +14,17 @@ from app.repositories import ConfigRepository, StrategyRepository
 
 
 ADMIN_TOKEN = "adm_test_token"
-AUTH_HEADERS = {"X-Admin-Token": ADMIN_TOKEN}
+
+
+@pytest_asyncio.fixture
+async def auth_headers(seeded_session):
+    """JWT headers for the seeded admin user. Endpoints behind require_admin_user
+    only accept JWT, not the legacy admin token."""
+    from app.auth import create_access_token
+    from app.repositories.user_repo import UserRepository
+    user = await UserRepository(seeded_session).find_by_username("testadmin")
+    token = create_access_token(user.id, user.username, user.role)
+    return {"Authorization": f"Bearer {token}"}
 
 
 @pytest_asyncio.fixture
@@ -56,8 +66,8 @@ async def test_providers_requires_admin(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_providers_list_with_admin_token(client: AsyncClient):
-    resp = await client.get("/api/providers", headers=AUTH_HEADERS)
+async def test_providers_list_with_admin_token(client: AsyncClient, auth_headers):
+    resp = await client.get("/api/providers", headers=auth_headers)
     assert resp.status_code == 200
     data = resp.json()
     assert isinstance(data, list)
@@ -66,10 +76,10 @@ async def test_providers_list_with_admin_token(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_patch_provider_toggle_enabled(client: AsyncClient):
+async def test_patch_provider_toggle_enabled(client: AsyncClient, auth_headers):
     resp = await client.patch(
         "/api/providers/groq",
-        headers=AUTH_HEADERS,
+        headers=auth_headers,
         json={"enabled": False},
     )
     assert resp.status_code == 200
@@ -79,8 +89,8 @@ async def test_patch_provider_toggle_enabled(client: AsyncClient):
 # ──────────── config ────────────
 
 @pytest.mark.asyncio
-async def test_get_config(client: AsyncClient):
-    resp = await client.get("/api/config", headers=AUTH_HEADERS)
+async def test_get_config(client: AsyncClient, auth_headers):
+    resp = await client.get("/api/config", headers=auth_headers)
     assert resp.status_code == 200
     data = resp.json()
     assert "default_strategy" in data
@@ -88,10 +98,10 @@ async def test_get_config(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_set_strategy_unknown_returns_400(client: AsyncClient):
+async def test_set_strategy_unknown_returns_400(client: AsyncClient, auth_headers):
     resp = await client.put(
         "/api/config/strategy",
-        headers=AUTH_HEADERS,
+        headers=auth_headers,
         json={"default_strategy": "nonexistent_xyz"},
     )
     assert resp.status_code == 400
@@ -100,7 +110,7 @@ async def test_set_strategy_unknown_returns_400(client: AsyncClient):
 # ──────────── strategies ────────────
 
 @pytest.mark.asyncio
-async def test_strategy_crud_with_definition(client: AsyncClient):
+async def test_strategy_crud_with_definition(client: AsyncClient, auth_headers):
     """Happy path on the new DSL shape: create with `definition`,
     update it, then delete."""
     create_def = {
@@ -111,7 +121,7 @@ async def test_strategy_crud_with_definition(client: AsyncClient):
     }
     resp = await client.post(
         "/api/strategies",
-        headers=AUTH_HEADERS,
+        headers=auth_headers,
         json={"name": "test_e2e", "definition": create_def, "description": "e2e test"},
     )
     assert resp.status_code == 200
@@ -128,23 +138,23 @@ async def test_strategy_crud_with_definition(client: AsyncClient):
     }
     resp = await client.patch(
         "/api/strategies/test_e2e",
-        headers=AUTH_HEADERS,
+        headers=auth_headers,
         json={"name": "test_e2e", "definition": update_def, "description": "updated"},
     )
     assert resp.status_code == 200
     assert resp.json()["definition"] == update_def
 
-    resp = await client.delete("/api/strategies/test_e2e", headers=AUTH_HEADERS)
+    resp = await client.delete("/api/strategies/test_e2e", headers=auth_headers)
     assert resp.status_code == 200
 
 
 @pytest.mark.asyncio
-async def test_strategy_create_rejects_invalid_definition(client: AsyncClient):
+async def test_strategy_create_rejects_invalid_definition(client: AsyncClient, auth_headers):
     """A definition that fails the DSL parser should be rejected with 422
     and a human-readable message — not stored as garbage."""
     resp = await client.post(
         "/api/strategies",
-        headers=AUTH_HEADERS,
+        headers=auth_headers,
         json={
             "name": "bad",
             "definition": {
@@ -159,10 +169,10 @@ async def test_strategy_create_rejects_invalid_definition(client: AsyncClient):
 # ──────────── tags vocabulary ────────────
 
 @pytest.mark.asyncio
-async def test_list_tags_returns_seeded_vocabulary(client: AsyncClient):
+async def test_list_tags_returns_seeded_vocabulary(client: AsyncClient, auth_headers):
     """The default seeded providers carry tags like fast/cheap/coding/...
     GET /api/tags should surface every distinct one with its providers."""
-    resp = await client.get("/api/tags", headers=AUTH_HEADERS)
+    resp = await client.get("/api/tags", headers=auth_headers)
     assert resp.status_code == 200
     data = resp.json()
     # Index by tag for easy assertion.
@@ -183,13 +193,13 @@ async def test_list_tags_requires_admin(client: AsyncClient):
 # ──────────── strategy preview ────────────
 
 @pytest.mark.asyncio
-async def test_preview_with_empty_definition_lists_all_eligible(client: AsyncClient):
+async def test_preview_with_empty_definition_lists_all_eligible(client: AsyncClient, auth_headers):
     """An empty definition is the baseline-only strategy. Without any
     provider api keys configured the preview returns no candidates and
     surfaces a clear warning."""
     resp = await client.post(
         "/api/strategies/preview",
-        headers=AUTH_HEADERS,
+        headers=auth_headers,
         json={"definition": None},
     )
     assert resp.status_code == 200
@@ -201,7 +211,7 @@ async def test_preview_with_empty_definition_lists_all_eligible(client: AsyncCli
 
 @pytest.mark.asyncio
 async def test_preview_with_eligible_providers_ranks_them(
-    client: AsyncClient, seeded_session
+    client: AsyncClient, seeded_session, auth_headers
 ):
     """With at least one provider that has a key, the preview ranks it.
     Use a require clause that matches the seeded `gemini` (vision) and
@@ -218,7 +228,7 @@ async def test_preview_with_eligible_providers_ranks_them(
 
     resp = await client.post(
         "/api/strategies/preview",
-        headers=AUTH_HEADERS,
+        headers=auth_headers,
         json={"definition": {
             "require": [{"field": "tags", "op": "contains", "value": "vision"}],
             "prefer": [],
@@ -234,7 +244,7 @@ async def test_preview_with_eligible_providers_ranks_them(
 
 @pytest.mark.asyncio
 async def test_preview_warns_about_unknown_tags(
-    client: AsyncClient, seeded_session
+    client: AsyncClient, seeded_session, auth_headers
 ):
     """A prefer clause referencing a tag no provider has should produce
     a warning, but the strategy is still previewable (it just won't fire
@@ -247,7 +257,7 @@ async def test_preview_warns_about_unknown_tags(
 
     resp = await client.post(
         "/api/strategies/preview",
-        headers=AUTH_HEADERS,
+        headers=auth_headers,
         json={"definition": {
             "require": [],
             "prefer": [{
@@ -261,10 +271,10 @@ async def test_preview_warns_about_unknown_tags(
 
 
 @pytest.mark.asyncio
-async def test_preview_rejects_invalid_definition(client: AsyncClient):
+async def test_preview_rejects_invalid_definition(client: AsyncClient, auth_headers):
     resp = await client.post(
         "/api/strategies/preview",
-        headers=AUTH_HEADERS,
+        headers=auth_headers,
         json={"definition": {
             "require": [{"field": "creativity", "op": "==", "value": "high"}],
         }},
@@ -285,10 +295,10 @@ async def test_preview_requires_admin(client: AsyncClient):
 # ──────────── clients ────────────
 
 @pytest.mark.asyncio
-async def test_client_crud(client: AsyncClient):
+async def test_client_crud(client: AsyncClient, auth_headers):
     resp = await client.post(
         "/api/clients",
-        headers=AUTH_HEADERS,
+        headers=auth_headers,
         json={"name": "e2e-client", "rpm_limit": 10},
     )
     assert resp.status_code == 201
@@ -296,21 +306,21 @@ async def test_client_crud(client: AsyncClient):
     assert data["api_key"].startswith("fai_")
     key_hash = data["key_hash"]
 
-    resp = await client.get("/api/clients", headers=AUTH_HEADERS)
+    resp = await client.get("/api/clients", headers=auth_headers)
     assert resp.status_code == 200
     assert any(c["key_hash"] == key_hash for c in resp.json())
 
-    resp = await client.delete(f"/api/clients/{key_hash}", headers=AUTH_HEADERS)
+    resp = await client.delete(f"/api/clients/{key_hash}", headers=auth_headers)
     assert resp.status_code == 200
 
 
 # ──────────── analytics ────────────
 
 @pytest.mark.asyncio
-async def test_analytics_returns_empty(client: AsyncClient):
+async def test_analytics_returns_empty(client: AsyncClient, auth_headers):
     resp = await client.get(
         "/api/analytics?window_seconds=3600&bucket_count=12",
-        headers=AUTH_HEADERS,
+        headers=auth_headers,
     )
     assert resp.status_code == 200
     data = resp.json()
@@ -318,10 +328,10 @@ async def test_analytics_returns_empty(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_analytics_bad_window(client: AsyncClient):
+async def test_analytics_bad_window(client: AsyncClient, auth_headers):
     resp = await client.get(
         "/api/analytics?window_seconds=10",
-        headers=AUTH_HEADERS,
+        headers=auth_headers,
     )
     assert resp.status_code == 400
 

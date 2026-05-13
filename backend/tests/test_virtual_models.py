@@ -11,6 +11,8 @@ from app.repositories import (
     StrategyRepository,
     UsageRepository,
 )
+from app.repositories.user_provider_repo import UserProviderRepository
+from app.repositories.user_repo import UserRepository
 from app.orchestrator import Orchestrator
 from app.schemas import ChatCompletionRequest, ChatMessage
 from app.virtual_models import (
@@ -87,13 +89,23 @@ class FakeProvider:
 
 
 async def _setup(session):
+    from app.auth import hash_password
     config_repo = ConfigRepository(session)
     strategy_repo = StrategyRepository(session)
+    user_repo = UserRepository(session)
+    user_provider_repo = UserProviderRepository(session)
+
+    if (await user_repo.count()) == 0:
+        await user_repo.create("vmuser", hash_password("testpass123"), role="admin")
+    user = await user_repo.find_by_username("vmuser")
+    user_id = user.id
+
     await config_repo.upsert_provider(ProviderConfigDTO(
-        name="primary", api_key="x", enabled=True,
+        name="primary", api_key=None, enabled=True,
         tags=["fast", "coding", "quality", "reasoning", "vision", "long_context", "cheap"],
         rpm_limit=100, rpd_limit=1000, weight=1.0,
     ))
+    await user_provider_repo.upsert(user_id, "primary", api_key="x", enabled=True)
     await config_repo.get_app_config()
     await strategy_repo.seed_builtins_if_missing()
     await session.commit()
@@ -106,12 +118,14 @@ async def _setup(session):
     )
     orch = Orchestrator()
     orch._build_provider = lambda dto: fake
-    return orch, fake
+    return orch, fake, user_id
 
 
-async def _run_chat(orch, session, req):
+async def _run_chat(orch, session, req, user_id):
     return await orch.chat(
         req,
+        user_id,
+        UserProviderRepository(session),
         ConfigRepository(session),
         RateRepository(session),
         UsageRepository(session),
@@ -122,13 +136,14 @@ async def _run_chat(orch, session, req):
 @pytest.mark.asyncio
 async def test_virtual_model_overrides_strategy(session):
     """Sending model=freeai-fast should use 'fastest' strategy."""
-    orch, fake = await _setup(session)
+    orch, fake, user_id = await _setup(session)
     res = await _run_chat(
         orch, session,
         ChatCompletionRequest(
             messages=[ChatMessage(role="user", content="hi")],
             model="freeai-fast",
         ),
+        user_id,
     )
     await session.commit()
     assert res.model == "freeai-fast"
@@ -140,13 +155,14 @@ async def test_virtual_model_overrides_strategy(session):
 
 @pytest.mark.asyncio
 async def test_virtual_model_auto(session):
-    orch, fake = await _setup(session)
+    orch, fake, user_id = await _setup(session)
     res = await _run_chat(
         orch, session,
         ChatCompletionRequest(
             messages=[ChatMessage(role="user", content="hello world")],
             model="freeai-auto",
         ),
+        user_id,
     )
     await session.commit()
     assert res.model == "freeai-auto"
@@ -156,13 +172,14 @@ async def test_virtual_model_auto(session):
 @pytest.mark.asyncio
 async def test_passthrough_model_unchanged(session):
     """Non-virtual model names pass through to the provider as-is."""
-    orch, fake = await _setup(session)
+    orch, fake, user_id = await _setup(session)
     res = await _run_chat(
         orch, session,
         ChatCompletionRequest(
             messages=[ChatMessage(role="user", content="hi")],
             model="llama-3.3-70b-versatile",
         ),
+        user_id,
     )
     await session.commit()
     # model in response is the real one (no virtual override)
@@ -174,12 +191,13 @@ async def test_passthrough_model_unchanged(session):
 @pytest.mark.asyncio
 async def test_no_model_uses_default_virtual(session):
     """When model is None and strategy is auto, it behaves as freeai-auto."""
-    orch, fake = await _setup(session)
+    orch, fake, user_id = await _setup(session)
     res = await _run_chat(
         orch, session,
         ChatCompletionRequest(
             messages=[ChatMessage(role="user", content="hi")],
         ),
+        user_id,
     )
     await session.commit()
     assert res.model == "freeai-auto"

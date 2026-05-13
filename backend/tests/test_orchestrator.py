@@ -151,7 +151,7 @@ async def test_falls_back_on_rate_limit_without_retry(session):
     await session.commit()
     assert res.provider == "secondary"
     assert primary.calls == 1
-    snap = await RateRepository(session).snapshot("primary")
+    snap = await RateRepository(session).snapshot(1, "primary")
     assert snap.healthy is True
 
 
