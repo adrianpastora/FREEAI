@@ -773,6 +773,18 @@ const tpl  = document.getElementById("providerCardTemplate");
 
 // ─── Provider setup wizard data ───
 const PROVIDER_GUIDES = {
+  cerebras: {
+    displayName: "Cerebras",
+    signupUrl: "https://cloud.cerebras.ai",
+    docsUrl: "https://inference-docs.cerebras.ai/introduction",
+    freeTier: "Free: 30 req/min, 14,400 req/day, 1M tokens/day on gpt-oss-120b — no credit card, no expiry",
+    steps: [
+      "Go to <a href=\"https://cloud.cerebras.ai\" target=\"_blank\" rel=\"noopener\">cloud.cerebras.ai</a> and sign up (Google/GitHub work).",
+      "Open <strong>API Keys</strong> in the left sidebar.",
+      "Click <strong>Create API Key</strong>, name it (e.g. \"FreeAI\") and copy the key (starts with <code>csk-</code>).",
+      "Paste the key into the <em>API KEY</em> field on the Cerebras card in FreeAI and click <strong>SAVE</strong>."
+    ]
+  },
   groq: {
     displayName: "Groq",
     signupUrl: "https://console.groq.com/signup",
@@ -874,7 +886,7 @@ document.addEventListener("click", (e) => {
 
 // ─────────────── multi-step provider setup wizard ───────────────
 
-const _pwProviderOrder = ["groq", "gemini", "mistral", "openrouter", "cohere", "huggingface"];
+const _pwProviderOrder = ["cerebras", "groq", "gemini", "mistral", "openrouter", "cohere", "huggingface"];
 let _pwStep = 0; // 0..N-1 = providers, N = summary
 let _pwConfigured = {}; // { providerName: bool }
 

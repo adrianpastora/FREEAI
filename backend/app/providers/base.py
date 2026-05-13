@@ -18,6 +18,7 @@ _SECRET_PATTERNS = (
     re.compile(r"(?i)bearer\s+[A-Za-z0-9._\-+/=]{8,}"),
     re.compile(r"(?i)(?:api[_-]?key|authorization|x-api-key)\s*[:=]\s*['\"]?[A-Za-z0-9._\-+/=]{8,}['\"]?"),
     re.compile(r"\bsk-[A-Za-z0-9_\-]{16,}\b"),
+    re.compile(r"\bcsk-[A-Za-z0-9_\-]{16,}\b"),
     re.compile(r"\bgsk_[A-Za-z0-9_\-]{16,}\b"),
     re.compile(r"\bhf_[A-Za-z0-9_\-]{16,}\b"),
     re.compile(r"\bxai-[A-Za-z0-9_\-]{16,}\b"),
