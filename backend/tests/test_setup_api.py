@@ -12,14 +12,13 @@ def no_admin_file(monkeypatch, tmp_path, database_url):
 
     st.get_settings.cache_clear()
     bogus = tmp_path / "absent_admin_token_path"
-    custom = st.Settings().model_copy(
-        update={
-            "admin_token": None,
-            "admin_token_path": bogus,
-        }
-    )
-    def _fake():
-        return custom
+
+    # Build a fresh Settings on every call so that monkeypatch.setenv() calls
+    # made by the test (after this fixture ran) are reflected in subsequent
+    # requests. Snapshotting once at fixture time would freeze env vars.
+    def _fresh():
+        s = st.Settings()
+        return s.model_copy(update={"admin_token": None, "admin_token_path": bogus})
 
     for target in (
         "app.settings.get_settings",
@@ -28,7 +27,7 @@ def no_admin_file(monkeypatch, tmp_path, database_url):
         "app.db.engine.get_settings",
         "app.logging_config.get_settings",
     ):
-        monkeypatch.setattr(target, _fake)
+        monkeypatch.setattr(target, _fresh)
 
 
 def _patch_fresh_settings(monkeypatch):
@@ -51,9 +50,6 @@ def _patch_fresh_settings(monkeypatch):
 def test_setup_initial_http_flow(database_url, no_admin_file, session, monkeypatch):
     """Legacy admin-token wizard (opt-in via FREEAI_LEGACY_INITIAL_SETUP)."""
     monkeypatch.setenv("FREEAI_LEGACY_INITIAL_SETUP", "true")
-    from app.settings import get_settings
-
-    get_settings.cache_clear()
     from app.main import app
     from app.bootstrap import read_bootstrap_token
 
@@ -88,12 +84,16 @@ def test_setup_initial_http_flow(database_url, no_admin_file, session, monkeypat
         assert r.status_code == 201
         st2 = client.get("/api/setup/status")
         assert st2.json()["needs_initial_setup"] is False
-        bad = client.get("/api/providers")
+        # /api/providers needs JWT (require_admin_user); the legacy admin
+        # token still works on require_admin endpoints like /api/config/fallback.
+        bad = client.put("/api/config/fallback", json={"enable_fallback": True})
         assert bad.status_code == 401
-        ok = client.get("/api/providers", headers={"X-Admin-Token": tok})
+        ok = client.put(
+            "/api/config/fallback",
+            headers={"X-Admin-Token": tok},
+            json={"enable_fallback": True},
+        )
         assert ok.status_code == 200
-        groq = next(p for p in ok.json() if p["name"] == "groq")
-        assert groq["has_key"] is True
         dup = client.post(
             "/api/setup/initial",
             json={
@@ -108,9 +108,6 @@ def test_setup_initial_http_flow(database_url, no_admin_file, session, monkeypat
 def test_setup_first_admin_without_pending_master(database_url, no_admin_file, monkeypatch):
     """JWT first admin in one step when master key already comes from env (tests)."""
     monkeypatch.delenv("FREEAI_LEGACY_INITIAL_SETUP", raising=False)
-    from app.settings import get_settings
-
-    get_settings.cache_clear()
     from app.bootstrap import read_bootstrap_token
     from app.main import app
 
@@ -133,9 +130,6 @@ def test_setup_first_admin_without_pending_master(database_url, no_admin_file, m
 
 def test_setup_status_includes_master_key_flag(database_url, no_admin_file, monkeypatch):
     monkeypatch.delenv("FREEAI_LEGACY_INITIAL_SETUP", raising=False)
-    from app.settings import get_settings
-
-    get_settings.cache_clear()
     from app.main import app
 
     with TestClient(app, raise_server_exceptions=False) as client:
@@ -168,9 +162,6 @@ def test_status_paranoid_flag_default_off(database_url, no_admin_file, monkeypat
     bootstrap-token / master-key fields by default."""
     monkeypatch.delenv("FREEAI_REQUIRE_BOOTSTRAP_HEADER", raising=False)
     monkeypatch.delenv("FREEAI_LEGACY_INITIAL_SETUP", raising=False)
-    from app.settings import get_settings
-
-    get_settings.cache_clear()
     from app.main import app
 
     with TestClient(app, raise_server_exceptions=False) as client:
@@ -182,9 +173,6 @@ def test_status_paranoid_flag_default_off(database_url, no_admin_file, monkeypat
 def test_status_paranoid_flag_on_when_env_set(database_url, no_admin_file, monkeypatch):
     monkeypatch.setenv("FREEAI_REQUIRE_BOOTSTRAP_HEADER", "true")
     monkeypatch.delenv("FREEAI_LEGACY_INITIAL_SETUP", raising=False)
-    from app.settings import get_settings
-
-    get_settings.cache_clear()
     from app.main import app
 
     with TestClient(app, raise_server_exceptions=False) as client:
@@ -201,9 +189,6 @@ def test_bootstrap_token_endpoint_refuses_non_loopback_peer(
     exactly such a remote peer, so we get to verify the deny path here."""
     monkeypatch.delenv("FREEAI_REQUIRE_BOOTSTRAP_HEADER", raising=False)
     monkeypatch.delenv("FREEAI_LEGACY_INITIAL_SETUP", raising=False)
-    from app.settings import get_settings
-
-    get_settings.cache_clear()
     from app.main import app
 
     with TestClient(app, raise_server_exceptions=False) as client:
@@ -219,9 +204,6 @@ def test_bootstrap_token_endpoint_returns_token_to_loopback(
     so the frontend can use it without bothering the user."""
     monkeypatch.delenv("FREEAI_REQUIRE_BOOTSTRAP_HEADER", raising=False)
     monkeypatch.delenv("FREEAI_LEGACY_INITIAL_SETUP", raising=False)
-    from app.settings import get_settings
-
-    get_settings.cache_clear()
     from app.main import app
     from app.bootstrap import read_bootstrap_token
 
@@ -245,9 +227,6 @@ def test_bootstrap_token_endpoint_refused_in_paranoid_mode(
 ):
     monkeypatch.setenv("FREEAI_REQUIRE_BOOTSTRAP_HEADER", "true")
     monkeypatch.delenv("FREEAI_LEGACY_INITIAL_SETUP", raising=False)
-    from app.settings import get_settings
-
-    get_settings.cache_clear()
     from app.main import app
 
     with TestClient(app, raise_server_exceptions=False) as client:
@@ -263,9 +242,6 @@ def test_first_admin_default_mode_omits_master_key_field(
     server auto-confirmed the pending key during lifespan."""
     monkeypatch.delenv("FREEAI_REQUIRE_BOOTSTRAP_HEADER", raising=False)
     monkeypatch.delenv("FREEAI_LEGACY_INITIAL_SETUP", raising=False)
-    from app.settings import get_settings
-
-    get_settings.cache_clear()
     from app.bootstrap import read_bootstrap_token
     from app.main import app
 
@@ -292,9 +268,6 @@ def test_first_admin_rejects_request_without_bootstrap_token(
     from the protocol."""
     monkeypatch.delenv("FREEAI_REQUIRE_BOOTSTRAP_HEADER", raising=False)
     monkeypatch.delenv("FREEAI_LEGACY_INITIAL_SETUP", raising=False)
-    from app.settings import get_settings
-
-    get_settings.cache_clear()
     from app.main import app
 
     with TestClient(app, raise_server_exceptions=False) as client:

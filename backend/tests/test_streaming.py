@@ -19,6 +19,8 @@ from app.repositories import (
     StrategyRepository,
     UsageRepository,
 )
+from app.repositories.user_provider_repo import UserProviderRepository
+from app.repositories.user_repo import UserRepository
 from app.schemas import ChatCompletionRequest, ChatMessage
 
 
@@ -29,9 +31,21 @@ async def repos(seeded_session):
     rate_repo = RateRepository(session)
     usage_repo = UsageRepository(session)
     strategy_repo = StrategyRepository(session)
+    user_provider_repo = UserProviderRepository(session)
+    user_repo = UserRepository(session)
+    user = await user_repo.find_by_username("testadmin")
+    user_id = user.id
     await strategy_repo.seed_builtins_if_missing()
     await session.commit()
-    return config_repo, rate_repo, usage_repo, strategy_repo, session
+    return (
+        config_repo,
+        rate_repo,
+        usage_repo,
+        strategy_repo,
+        user_provider_repo,
+        user_id,
+        session,
+    )
 
 
 def _make_req(prompt="Hello", strategy="fastest", stream=True):
@@ -54,9 +68,9 @@ async def _fake_stream(*args, **kwargs):
 
 @pytest.mark.asyncio
 async def test_stream_yields_chunks_and_done(repos):
-    config_repo, rate_repo, usage_repo, strategy_repo, session = repos
+    config_repo, rate_repo, usage_repo, strategy_repo, user_provider_repo, user_id, session = repos
 
-    await config_repo.patch_provider("groq", api_key="test-key")
+    await user_provider_repo.upsert(user_id, "groq", api_key="test-key", enabled=True)
     await session.commit()
 
     orch = Orchestrator()
@@ -70,7 +84,8 @@ async def test_stream_yields_chunks_and_done(repos):
         with patch.object(provider_cls, "stream", _fake_stream):
             chunks = []
             async for chunk in orch.stream(
-                req, config_repo, rate_repo, usage_repo, strategy_repo
+                req, user_id, user_provider_repo,
+                config_repo, rate_repo, usage_repo, strategy_repo,
             ):
                 chunks.append(chunk)
 
@@ -85,9 +100,9 @@ async def test_stream_yields_chunks_and_done(repos):
 
 @pytest.mark.asyncio
 async def test_stream_records_usage_with_tokens(repos):
-    config_repo, rate_repo, usage_repo, strategy_repo, session = repos
+    config_repo, rate_repo, usage_repo, strategy_repo, user_provider_repo, user_id, session = repos
 
-    await config_repo.patch_provider("groq", api_key="test-key")
+    await user_provider_repo.upsert(user_id, "groq", api_key="test-key", enabled=True)
     await session.commit()
 
     orch = Orchestrator()
@@ -97,7 +112,8 @@ async def test_stream_records_usage_with_tokens(repos):
     provider_cls = PROVIDER_REGISTRY["groq"]
     with patch.object(provider_cls, "stream", _fake_stream):
         async for _ in orch.stream(
-            req, config_repo, rate_repo, usage_repo, strategy_repo
+            req, user_id, user_provider_repo,
+            config_repo, rate_repo, usage_repo, strategy_repo,
         ):
             pass
 
@@ -117,9 +133,9 @@ async def test_stream_records_usage_with_tokens(repos):
 
 @pytest.mark.asyncio
 async def test_stream_all_fail_raises(repos):
-    config_repo, rate_repo, usage_repo, strategy_repo, session = repos
+    config_repo, rate_repo, usage_repo, strategy_repo, user_provider_repo, user_id, session = repos
 
-    await config_repo.patch_provider("groq", api_key="test-key")
+    await user_provider_repo.upsert(user_id, "groq", api_key="test-key", enabled=True)
     await session.commit()
 
     async def _fail_stream(*args, **kwargs):
@@ -134,7 +150,8 @@ async def test_stream_all_fail_raises(repos):
     with patch.object(provider_cls, "stream", _fail_stream):
         with pytest.raises(ProviderError):
             async for _ in orch.stream(
-                req, config_repo, rate_repo, usage_repo, strategy_repo
+                req, user_id, user_provider_repo,
+                config_repo, rate_repo, usage_repo, strategy_repo,
             ):
                 pass
 
