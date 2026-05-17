@@ -1,0 +1,31 @@
+# Caddy config for FreeAI in production.
+#
+# Caddy auto-fetches and renews a Let's Encrypt certificate for the domain
+# in ${FREEAI_DOMAIN}. Make sure ports 80 and 443 are reachable from the
+# public internet and that DNS points at this host before starting.
+
+{$FREEAI_DOMAIN} {
+	# Disable proxy response buffering so server-sent events (the streaming
+	# mode of /v1/chat/completions) flush deltas to the client as they arrive
+	# instead of waiting for the whole response.
+	reverse_proxy freeai:8000 {
+		flush_interval -1
+	}
+
+	encode zstd gzip
+
+	# Standard security headers. Adjust CSP via your own config if you embed
+	# the UI somewhere else.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options    "nosniff"
+		Referrer-Policy           "no-referrer"
+		# Caddy adds Server: Caddy by default; hide it.
+		-Server
+	}
+
+	# Cap upload size to match the backend's body limits.
+	request_body {
+		max_size 25MB
+	}
+}

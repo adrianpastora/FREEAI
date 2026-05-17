@@ -1,4 +1,16 @@
-name: Deploy FREEAI (Postgres + API + UI estática)
+name: Deploy FREEAI (maintainer-personal SSH+Docker)
+
+# ── MAINTAINER-PERSONAL WORKFLOW ─────────────────────────────────────────────
+# This workflow is specific to the maintainer's own VPS deploy. If you forked
+# or cloned FreeAI for your own self-host you almost certainly don't want this
+# — just run `docker compose up -d --build` on your server, or use the
+# docker-compose.prod.yml overlay with Caddy described in README.md
+# (§ Self-host in production). You can safely delete this file from your fork.
+#
+# Without the secrets listed below (SSH_PRIVATE_KEY, DEPLOY_SSH_HOST, ...)
+# GitHub Actions silently no-ops the run, so leaving it in place is harmless,
+# but the Actions tab will show failures every time you push a v* tag.
+# ─────────────────────────────────────────────────────────────────────────────
 
 # Triggered only on a pushed semver tag (e.g. `v0.6.0`). This is deliberately
 # narrower than `push: branches: [main]` so that:
