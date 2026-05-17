@@ -13,6 +13,24 @@ pre-1.0 versions — follow the Unreleased section if you track `main`.
 <!-- Add entries here as they land. Categories used in this changelog:
      Added, Changed, Fixed, Security, Removed, Deprecated. -->
 
+## [0.7.2] — 2026-05-17
+
+Documentation polish for the first public release.
+
+### Changed
+- Added explicit non-affiliation disclaimer in the "Acceptable use"
+  section of the README to make the trademark posture clear (nominative
+  fair use is already covered, this just keeps the legal conversation
+  short if a provider's brand team ever reads it).
+
+## [0.7.1] — 2026-05-17
+
+### Fixed
+- Cerebras provider was losing every routing decision against Groq
+  despite being ~4× faster. Bumped its default weight to 1.1 and added
+  `coding`/`quality` tags so it wins `fastest`, competes in `reasoning`,
+  and stops being hard-excluded from `coding`/`best_quality` routes.
+
 ## [0.7.0] — 2026-05-17
 
 First release after the multi-user migration. Adds a new provider
@@ -270,7 +288,9 @@ infrastructure.
 - Drop the legacy "Sprint N shipped" changelog section from README —
   replaced with a themed Status section.
 
-[Unreleased]: https://github.com/adrianpastora/FREEAI/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/adrianpastora/FREEAI/compare/v0.7.2...HEAD
+[0.7.2]: https://github.com/adrianpastora/FREEAI/releases/tag/v0.7.2
+[0.7.1]: https://github.com/adrianpastora/FREEAI/releases/tag/v0.7.1
 [0.7.0]: https://github.com/adrianpastora/FREEAI/releases/tag/v0.7.0
 [0.6.0]: https://github.com/adrianpastora/FREEAI/releases/tag/v0.6.0
 [0.5.0]: https://github.com/adrianpastora/FREEAI/releases/tag/v0.5.0
