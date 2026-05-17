@@ -11,6 +11,20 @@ import httpx
 from ..schemas import ChatMessage
 
 
+# Hard cap on the decoded size of a single inline image (data: URI) accepted
+# from the client. Prevents a 50 MB selfie from being forwarded to the
+# upstream — wasted bandwidth on the way out, an inevitable 413 on the way
+# back, and an opportunity for accidental DoS. 20 MB is comfortably above
+# what any vision-capable model actually accepts (OpenAI/Anthropic cap at
+# 20 MB, Gemini at ~20 MB inline; bigger files must use a Files API).
+MAX_INLINE_IMAGE_BYTES = 20 * 1024 * 1024
+
+
+# Base64 expands payloads by 4/3 + padding. Reject the encoded string
+# before we even decode it when it can't possibly fit under the cap.
+_MAX_INLINE_IMAGE_B64_LEN = ((MAX_INLINE_IMAGE_BYTES + 2) // 3) * 4
+
+
 # Scrub secrets that providers sometimes echo back in error bodies. We clip
 # to 500 chars upstream; this is the last filter before the message reaches
 # a client response or a log.
@@ -85,6 +99,51 @@ class ProviderError(Exception):
             ErrorKind.AUTH,
             ErrorKind.CONTENT_FILTERED,
         }
+
+
+# Rough conversion factor used when an upstream doesn't report a usage
+# block. Empirically tiktoken's BPE produces ~4 characters per token for
+# English prose; multilingual content runs closer to ~3, code closer to
+# ~3.5. We pick 4 as a defensive *under*-count so the rate limiter is
+# never less strict than the real provider — better to count slightly
+# few tokens than to overshoot and reject legitimate traffic. This is a
+# floor for the per-day token budget, not an exact accounting.
+_CHARS_PER_TOKEN_ESTIMATE = 4
+
+
+def estimate_tokens(text: str) -> int:
+    """Cheap token-count estimator for paths where the provider doesn't
+    return a usage block. Uses character length / 4 as a proxy.
+
+    Trade-off: deliberately approximate. Real tokenization would mean
+    bundling tiktoken (or a per-model BPE table), which is heavy for what
+    is essentially a fallback. The estimate is conservative — slightly
+    fewer tokens than the truth — so we never penalize users for tokens
+    the upstream didn't actually charge.
+    """
+    if not text:
+        return 0
+    return max(1, len(text) // _CHARS_PER_TOKEN_ESTIMATE)
+
+
+def assert_inline_image_within_limit(provider: str, b64_payload: str) -> None:
+    """Reject inline image payloads larger than :data:`MAX_INLINE_IMAGE_BYTES`.
+
+    Called from every adapter that forwards an ``image_url`` data URI to the
+    upstream. ``b64_payload`` is the *encoded* (base64) substring after the
+    ``base64,`` marker — we check its length first to avoid decoding a huge
+    string just to find out it's too big. The decoded size is approximated
+    from the encoded length (close enough for an upper-bound check).
+    """
+    if len(b64_payload) > _MAX_INLINE_IMAGE_B64_LEN:
+        approx_mb = (len(b64_payload) * 3 // 4) / (1024 * 1024)
+        cap_mb = MAX_INLINE_IMAGE_BYTES // (1024 * 1024)
+        raise ProviderError(
+            provider,
+            f"inline image ~{approx_mb:.1f} MB exceeds {cap_mb} MB limit",
+            kind=ErrorKind.CLIENT_ERROR,
+            status=413,
+        )
 
 
 def classify_status(status: int) -> ErrorKind:
@@ -248,6 +307,11 @@ class BaseProvider:
         accept the ``[{"type": "text"}, {"type": "image_url"}]`` format
         natively. Tool-calling fields are forwarded when present so multi-turn
         histories with tool_calls round-trip correctly.
+
+        Inline ``image_url`` data URIs are size-checked here so an oversized
+        image is rejected before it hits the wire; non-data URIs are accepted
+        in this base path since OpenAI and friends can fetch them themselves
+        (Gemini rejects them in its own adapter for SSRF reasons).
         """
         out: list[dict] = []
         for m in messages:
@@ -256,6 +320,8 @@ class BaseProvider:
             # turns that only emit tool_calls. Preserve the null so upstreams
             # see a valid conversation shape.
             d["content"] = m.content
+            if isinstance(m.content, list):
+                self._enforce_inline_image_limits(m.content)
             if m.name:
                 d["name"] = m.name
             if m.tool_calls:
@@ -264,6 +330,27 @@ class BaseProvider:
                 d["tool_call_id"] = m.tool_call_id
             out.append(d)
         return out
+
+    def _enforce_inline_image_limits(self, blocks: list) -> None:
+        """Scan a multimodal content list for inline images and size-check them.
+
+        Only ``data:...;base64,...`` URIs are inspected — remote URLs are
+        forwarded as-is (the upstream will fetch them and apply its own
+        limits, and we have no cheap way to know their size without a
+        HEAD round-trip we'd rather not pay for).
+        """
+        for block in blocks:
+            if not isinstance(block, dict) or block.get("type") != "image_url":
+                continue
+            obj = block.get("image_url") or {}
+            url = obj.get("url", "") if isinstance(obj, dict) else ""
+            if not url.startswith("data:"):
+                continue
+            marker = ";base64,"
+            idx = url.find(marker)
+            if idx < 0:
+                continue  # not a base64 data URI — nothing to size-check
+            assert_inline_image_within_limit(self.name, url[idx + len(marker):])
 
     def _raise_for_status(self, resp: httpx.Response) -> None:
         """Translate an httpx Response into a typed ProviderError."""

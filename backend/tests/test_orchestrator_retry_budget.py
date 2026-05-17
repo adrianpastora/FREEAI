@@ -118,3 +118,40 @@ async def test_circuit_breaker_kwargs_reads_from_app_cfg():
 
 def test_circuit_breaker_kwargs_none_returns_empty():
     assert Orchestrator._circuit_breaker_kwargs(None) == {}
+
+
+# ──────────────── Retry delay: Retry-After + jitter ────────────────
+
+
+def test_retry_delay_honors_retry_after():
+    """If the provider gave us a Retry-After hint, use it (capped)."""
+    err = ProviderError("p", "slow down", kind=ErrorKind.SERVER_ERROR, retry_after=2.5)
+    delay = Orchestrator._retry_delay(err, attempt=0)
+    assert delay == 2.5
+
+
+def test_retry_delay_caps_retry_after_to_max():
+    """A 60 s Retry-After hint is clamped — that's quarantine territory."""
+    err = ProviderError("p", "slow", kind=ErrorKind.SERVER_ERROR, retry_after=60.0)
+    delay = Orchestrator._retry_delay(err, attempt=0)
+    assert delay == Orchestrator._RETRY_AFTER_MAX_S
+
+
+def test_retry_delay_falls_back_to_jittered_exponential():
+    """Without a Retry-After, use base * 2**attempt * U(0.5, 1.5)."""
+    err = ProviderError("p", "boom", kind=ErrorKind.SERVER_ERROR)
+    base = Orchestrator._RETRY_BACKOFF_S
+    lo, hi = Orchestrator._RETRY_JITTER_RANGE
+    # attempt=2 → base * 4 * jitter ∈ [base*4*lo, base*4*hi]
+    for _ in range(50):
+        delay = Orchestrator._retry_delay(err, attempt=2)
+        assert base * 4 * lo <= delay <= base * 4 * hi
+
+
+def test_retry_delay_ignores_zero_retry_after():
+    """retry_after=0 is treated as 'unset' — fall through to exponential."""
+    err = ProviderError("p", "boom", kind=ErrorKind.SERVER_ERROR, retry_after=0)
+    base = Orchestrator._RETRY_BACKOFF_S
+    lo, hi = Orchestrator._RETRY_JITTER_RANGE
+    delay = Orchestrator._retry_delay(err, attempt=0)
+    assert base * lo <= delay <= base * hi

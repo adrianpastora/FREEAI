@@ -39,10 +39,18 @@ class ChatMessage(BaseModel):
         - Per-block and per-message caps so a single request cannot exhaust
           memory or bandwidth when relayed upstream.
         """
+        # Local import: providers.base imports ChatMessage from here, so a
+        # top-level import would form a cycle. Doing it at call time is fine
+        # — the validator runs after both modules are fully loaded.
+        from .providers.base import MAX_INLINE_IMAGE_BYTES
+
         MAX_BLOCKS_PER_MESSAGE = 32
         MAX_IMAGES_PER_MESSAGE = 8
         MAX_TEXT_BLOCK_CHARS = 200_000
-        MAX_IMAGE_URL_CHARS = 6_000_000  # ~4.5 MB once base64-decoded
+        # Encoded length cap derived from the shared decoded-bytes ceiling
+        # (base64 expands by 4/3 + padding) plus a small data-URI header.
+        # Keeps schema validation and provider defense-in-depth in agreement.
+        MAX_IMAGE_URL_CHARS = ((MAX_INLINE_IMAGE_BYTES + 2) // 3) * 4 + 64
 
         if isinstance(value, str):
             if len(value) > MAX_TEXT_BLOCK_CHARS:

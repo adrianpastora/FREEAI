@@ -10,6 +10,7 @@ filtered response. Each attempt (success or failure) lands in
 from __future__ import annotations
 
 import asyncio
+import random
 import time
 import uuid
 from dataclasses import dataclass
@@ -117,13 +118,39 @@ class Orchestrator:
     """Stateless aside from the shared httpx client. Receives repositories per-call."""
 
     _RETRY_BACKOFF_S = 0.4
+    # Multiplicative jitter applied to the exponential backoff so that
+    # concurrent requests that fail at the same instant don't retry in
+    # lock-step against an already-struggling provider.
+    _RETRY_JITTER_RANGE = (0.5, 1.5)
+    # Cap on how long a single retry will wait when honoring a provider's
+    # Retry-After header inline. Anything longer than this is the job of
+    # quarantine + fallback, not a blocking sleep on the request path.
+    _RETRY_AFTER_MAX_S = 5.0
     # Fallback when AppConfigDTO.provider_max_retries is somehow missing.
     _DEFAULT_MAX_RETRIES = 1
 
+    # httpx connection pool. Sized for multi-user concurrent traffic across
+    # ~7 providers; each provider opens its own pool entries so the total
+    # ceiling is reached when many users hit many providers at once. The
+    # pool timeout is deliberately generous: when the pool is saturated we
+    # want callers to queue briefly rather than fail with PoolTimeout, since
+    # the orchestrator's own per-provider timeouts already bound how long
+    # any single request can occupy a slot.
+    _HTTP_MAX_CONNECTIONS = 200
+    _HTTP_MAX_KEEPALIVE = 50
+    _HTTP_POOL_TIMEOUT_S = 30.0
+
     def __init__(self):
         self._client = httpx.AsyncClient(
-            limits=httpx.Limits(max_keepalive_connections=20, max_connections=100),
-            timeout=httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0),
+            limits=httpx.Limits(
+                max_connections=self._HTTP_MAX_CONNECTIONS,
+                max_keepalive_connections=self._HTTP_MAX_KEEPALIVE,
+            ),
+            # Per-phase timeouts; each provider adapter further constrains
+            # connect/read via _phase_timeout() at call sites that need it.
+            timeout=httpx.Timeout(
+                connect=10.0, read=120.0, write=30.0, pool=self._HTTP_POOL_TIMEOUT_S,
+            ),
         )
         self._strategy_cache = _StrategyCache()
         # Per-(user, provider) in-flight request counters for concurrency-aware
@@ -329,6 +356,21 @@ class Orchestrator:
             client=self._client,
         )
 
+    @classmethod
+    def _retry_delay(cls, err: ProviderError, attempt: int) -> float:
+        """Decide how long to sleep before the next retry.
+
+        Honors a provider-supplied ``Retry-After`` (capped at
+        :attr:`_RETRY_AFTER_MAX_S`) when present — the upstream knows its
+        own recovery cadence better than our backoff curve. Otherwise falls
+        back to ``base * 2**attempt`` with multiplicative jitter so that
+        simultaneous failures don't retry in lock-step.
+        """
+        if err.retry_after is not None and err.retry_after > 0:
+            return min(float(err.retry_after), cls._RETRY_AFTER_MAX_S)
+        jitter = random.uniform(*cls._RETRY_JITTER_RANGE)
+        return cls._RETRY_BACKOFF_S * (2 ** attempt) * jitter
+
     async def _try_with_retry(
         self,
         cand: _Candidate,
@@ -347,12 +389,15 @@ class Orchestrator:
             except ProviderError as e:
                 last_error = e
                 if e.is_transient and attempt < attempts_budget:
+                    delay = self._retry_delay(e, attempt)
                     log.info(
                         "retrying transient error",
                         provider=cand.name, kind=e.kind.value,
                         attempt=attempt + 1, max_retries=attempts_budget,
+                        delay_s=round(delay, 3),
+                        honored_retry_after=e.retry_after is not None,
                     )
-                    await asyncio.sleep(self._RETRY_BACKOFF_S * (2 ** attempt))
+                    await asyncio.sleep(delay)
                     continue
                 break
             except Exception as e:  # noqa: BLE001

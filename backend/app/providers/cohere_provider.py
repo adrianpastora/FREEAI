@@ -6,7 +6,8 @@ from typing import Optional
 import httpx
 
 from ..schemas import ChatMessage
-from .base import BaseProvider, ErrorKind, ProviderError, ProviderResponse
+from .base import BaseProvider, ErrorKind, ProviderError, ProviderResponse, estimate_tokens
+from .openai_compat import _phase_timeout
 
 
 class CohereProvider(BaseProvider):
@@ -38,7 +39,7 @@ class CohereProvider(BaseProvider):
                 self.BASE_URL,
                 json=payload,
                 headers={"Authorization": f"Bearer {self.api_key}"},
-                timeout=self.request_timeout,
+                timeout=_phase_timeout(self.request_timeout),
             )
         except httpx.TimeoutException as e:
             raise ProviderError(self.name, f"timeout: {e}", kind=ErrorKind.NETWORK) from e
@@ -54,11 +55,22 @@ class CohereProvider(BaseProvider):
                 self.name, f"unexpected response shape: {e}", kind=ErrorKind.PARSING
             ) from e
         usage = data.get("usage", {}).get("billed_units", {})
+        prompt_tokens = usage.get("input_tokens", 0)
+        completion_tokens = usage.get("output_tokens", 0)
+        # Cohere usually returns billed_units, but some endpoints / model
+        # families occasionally omit it. Fall back to a length-based estimate
+        # so usage_events and tpd_limit don't silently drop to zero.
+        if not prompt_tokens:
+            prompt_tokens = sum(
+                estimate_tokens(m.text_content) for m in messages
+            )
+        if not completion_tokens:
+            completion_tokens = estimate_tokens(text)
         return ProviderResponse(
             content=text,
             model=chosen,
             provider=self.name,
-            prompt_tokens=usage.get("input_tokens", 0),
-            completion_tokens=usage.get("output_tokens", 0),
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
             raw=data,
         )

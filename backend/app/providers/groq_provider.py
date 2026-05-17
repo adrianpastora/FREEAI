@@ -19,7 +19,7 @@ from .base import (
     classify_status,
     parse_retry_after,
 )
-from .openai_compat import OpenAICompatibleProvider
+from .openai_compat import OpenAICompatibleProvider, _phase_timeout
 
 
 _TRANSCRIPTION_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
@@ -55,7 +55,7 @@ class GroqProvider(OpenAICompatibleProvider):
                 headers={"Authorization": f"Bearer {self.api_key}"},
                 files=files,
                 data=data,
-                timeout=_TRANSCRIPTION_TIMEOUT,
+                timeout=_phase_timeout(_TRANSCRIPTION_TIMEOUT),
             )
         except httpx.TimeoutException as e:
             raise ProviderError(self.name, f"timeout: {e}", kind=ErrorKind.NETWORK) from e

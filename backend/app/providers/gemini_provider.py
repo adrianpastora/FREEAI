@@ -24,7 +24,10 @@ from .base import (
     ProviderResponse,
     StreamChunk,
     TranscriptionResult,
+    assert_inline_image_within_limit,
+    estimate_tokens,
 )
+from .openai_compat import _CONNECT_TIMEOUT, _phase_timeout
 
 # Tolerate a few malformed SSE frames before failing the whole stream.
 _MAX_PARSE_ERRORS = 5
@@ -101,6 +104,7 @@ class GeminiProvider(BaseProvider):
                         status=400,
                     )
                 mime_type, b64_data = match.group(1), match.group(2)
+                assert_inline_image_within_limit(self.name, b64_data)
                 parts.append({
                     "inlineData": {
                         "mimeType": mime_type,
@@ -156,7 +160,7 @@ class GeminiProvider(BaseProvider):
         payload = self._build_payload(messages, temperature, max_tokens)
         url = f"{self.BASE_URL}/{chosen}:generateContent?key={self.api_key}"
         try:
-            resp = await client.post(url, json=payload, timeout=self.request_timeout)
+            resp = await client.post(url, json=payload, timeout=_phase_timeout(self.request_timeout))
         except httpx.TimeoutException as e:
             raise ProviderError(self.name, f"timeout: {e}", kind=ErrorKind.NETWORK) from e
         except httpx.HTTPError as e:
@@ -190,12 +194,21 @@ class GeminiProvider(BaseProvider):
                 kind=ErrorKind.EMPTY_RESPONSE,
             )
         usage = data.get("usageMetadata", {})
+        prompt_tokens = usage.get("promptTokenCount", 0)
+        completion_tokens = usage.get("candidatesTokenCount", 0)
+        # Older v1beta endpoints occasionally omit usageMetadata. Estimate
+        # to keep tpd_limit honest. We bias toward under-counting (4 chars/
+        # token) so the limiter is never stricter than the upstream truth.
+        if not prompt_tokens:
+            prompt_tokens = sum(estimate_tokens(m.text_content) for m in messages)
+        if not completion_tokens:
+            completion_tokens = estimate_tokens(text)
         return ProviderResponse(
             content=text,
             model=chosen,
             provider=self.name,
-            prompt_tokens=usage.get("promptTokenCount", 0),
-            completion_tokens=usage.get("candidatesTokenCount", 0),
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
             raw=data,
         )
 
@@ -214,7 +227,10 @@ class GeminiProvider(BaseProvider):
         payload = self._build_payload(messages, temperature, max_tokens)
         url = f"{self.BASE_URL}/{chosen}:streamGenerateContent?alt=sse&key={self.api_key}"
         try:
-            async with client.stream("POST", url, json=payload, timeout=httpx.Timeout(self.request_timeout, read=None)) as resp:
+            async with client.stream(
+                "POST", url, json=payload,
+                timeout=httpx.Timeout(connect=_CONNECT_TIMEOUT, read=None, write=30.0, pool=_CONNECT_TIMEOUT),
+            ) as resp:
                 if resp.status_code >= 400:
                     body = await resp.aread()
                     fake = httpx.Response(
@@ -291,7 +307,7 @@ class GeminiProvider(BaseProvider):
         }
         url = f"{self.BASE_URL}/{chosen}:batchEmbedContents?key={self.api_key}"
         try:
-            resp = await client.post(url, json=payload, timeout=self.request_timeout)
+            resp = await client.post(url, json=payload, timeout=_phase_timeout(self.request_timeout))
         except httpx.TimeoutException as e:
             raise ProviderError(self.name, f"timeout: {e}", kind=ErrorKind.NETWORK) from e
         except httpx.HTTPError as e:
@@ -305,12 +321,14 @@ class GeminiProvider(BaseProvider):
             raise ProviderError(
                 self.name, f"unexpected response shape: {e}", kind=ErrorKind.PARSING,
             ) from e
-        # Gemini doesn't report token counts for embeddings — leave at 0.
+        # Gemini doesn't report token counts for embeddings. Estimate so
+        # tpd_limit is still enforced — under-counts slightly, which keeps
+        # the limiter from being stricter than the upstream actually is.
         return EmbeddingResult(
             vectors=vectors,
             model=chosen,
             provider=self.name,
-            prompt_tokens=0,
+            prompt_tokens=sum(estimate_tokens(t) for t in texts),
             raw=data,
         )
 
@@ -353,7 +371,7 @@ class GeminiProvider(BaseProvider):
 
         started = time.perf_counter()
         try:
-            resp = await client.post(url, json=payload, timeout=_TRANSCRIPTION_TIMEOUT)
+            resp = await client.post(url, json=payload, timeout=_phase_timeout(_TRANSCRIPTION_TIMEOUT))
         except httpx.TimeoutException as e:
             raise ProviderError(self.name, f"timeout: {e}", kind=ErrorKind.NETWORK) from e
         except httpx.HTTPError as e:

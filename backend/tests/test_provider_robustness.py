@@ -7,7 +7,13 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from app.providers.base import ErrorKind, ProviderError
+from app.providers.base import (
+    MAX_INLINE_IMAGE_BYTES,
+    ErrorKind,
+    ProviderError,
+    assert_inline_image_within_limit,
+    estimate_tokens,
+)
 from app.providers.gemini_provider import GeminiProvider
 from app.providers.openai_compat import OpenAICompatibleProvider
 
@@ -300,3 +306,85 @@ def test_content_filtered_is_transient_and_benign():
     err = ProviderError("p", "filtered", kind=ErrorKind.CONTENT_FILTERED)
     assert err.is_transient is True
     assert err.is_benign is True
+
+
+# ──────────────── Inline image size limit ────────────────
+
+
+def test_inline_image_under_limit_passes():
+    # Encoded length under the cap → no exception.
+    payload = "A" * 1024  # ~768 bytes decoded — comfortably under 20 MB
+    assert_inline_image_within_limit("p", payload) is None
+
+
+def test_inline_image_over_limit_raises_client_error():
+    # 4 base64 chars → 3 decoded bytes. Build a payload that exceeds the cap.
+    over_cap = MAX_INLINE_IMAGE_BYTES + (1024 * 1024)  # +1 MB headroom
+    payload = "A" * ((over_cap // 3) * 4)
+    with pytest.raises(ProviderError) as exc:
+        assert_inline_image_within_limit("p", payload)
+    assert exc.value.kind == ErrorKind.CLIENT_ERROR
+    assert exc.value.status == 413
+
+
+def test_openai_compat_adapter_rejects_oversized_inline_image_defense_in_depth():
+    """Defense in depth: even if the schema layer is bypassed (e.g. a future
+    internal caller bypasses Pydantic), the provider adapter's own scan
+    catches an oversized inline image and surfaces a CLIENT_ERROR."""
+    over_cap_bytes = MAX_INLINE_IMAGE_BYTES + (1024 * 1024)
+    huge_b64 = "A" * ((over_cap_bytes // 3) * 4)
+    blocks = [
+        {"type": "text", "text": "what is this"},
+        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{huge_b64}"}},
+    ]
+    prov = _OAIStub(api_key="sk-test", default_model="stub-model")
+    with pytest.raises(ProviderError) as exc:
+        prov._enforce_inline_image_limits(blocks)
+    assert exc.value.kind == ErrorKind.CLIENT_ERROR
+    assert exc.value.status == 413
+
+
+def test_openai_compat_adapter_accepts_within_limit_image():
+    """Sanity: a small inline image goes through the adapter scan untouched."""
+    tiny_b64 = "A" * 1024
+    blocks = [
+        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{tiny_b64}"}},
+    ]
+    prov = _OAIStub(api_key="sk-test", default_model="stub-model")
+    prov._enforce_inline_image_limits(blocks)  # no exception
+
+
+# ──────────────── Token estimation fallback ────────────────
+
+
+def test_estimate_tokens_empty_returns_zero():
+    assert estimate_tokens("") == 0
+
+
+def test_estimate_tokens_short_text_returns_at_least_one():
+    # Even a single character should count as 1 token so per-text totals
+    # never silently drop to zero.
+    assert estimate_tokens("a") == 1
+
+
+def test_estimate_tokens_scales_with_length():
+    # ~4 chars per token; the helper deliberately under-counts vs the
+    # real tokenizer so tpd_limit is never stricter than the upstream.
+    assert estimate_tokens("a" * 100) == 25
+
+
+@pytest.mark.asyncio
+async def test_openai_compat_estimates_tokens_when_usage_missing():
+    """If the upstream omits the usage block, the adapter must fall back
+    to a length-based estimate so usage_events stays non-zero."""
+    def handler(req):
+        body = _openai_response()
+        body.pop("usage", None)
+        # Make the response content long enough that the estimate is non-trivial.
+        body["choices"][0]["message"]["content"] = "x" * 40
+        return httpx.Response(200, json=body)
+
+    resp = await _run_openai(handler)
+    assert resp.completion_tokens == 10  # 40 chars / 4
+    # No input messages were supplied → prompt_tokens is 0 (sum over empty list).
+    assert resp.prompt_tokens == 0

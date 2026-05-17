@@ -10,7 +10,7 @@ from typing import Optional
 import httpx
 
 from .base import EmbeddingResult, ErrorKind, ProviderError
-from .openai_compat import OpenAICompatibleProvider
+from .openai_compat import OpenAICompatibleProvider, _phase_timeout
 
 
 class MistralProvider(OpenAICompatibleProvider):
@@ -35,7 +35,8 @@ class MistralProvider(OpenAICompatibleProvider):
         headers = {**self._auth_headers(), **self._extra_headers()}
         try:
             resp = await client.post(
-                self.EMBEDDINGS_URL, json=payload, headers=headers, timeout=self.request_timeout,
+                self.EMBEDDINGS_URL, json=payload, headers=headers,
+                timeout=_phase_timeout(self.request_timeout),
             )
         except httpx.TimeoutException as e:
             raise ProviderError(self.name, f"timeout: {e}", kind=ErrorKind.NETWORK) from e

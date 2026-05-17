@@ -122,8 +122,10 @@ async def test_gemini_embed_builds_batch_request_and_parses():
     assert result.vectors == [[0.1, 0.2], [0.3, 0.4]]
     assert result.provider == "gemini"
     assert result.model == "text-embedding-004"
-    # Gemini doesn't report token counts for embeddings
-    assert result.prompt_tokens == 0
+    # Gemini doesn't report token counts for embeddings — the adapter
+    # estimates from input length (~chars/4, min 1 per text) so tpd_limit
+    # accounting stays honest. Two short inputs → 1+1 = 2 tokens.
+    assert result.prompt_tokens == 2
 
 
 @pytest.mark.asyncio

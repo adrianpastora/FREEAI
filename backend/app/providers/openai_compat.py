@@ -10,12 +10,22 @@ from typing import AsyncIterator, Optional
 import httpx
 
 from ..schemas import ChatMessage
-from .base import BaseProvider, ErrorKind, ProviderError, ProviderResponse, StreamChunk
+from .base import BaseProvider, ErrorKind, ProviderError, ProviderResponse, StreamChunk, estimate_tokens
 
 # Tolerate a few malformed SSE frames before bailing out — providers occasionally
 # emit truncated lines under network pressure. Reset the counter on every
 # successfully parsed chunk so isolated glitches don't accumulate.
 _MAX_PARSE_ERRORS = 5
+
+# Connect phase is bounded tight: a slow DNS / TLS handshake means the upstream
+# is unreachable, and we'd rather fall back to another provider than hang on
+# httpx's default per-phase budget of `request_timeout`.
+_CONNECT_TIMEOUT = 5.0
+
+
+def _phase_timeout(read: float) -> httpx.Timeout:
+    """Build a per-phase Timeout: short connect, long read, sane write/pool."""
+    return httpx.Timeout(connect=_CONNECT_TIMEOUT, read=read, write=30.0, pool=_CONNECT_TIMEOUT)
 
 
 class OpenAICompatibleProvider(BaseProvider):
@@ -74,7 +84,8 @@ class OpenAICompatibleProvider(BaseProvider):
         headers = {**self._auth_headers(), **self._extra_headers()}
         try:
             resp = await client.post(
-                self.BASE_URL, json=payload, headers=headers, timeout=self.request_timeout
+                self.BASE_URL, json=payload, headers=headers,
+                timeout=_phase_timeout(self.request_timeout),
             )
         except httpx.TimeoutException as e:
             raise ProviderError(self.name, f"timeout: {e}", kind=ErrorKind.NETWORK) from e
@@ -107,12 +118,21 @@ class OpenAICompatibleProvider(BaseProvider):
                 kind=ErrorKind.EMPTY_RESPONSE,
             )
         usage = data.get("usage", {})
+        prompt_tokens = usage.get("prompt_tokens", 0)
+        completion_tokens = usage.get("completion_tokens", 0)
+        # Some OpenAI-compatible gateways (notably a few OpenRouter :free
+        # routes) omit the usage block. Estimate from text length so usage
+        # accounting and tpd_limit don't silently drop to zero.
+        if not prompt_tokens:
+            prompt_tokens = sum(estimate_tokens(m.text_content) for m in messages)
+        if not completion_tokens and content:
+            completion_tokens = estimate_tokens(content)
         return ProviderResponse(
             content=content or "",
             model=data.get("model", chosen),
             provider=self.name,
-            prompt_tokens=usage.get("prompt_tokens", 0),
-            completion_tokens=usage.get("completion_tokens", 0),
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
             raw=data,
         )
 
@@ -136,7 +156,7 @@ class OpenAICompatibleProvider(BaseProvider):
                 self.BASE_URL,
                 json=payload,
                 headers=headers,
-                timeout=httpx.Timeout(self.request_timeout, read=None),
+                timeout=httpx.Timeout(connect=_CONNECT_TIMEOUT, read=None, write=30.0, pool=_CONNECT_TIMEOUT),
             ) as resp:
                 if resp.status_code >= 400:
                     body = await resp.aread()
