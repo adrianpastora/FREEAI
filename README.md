@@ -107,6 +107,13 @@ no manual renewals.
 > `stream: true` mode. The Caddy setup above streams correctly out of
 > the box. See [docs/OPERATIONS.md](docs/OPERATIONS.md) for details.
 
+> **`/metrics` is unauthenticated** — the Prometheus endpoint exposes
+> request counts and latencies (no user data) but has no auth. The
+> `docker-compose.prod.yml` setup above only publishes Caddy to the
+> internet, so it stays internal. If you instead expose port `8000`
+> directly (e.g. with `0.0.0.0:8000` in plain `docker-compose.yml`),
+> firewall or proxy `/metrics` yourself.
+
 ## What it does
 
 - **Multi-provider routing** — adapters for Cerebras, Groq, Google Gemini,
