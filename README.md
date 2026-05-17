@@ -239,6 +239,11 @@ You are responsible for complying with each provider's Terms of Service
 on the accounts you connect. The maintainers of FreeAI are not responsible for
 how you use it.
 
+FreeAI is not affiliated with, endorsed by, or sponsored by Cerebras,
+Groq, Google, Mistral, OpenRouter, Cohere, or HuggingFace. All product
+names, logos, and brands are property of their respective owners and
+are used here for identification purposes only.
+
 ## Run the tests
 
 ```bash
