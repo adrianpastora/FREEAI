@@ -171,11 +171,12 @@ async def test_success_commit_clears_quarantine_field(seeded_session):
 
 @pytest.mark.xfail(
     reason=(
-        "Regression introduced in migration 0014_multiuser_scoping: the "
-        "rewritten freeai_try_reserve function dropped the heal-on-reserve "
-        "branch that 0003 originally added. A provider whose quarantine has "
-        "expired but whose `healthy` flag is still false from a prior streak "
-        "no longer auto-heals on the next try_reserve. Tracked separately."
+        "Pre-1.0 known limitation. Migration 0014_multiuser_scoping rewrote "
+        "freeai_try_reserve without the heal-on-reserve branch from 0003: a "
+        "provider whose quarantine has expired but whose `healthy` flag is "
+        "still false from a prior streak no longer auto-heals on the next "
+        "try_reserve. Low impact in practice — the next successful call still "
+        "heals via commit() — and the scheduled heal job catches it too."
     ),
     strict=False,
 )

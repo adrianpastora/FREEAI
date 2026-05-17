@@ -199,7 +199,7 @@ Releases are tracked in [CHANGELOG.md](CHANGELOG.md).
 
 ## Status
 
-FreeAI is pre-1.0 (`0.6.0`) but actively maintained and used in
+FreeAI is pre-1.0 (`0.7.0`) but actively maintained and used in
 production by its author. Breaking changes land on `main` between minor
 versions — see [CHANGELOG.md](CHANGELOG.md) before upgrading. Highlights
 of what's in the box today:

@@ -3,15 +3,10 @@
 ## Reporting a vulnerability
 
 **Please do not open a public GitHub issue for security-sensitive
-reports.** Use one of these channels instead:
-
-- Open a private advisory via
-  [GitHub → Security → Report a vulnerability](../../security/advisories/new).
-  This is the preferred channel — it's tracked, encrypted in transit, and
-  lets us coordinate a fix and a CVE without leaking the issue first.
-- Or email the project alias listed on the repository profile (a dedicated
-  address used only for FreeAI, not the maintainer's personal inbox). Put
-  `[FreeAI security]` in the subject so it isn't buried.
+reports.** Open a private advisory via
+[GitHub → Security → Report a vulnerability](../../security/advisories/new).
+It's tracked, encrypted in transit, and lets us coordinate a fix and a
+CVE without leaking the issue first.
 
 Please include:
 

@@ -270,6 +270,7 @@ infrastructure.
 - Drop the legacy "Sprint N shipped" changelog section from README —
   replaced with a themed Status section.
 
-[Unreleased]: https://github.com/adrianpastora/FREEAI/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/adrianpastora/FREEAI/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/adrianpastora/FREEAI/releases/tag/v0.7.0
 [0.6.0]: https://github.com/adrianpastora/FREEAI/releases/tag/v0.6.0
 [0.5.0]: https://github.com/adrianpastora/FREEAI/releases/tag/v0.5.0

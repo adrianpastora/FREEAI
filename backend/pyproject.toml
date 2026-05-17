@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "freeai"
-version = "0.6.0"
+version = "0.7.0"
 description = "Multi-provider AI orchestrator — one OpenAI-compatible endpoint, many free-tier providers."
 readme = { file = "../README.md", content-type = "text/markdown" }
 license = { file = "../LICENSE" }
