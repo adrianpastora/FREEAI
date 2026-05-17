@@ -1,9 +1,12 @@
 name: tests
 
-# Runs the full pytest suite on every push and pull request, against a
-# real Postgres 16 service container so the integration tests that exercise
-# the atomic reservation function, alembic migrations, and the per-user
-# repositories actually run — not the fast-only subset.
+# Runs the full pytest suite against a real Postgres 16 service container.
+#
+# Manual-only trigger: this workflow does NOT run automatically on push or
+# PR. Go to the Actions tab → "tests" → "Run workflow" to execute it.
+# The rationale is cost discipline during active development — the local
+# `pytest` run (testcontainers) is the source of truth, and CI is only
+# used when explicitly verifying something for a release or for a PR review.
 #
 # Why a service container instead of testcontainers-in-CI:
 #   • testcontainers would spawn its own postgres container *inside* the
@@ -18,16 +21,7 @@ name: tests
 # psycopg2 is never needed. Avoiding it keeps the CI install lean.
 
 on:
-  push:
-    branches: ["**"]
-  pull_request:
-    branches: [main]
-
-# Cancel superseded runs on the same branch — saves Actions minutes when
-# you push twice in quick succession or rebase.
-concurrency:
-  group: tests-${{ github.ref }}
-  cancel-in-progress: true
+  workflow_dispatch:
 
 jobs:
   pytest:
