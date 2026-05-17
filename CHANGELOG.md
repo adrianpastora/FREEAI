@@ -13,6 +13,17 @@ pre-1.0 versions — follow the Unreleased section if you track `main`.
 <!-- Add entries here as they land. Categories used in this changelog:
      Added, Changed, Fixed, Security, Removed, Deprecated. -->
 
+## [0.7.3] — 2026-05-17
+
+### Fixed
+- Boot crash on the pricing-admin router. `DELETE /api/pricing/{provider}/{model}`
+  was declared with `status_code=204` but kept `HTTPException(404, ...)`
+  for the not-found case — FastAPI 0.115 rejects any body declaration
+  with 204 at import time, taking the whole app down with
+  `AssertionError: Status code 204 must not have a response body`.
+  Endpoint now returns 200 with `{"deleted": true}` on success and still
+  raises 404 on missing rows.
+
 ## [0.7.2] — 2026-05-17
 
 Documentation polish for the first public release.
@@ -288,7 +299,8 @@ infrastructure.
 - Drop the legacy "Sprint N shipped" changelog section from README —
   replaced with a themed Status section.
 
-[Unreleased]: https://github.com/adrianpastora/FREEAI/compare/v0.7.2...HEAD
+[Unreleased]: https://github.com/adrianpastora/FREEAI/compare/v0.7.3...HEAD
+[0.7.3]: https://github.com/adrianpastora/FREEAI/releases/tag/v0.7.3
 [0.7.2]: https://github.com/adrianpastora/FREEAI/releases/tag/v0.7.2
 [0.7.1]: https://github.com/adrianpastora/FREEAI/releases/tag/v0.7.1
 [0.7.0]: https://github.com/adrianpastora/FREEAI/releases/tag/v0.7.0

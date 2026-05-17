@@ -122,13 +122,13 @@ async def upsert_price(
     return _to_response(dto)
 
 
-@router.delete("/{provider}/{model:path}", status_code=204)
+@router.delete("/{provider}/{model:path}")
 async def delete_price(
     provider: str,
     model: str,
     session: AsyncSession = Depends(get_session),
     _: CurrentUser = Depends(require_admin_user),
-) -> None:
+) -> dict[str, bool]:
     """Drop a price row. Future dispatches for this (provider, model)
     will record ``cost_usd=NULL`` until a new row is inserted."""
     repo = PricingRepository(session)
@@ -136,3 +136,4 @@ async def delete_price(
     if not deleted:
         raise HTTPException(404, f"no price row for {provider}/{model}")
     await session.commit()
+    return {"deleted": True}
