@@ -40,6 +40,7 @@ from .providers import (
 from .repositories import (
     AppConfigDTO,
     ConfigRepository,
+    PricingRepository,
     ProviderConfigDTO,
     RateRepository,
     ReservationToken,
@@ -406,6 +407,35 @@ class Orchestrator:
         latency_ms = int((time.perf_counter() - started) * 1000)
         return _AttemptResult(response=None, error=last_error, latency_ms=latency_ms)
 
+    @staticmethod
+    async def _resolve_cost(
+        pricing_repo: Optional[PricingRepository],
+        *,
+        provider: str,
+        model: Optional[str],
+        prompt_tokens: int,
+        completion_tokens: int,
+    ) -> Optional[float]:
+        """Look up the frozen USD cost for one dispatch.
+
+        Returns ``None`` (not 0.0) when no price row is on file — kept
+        distinct in analytics so coverage gaps are visible. Errors in the
+        pricing lookup are swallowed and treated as "no price": cost
+        accounting must never block recording a real dispatch.
+        """
+        if pricing_repo is None or model is None:
+            return None
+        try:
+            return await pricing_repo.compute_cost_usd(
+                provider, model, prompt_tokens, completion_tokens,
+            )
+        except Exception:  # noqa: BLE001
+            log.warning(
+                "pricing_lookup_failed",
+                provider=provider, model=model, exc_info=True,
+            )
+            return None
+
     async def _commit_attempt(
         self,
         rate_repo: RateRepository,
@@ -417,6 +447,7 @@ class Orchestrator:
         client_hash: Optional[str],
         user_id: Optional[int] = None,
         app_cfg: Optional[AppConfigDTO] = None,
+        pricing_repo: Optional[PricingRepository] = None,
     ) -> None:
         """Record the outcome of a provider attempt. Never raises — a DB
         error during commit must not mask a successful provider response."""
@@ -428,6 +459,7 @@ class Orchestrator:
                 rate_repo, usage_repo, reservation, result,
                 strategy, fallback_position, client_hash, user_id,
                 app_cfg=app_cfg,
+                pricing_repo=pricing_repo,
             )
         except Exception:  # noqa: BLE001
             log.error(
@@ -447,6 +479,7 @@ class Orchestrator:
         client_hash: Optional[str],
         user_id: Optional[int] = None,
         app_cfg: Optional[AppConfigDTO] = None,
+        pricing_repo: Optional[PricingRepository] = None,
     ) -> None:
         outcome: str
         if result.response is not None:
@@ -454,6 +487,13 @@ class Orchestrator:
             provider_calls_total.labels(provider=reservation.provider, outcome="success").inc()
             await rate_repo.commit(
                 reservation, result.latency_ms, ok=True,
+                prompt_tokens=result.response.prompt_tokens,
+                completion_tokens=result.response.completion_tokens,
+            )
+            cost_usd = await self._resolve_cost(
+                pricing_repo,
+                provider=reservation.provider,
+                model=result.response.model,
                 prompt_tokens=result.response.prompt_tokens,
                 completion_tokens=result.response.completion_tokens,
             )
@@ -469,6 +509,7 @@ class Orchestrator:
                     fallback_position=fallback_position,
                     client_hash=client_hash,
                     user_id=user_id,
+                    cost_usd=cost_usd,
                 )
             )
             return
@@ -515,6 +556,7 @@ class Orchestrator:
         usage_repo: UsageRepository,
         strategy_repo: StrategyRepository,
         client_hash: Optional[str] = None,
+        pricing_repo: Optional[PricingRepository] = None,
     ) -> ChatCompletionResponse:
         app_cfg = await config_repo.get_app_config()
         strategy, definition, signal, virtual_model_id, provider_model = await self._resolve_strategy(req, strategy_repo)
@@ -595,6 +637,7 @@ class Orchestrator:
                     client_hash=client_hash,
                     user_id=user_id,
                     app_cfg=app_cfg,
+                    pricing_repo=pricing_repo,
                 )
                 reservation_settled = True
             finally:
@@ -676,6 +719,7 @@ class Orchestrator:
         usage_repo: UsageRepository,
         strategy_repo: StrategyRepository,
         client_hash: Optional[str] = None,
+        pricing_repo: Optional[PricingRepository] = None,
     ) -> AsyncIterator[dict]:
         app_cfg = await config_repo.get_app_config()
         strategy, definition, _, virtual_model_id, provider_model = await self._resolve_strategy(req, strategy_repo)
@@ -788,6 +832,13 @@ class Orchestrator:
                         completion_tokens=completion_tokens,
                     )
                     reservation_settled = True
+                    cost_usd = await self._resolve_cost(
+                        pricing_repo,
+                        provider=cand.name,
+                        model=model_seen,
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                    )
                     await usage_repo.record(
                         UsageEvent(
                             provider=cand.name,
@@ -801,6 +852,7 @@ class Orchestrator:
                             fallback_position=fallback_position,
                             client_hash=client_hash,
                             user_id=user_id,
+                            cost_usd=cost_usd,
                         )
                     )
                     yield self._format_sse_done(completion_id, created, cand.name, strategy)

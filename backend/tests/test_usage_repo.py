@@ -52,7 +52,11 @@ async def test_summary_single_event(session):
         "success": 1,
         "avg_latency_ms": 150,
         "tokens": 200,
+        # No price row was inserted for this synthetic event, so cost_usd
+        # stays at 0.0 (NULL cost_usd → 0 via COALESCE in the sum).
+        "cost_usd": 0.0,
     }
+    assert summary.total_cost_usd == 0.0
 
 
 @pytest.mark.asyncio

@@ -101,28 +101,52 @@ class ProviderError(Exception):
         }
 
 
-# Rough conversion factor used when an upstream doesn't report a usage
-# block. Empirically tiktoken's BPE produces ~4 characters per token for
-# English prose; multilingual content runs closer to ~3, code closer to
-# ~3.5. We pick 4 as a defensive *under*-count so the rate limiter is
-# never less strict than the real provider — better to count slightly
-# few tokens than to overshoot and reject legitimate traffic. This is a
-# floor for the per-day token budget, not an exact accounting.
+# Fallback chars-per-token used when tiktoken is not importable for any
+# reason. Kept conservative — under-counts vs the true BPE so the
+# rate-limit / cost path is never stricter than the upstream truth.
 _CHARS_PER_TOKEN_ESTIMATE = 4
 
 
-def estimate_tokens(text: str) -> int:
-    """Cheap token-count estimator for paths where the provider doesn't
-    return a usage block. Uses character length / 4 as a proxy.
+def _load_tiktoken_encoder():
+    """Best-effort tiktoken loader. Returns the encoder or ``None``.
 
-    Trade-off: deliberately approximate. Real tokenization would mean
-    bundling tiktoken (or a per-model BPE table), which is heavy for what
-    is essentially a fallback. The estimate is conservative — slightly
-    fewer tokens than the truth — so we never penalize users for tokens
-    the upstream didn't actually charge.
+    ``cl100k_base`` is the BPE used by GPT-4 / GPT-3.5 / text-embedding-3.
+    It's a close-enough proxy for Claude, Llama-3, Mistral, and Gemini
+    prose (~5-10% drift in either direction); we accept that error
+    because using a single encoder avoids per-family dependencies
+    (sentencepiece, anthropic SDK, vertex SDK) and keeps cost accounting
+    explainable. Loading is cached at module scope — the BPE table is
+    ~1.5 MB and reading it on every call would dominate hot-path CPU.
+    """
+    try:
+        import tiktoken  # type: ignore[import-not-found]
+        return tiktoken.get_encoding("cl100k_base")
+    except Exception:
+        # tiktoken not installed, or the encoding download failed (e.g.
+        # offline first-run). The chars-per-token fallback below keeps
+        # accounting honest enough — we'd rather degrade gracefully than
+        # crash a request just because token counting is unavailable.
+        return None
+
+
+_TOKEN_ENCODER = _load_tiktoken_encoder()
+
+
+def estimate_tokens(text: str) -> int:
+    """Token count for paths where the provider doesn't report ``usage``.
+
+    Uses tiktoken's ``cl100k_base`` BPE when available, else a chars/4
+    heuristic. The contract is *approximate but never zero for non-empty
+    input* — downstream consumers (tpd_limit, cost_usd computation) rely
+    on the count being a usable floor when the upstream is silent.
     """
     if not text:
         return 0
+    if _TOKEN_ENCODER is not None:
+        # ``disallowed_special=()`` makes tokenization match the model's
+        # behavior on user prose (special tokens like <|endoftext|> are
+        # counted as regular text rather than rejected).
+        return len(_TOKEN_ENCODER.encode(text, disallowed_special=()))
     return max(1, len(text) // _CHARS_PER_TOKEN_ESTIMATE)
 
 

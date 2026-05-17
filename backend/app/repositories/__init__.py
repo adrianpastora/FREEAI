@@ -2,6 +2,7 @@
 from .client_rate_repo import ClientRateRepository, ClientReservation
 from .client_repo import ClientRepository
 from .config_repo import AppConfigDTO, ConfigRepository, ProviderConfigDTO
+from .pricing_repo import ModelPriceDTO, PricingRepository
 from .rate_repo import RateRepository, ReservationToken
 from .strategy_repo import StrategyDTO, StrategyRepository
 from .usage_repo import AnalyticsSummary, UsageEvent, UsageRepository
@@ -15,6 +16,8 @@ __all__ = [
     "ClientRepository",
     "ClientReservation",
     "ConfigRepository",
+    "ModelPriceDTO",
+    "PricingRepository",
     "ProviderConfigDTO",
     "RateRepository",
     "RefreshTokenRepository",

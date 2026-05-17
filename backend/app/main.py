@@ -30,6 +30,7 @@ from .routers import (
     embeddings,
     health,
     me_providers,
+    pricing_admin,
     providers_admin,
     setup,
     strategies,
@@ -177,6 +178,7 @@ app.include_router(chat.router)
 app.include_router(transcriptions.router)
 app.include_router(embeddings.router)
 app.include_router(providers_admin.router)
+app.include_router(pricing_admin.router)
 app.include_router(config.router)
 app.include_router(strategies.router)
 app.include_router(strategies.tags_router)

@@ -368,23 +368,30 @@ def test_estimate_tokens_short_text_returns_at_least_one():
 
 
 def test_estimate_tokens_scales_with_length():
-    # ~4 chars per token; the helper deliberately under-counts vs the
-    # real tokenizer so tpd_limit is never stricter than the upstream.
-    assert estimate_tokens("a" * 100) == 25
+    # The estimator is order-of-magnitude correct: a 100-char string lands
+    # well under "1 token per char" and well over "1 token total". Exact
+    # value depends on whether tiktoken is installed; we only require it
+    # falls in a sane band so the test isn't brittle to encoder changes.
+    n = estimate_tokens("a" * 100)
+    assert 10 <= n <= 50
 
 
 @pytest.mark.asyncio
 async def test_openai_compat_estimates_tokens_when_usage_missing():
     """If the upstream omits the usage block, the adapter must fall back
-    to a length-based estimate so usage_events stays non-zero."""
+    to a token estimate so usage_events stays non-zero."""
+    payload_text = "x" * 40
+
     def handler(req):
         body = _openai_response()
         body.pop("usage", None)
-        # Make the response content long enough that the estimate is non-trivial.
-        body["choices"][0]["message"]["content"] = "x" * 40
+        body["choices"][0]["message"]["content"] = payload_text
         return httpx.Response(200, json=body)
 
     resp = await _run_openai(handler)
-    assert resp.completion_tokens == 10  # 40 chars / 4
-    # No input messages were supplied → prompt_tokens is 0 (sum over empty list).
+    # Don't pin the exact tokenizer output — just require the fallback
+    # produced a non-zero count for the 40-char response, and zero for
+    # the empty input list (sum over no messages).
+    assert resp.completion_tokens > 0
+    assert resp.completion_tokens == estimate_tokens(payload_text)
     assert resp.prompt_tokens == 0

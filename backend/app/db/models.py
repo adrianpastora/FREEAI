@@ -168,6 +168,10 @@ class UsageEventRow(Base):
     client_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     user_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     ttfb_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # USD cost at write time. NULL means "no price was on file for this
+    # (provider, model) when the call happened" — different from 0.0 which
+    # is "explicitly free". Migration 0020 added this column.
+    cost_usd: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
 
 
 class UsageDailyRollupRow(Base):
@@ -194,6 +198,10 @@ class UsageDailyRollupRow(Base):
     avg_ttfb_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     prompt_tokens: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
     completion_tokens: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    # Aggregated USD cost. Sum of the per-event cost_usd values that had a
+    # price on file; events with NULL cost are skipped from the sum so this
+    # never silently drifts toward zero when prices are missing.
+    sum_cost_usd: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     errors_by_kind: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
     fallback_position_hist: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
     updated_at: Mapped[float] = mapped_column(
@@ -249,6 +257,37 @@ class UserProviderRow(Base):
     default_model: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
     max_retries: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     created_at: Mapped[float] = mapped_column(Float, default=time.time, nullable=False)
+    updated_at: Mapped[float] = mapped_column(
+        Float, default=time.time, onupdate=time.time, nullable=False
+    )
+
+
+class ModelPriceRow(Base):
+    """Per-(provider, model) pricing used to freeze ``usage_events.cost_usd``.
+
+    Prices are stored *per million tokens* in USD, matching every provider's
+    public price-list unit and avoiding per-token rounding error. The
+    repository computes::
+
+        cost = (prompt_tokens / 1e6) * input_price + \\
+               (completion_tokens / 1e6) * output_price
+
+    Built-in seed rows are inserted by migration 0020; admins can update any
+    row at runtime without a deploy. A missing row → ``cost_usd = NULL`` on
+    the resulting usage event (not 0.0) so missing-price coverage is
+    auditable in analytics.
+    """
+    __tablename__ = "model_prices"
+
+    provider_name: Mapped[str] = mapped_column(String(64), primary_key=True)
+    model: Mapped[str] = mapped_column(String(256), primary_key=True)
+    input_price_per_million_usd: Mapped[float] = mapped_column(
+        Float, default=0.0, nullable=False,
+    )
+    output_price_per_million_usd: Mapped[float] = mapped_column(
+        Float, default=0.0, nullable=False,
+    )
+    currency: Mapped[str] = mapped_column(String(8), default="USD", nullable=False)
     updated_at: Mapped[float] = mapped_column(
         Float, default=time.time, onupdate=time.time, nullable=False
     )

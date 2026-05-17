@@ -99,9 +99,15 @@ def _truncate_all_tables(url: str) -> None:
                     text(
                         "TRUNCATE rate_events, provider_stats, providers, app_config, clients, "
                         "client_rate_events, strategies, usage_events, usage_daily_rollup, "
-                        "user_providers, refresh_tokens, users RESTART IDENTITY CASCADE"
+                        "user_providers, refresh_tokens, users, model_prices "
+                        "RESTART IDENTITY CASCADE"
                     )
                 )
+                # The pricing repo caches lookups in-process. After we wipe
+                # the table the cache must be cleared so the next test
+                # doesn't see ghost prices from the previous run.
+                from app.repositories import PricingRepository
+                PricingRepository.clear_cache()
         except ProgrammingError as e:
             msg = str(e.orig) if getattr(e, "orig", None) else str(e)
             if "does not exist" not in msg:

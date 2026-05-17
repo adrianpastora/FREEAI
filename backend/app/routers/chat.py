@@ -16,6 +16,7 @@ from ..orchestrator import Orchestrator
 from ..providers import ProviderError
 from ..repositories import (
     ConfigRepository,
+    PricingRepository,
     RateRepository,
     StrategyRepository,
     UsageRepository,
@@ -72,11 +73,13 @@ async def chat_completions(
                     usage_repo = UsageRepository(stream_session)
                     strategy_repo = StrategyRepository(stream_session)
                     user_provider_repo = UserProviderRepository(stream_session)
+                    pricing_repo = PricingRepository(stream_session)
                     try:
                         async for chunk in orch.stream(
                             req, user_id, user_provider_repo,
                             config_repo, rate_repo, usage_repo, strategy_repo,
                             client_hash=client_hash,
+                            pricing_repo=pricing_repo,
                         ):
                             yield f"data: {json.dumps(chunk)}\n\n"
                         yield "data: [DONE]\n\n"
@@ -101,11 +104,13 @@ async def chat_completions(
         usage_repo = UsageRepository(session)
         strategy_repo = StrategyRepository(session)
         user_provider_repo = UserProviderRepository(session)
+        pricing_repo = PricingRepository(session)
         try:
             result = await orch.chat(
                 req, user_id, user_provider_repo,
                 config_repo, rate_repo, usage_repo, strategy_repo,
                 client_hash=client_hash,
+                pricing_repo=pricing_repo,
             )
             await session.commit()
             return result

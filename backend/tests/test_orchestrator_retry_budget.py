@@ -155,3 +155,60 @@ def test_retry_delay_ignores_zero_retry_after():
     lo, hi = Orchestrator._RETRY_JITTER_RANGE
     delay = Orchestrator._retry_delay(err, attempt=0)
     assert base * lo <= delay <= base * hi
+
+
+# ──────────────── Pricing integration: _resolve_cost ────────────────
+
+
+@pytest.mark.asyncio
+async def test_resolve_cost_without_repo_returns_none():
+    """No pricing_repo passed → orchestrator records cost_usd=None.
+
+    This is the path taken by callers that haven't been wired up yet (or
+    by test code that wants to skip pricing). Must never raise."""
+    cost = await Orchestrator._resolve_cost(
+        None, provider="groq", model="m", prompt_tokens=100, completion_tokens=100,
+    )
+    assert cost is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_cost_without_model_returns_none():
+    """Error paths record model=None; pricing must short-circuit cleanly."""
+    class _StubRepo:
+        async def compute_cost_usd(self, *a, **kw):  # pragma: no cover
+            raise AssertionError("should not be called when model is None")
+
+    cost = await Orchestrator._resolve_cost(
+        _StubRepo(), provider="groq", model=None,
+        prompt_tokens=100, completion_tokens=100,
+    )
+    assert cost is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_cost_swallows_repo_errors():
+    """A DB error during pricing must not break recording a real dispatch
+    — cost accounting is a secondary concern, not a hard dependency."""
+    class _BoomRepo:
+        async def compute_cost_usd(self, *a, **kw):
+            raise RuntimeError("db down")
+
+    cost = await Orchestrator._resolve_cost(
+        _BoomRepo(), provider="groq", model="m",
+        prompt_tokens=100, completion_tokens=100,
+    )
+    assert cost is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_cost_passes_through_repo_value():
+    class _FixedRepo:
+        async def compute_cost_usd(self, provider, model, prompt_tokens, completion_tokens):
+            return 0.42
+
+    cost = await Orchestrator._resolve_cost(
+        _FixedRepo(), provider="groq", model="m",
+        prompt_tokens=100, completion_tokens=100,
+    )
+    assert cost == 0.42

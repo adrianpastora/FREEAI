@@ -123,9 +123,13 @@ async def test_gemini_embed_builds_batch_request_and_parses():
     assert result.provider == "gemini"
     assert result.model == "text-embedding-004"
     # Gemini doesn't report token counts for embeddings — the adapter
-    # estimates from input length (~chars/4, min 1 per text) so tpd_limit
-    # accounting stays honest. Two short inputs → 1+1 = 2 tokens.
-    assert result.prompt_tokens == 2
+    # estimates per-input via the shared tokenizer so tpd_limit accounting
+    # stays honest. We only assert "non-zero and consistent with the
+    # estimator", not an exact number, so the test is robust to tokenizer
+    # changes (tiktoken vs chars/4 fallback).
+    from app.providers.base import estimate_tokens
+    assert result.prompt_tokens == estimate_tokens("hi") + estimate_tokens("there")
+    assert result.prompt_tokens > 0
 
 
 @pytest.mark.asyncio

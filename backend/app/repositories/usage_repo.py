@@ -25,6 +25,10 @@ class UsageEvent:
     client_hash: Optional[str] = None
     user_id: Optional[int] = None
     ttfb_ms: Optional[int] = None
+    # USD cost frozen at write time. ``None`` means "no price was on file
+    # for this (provider, model) at the time of the call" — kept distinct
+    # from 0.0 (explicitly free) so analytics can spot coverage gaps.
+    cost_usd: Optional[float] = None
 
 
 @dataclass
@@ -47,6 +51,10 @@ class AnalyticsSummary:
     avg_ttfb_ms: Optional[int] = None
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    # Frozen USD spend over the window. Sums per-event cost_usd where it
+    # was resolved at write time; missing prices (NULL) are excluded so the
+    # number stays auditable when coverage is incomplete.
+    total_cost_usd: float = 0.0
     errors_by_kind: list[dict] = field(default_factory=list)   # [{kind, calls}]
     by_model: list[dict] = field(default_factory=list)         # [{model, calls, success, avg_latency_ms, tokens}]
     fallback_hist: list[dict] = field(default_factory=list)    # [{position, calls}]
@@ -62,9 +70,10 @@ class HistoricalSummary:
     failed_calls: int
     success_rate: float
     total_tokens: int
-    daily: list[dict]        # [{day, calls, success, tokens, p95_latency_ms}]
-    by_provider: list[dict]  # [{provider, calls, success, tokens, avg_latency_ms}]
-    by_model: list[dict]     # [{model, calls, success, tokens, avg_latency_ms}]
+    total_cost_usd: float
+    daily: list[dict]        # [{day, calls, success, tokens, cost_usd, p95_latency_ms}]
+    by_provider: list[dict]  # [{provider, calls, success, tokens, cost_usd, avg_latency_ms}]
+    by_model: list[dict]     # [{model, calls, success, tokens, cost_usd, avg_latency_ms}]
 
 
 class UsageRepository:
@@ -86,6 +95,7 @@ class UsageRepository:
                 client_hash=event.client_hash,
                 user_id=event.user_id,
                 ttfb_ms=event.ttfb_ms,
+                cost_usd=event.cost_usd,
             )
         )
         # We don't flush/commit here — the caller's session commit batches this
@@ -122,13 +132,14 @@ class UsageRepository:
                     COALESCE(SUM(prompt_tokens + completion_tokens), 0) AS tokens,
                     COALESCE(SUM(prompt_tokens), 0) AS prompt_sum,
                     COALESCE(SUM(completion_tokens), 0) AS completion_sum,
-                    AVG(ttfb_ms) FILTER (WHERE ttfb_ms IS NOT NULL) AS avg_ttfb
+                    AVG(ttfb_ms) FILTER (WHERE ttfb_ms IS NOT NULL) AS avg_ttfb,
+                    COALESCE(SUM(cost_usd), 0) AS cost_usd
                 FROM usage_events
                 WHERE occurred_at >= :since {user_filter}
             """).bindparams(**params)
         )
         row = totals.one()
-        total, success, p50, p95, p99, tokens, prompt_sum, completion_sum, avg_ttfb = row
+        total, success, p50, p95, p99, tokens, prompt_sum, completion_sum, avg_ttfb, cost_usd = row
         failed = total - success
         rate = (success / total) if total else 0.0
 
@@ -139,7 +150,8 @@ class UsageRepository:
                        COUNT(*) AS calls,
                        COUNT(*) FILTER (WHERE outcome = 'success') AS success,
                        COALESCE(AVG(latency_ms), 0)::int AS avg_latency,
-                       COALESCE(SUM(prompt_tokens + completion_tokens), 0) AS tokens
+                       COALESCE(SUM(prompt_tokens + completion_tokens), 0) AS tokens,
+                       COALESCE(SUM(cost_usd), 0) AS cost_usd
                 FROM usage_events
                 WHERE occurred_at >= :since {user_filter}
                 GROUP BY provider_name
@@ -153,6 +165,7 @@ class UsageRepository:
                 "success": int(r[2]),
                 "avg_latency_ms": int(r[3]),
                 "tokens": int(r[4]),
+                "cost_usd": float(r[5] or 0.0),
             }
             for r in by_provider_result.all()
         ]
@@ -188,7 +201,8 @@ class UsageRepository:
                        COUNT(*) AS calls,
                        COUNT(*) FILTER (WHERE outcome = 'success') AS success,
                        COALESCE(AVG(latency_ms), 0)::int AS avg_latency,
-                       COALESCE(SUM(prompt_tokens + completion_tokens), 0) AS tokens
+                       COALESCE(SUM(prompt_tokens + completion_tokens), 0) AS tokens,
+                       COALESCE(SUM(cost_usd), 0) AS cost_usd
                 FROM usage_events
                 WHERE occurred_at >= :since {user_filter}
                 GROUP BY model_name
@@ -203,6 +217,7 @@ class UsageRepository:
                 "success": int(r[2]),
                 "avg_latency_ms": int(r[3]),
                 "tokens": int(r[4]),
+                "cost_usd": float(r[5] or 0.0),
             }
             for r in by_model_result.all()
         ]
@@ -311,6 +326,7 @@ class UsageRepository:
             total_tokens=int(tokens),
             prompt_tokens=int(prompt_sum),
             completion_tokens=int(completion_sum),
+            total_cost_usd=float(cost_usd or 0.0),
             by_provider=by_provider,
             by_strategy=by_strategy,
             by_outcome=by_outcome,
@@ -351,6 +367,7 @@ class UsageRepository:
                     p50_latency_ms, p95_latency_ms, p99_latency_ms,
                     avg_ttfb_ms,
                     prompt_tokens, completion_tokens,
+                    sum_cost_usd,
                     errors_by_kind, fallback_position_hist,
                     updated_at
                 )
@@ -370,6 +387,10 @@ class UsageRepository:
                     AVG(ttfb_ms) FILTER (WHERE ttfb_ms IS NOT NULL)::int AS avg_ttfb,
                     COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
                     COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
+                    -- NULL cost_usd rows are skipped from the sum (NULL means
+                    -- "no price was on file at write time"); 0.0 rows count
+                    -- as zero (explicit free-tier).
+                    COALESCE(SUM(cost_usd), 0) AS sum_cost_usd,
                     COALESCE(
                         jsonb_object_agg(outcome, cnt) FILTER (WHERE outcome <> 'success'),
                         '{}'::jsonb
@@ -383,6 +404,7 @@ class UsageRepository:
                     SELECT
                         user_id, provider_name, model, strategy, outcome,
                         latency_ms, ttfb_ms, prompt_tokens, completion_tokens,
+                        cost_usd,
                         LEAST(fallback_position, 3) AS fpos,
                         COUNT(*) OVER (
                             PARTITION BY COALESCE(user_id, 0), provider_name,
@@ -423,12 +445,13 @@ class UsageRepository:
                     COALESCE(SUM(total_calls), 0) AS total,
                     COALESCE(SUM(success_calls), 0) AS success,
                     COALESCE(SUM(failed_calls), 0) AS failed,
-                    COALESCE(SUM(prompt_tokens + completion_tokens), 0) AS tokens
+                    COALESCE(SUM(prompt_tokens + completion_tokens), 0) AS tokens,
+                    COALESCE(SUM(sum_cost_usd), 0) AS cost_usd
                 FROM usage_daily_rollup
                 WHERE day >= :start {user_filter}
             """).bindparams(**params)
         )
-        total, success, failed, tokens = totals_result.one()
+        total, success, failed, tokens, cost_usd = totals_result.one()
         rate = (success / total) if total else 0.0
 
         # One row per day — P95 is the *max* of per-bucket P95s, which is a
@@ -439,6 +462,7 @@ class UsageRepository:
                        SUM(total_calls) AS calls,
                        SUM(success_calls) AS success,
                        SUM(prompt_tokens + completion_tokens) AS tokens,
+                       SUM(sum_cost_usd) AS cost_usd,
                        MAX(p95_latency_ms) AS p95
                 FROM usage_daily_rollup
                 WHERE day >= :start {user_filter}
@@ -459,7 +483,8 @@ class UsageRepository:
                     "calls": int(r[1] or 0),
                     "success": int(r[2] or 0),
                     "tokens": int(r[3] or 0),
-                    "p95_latency_ms": int(r[4]) if r[4] else None,
+                    "cost_usd": float(r[4] or 0.0),
+                    "p95_latency_ms": int(r[5]) if r[5] else None,
                 })
             else:
                 daily.append({
@@ -467,6 +492,7 @@ class UsageRepository:
                     "calls": 0,
                     "success": 0,
                     "tokens": 0,
+                    "cost_usd": 0.0,
                     "p95_latency_ms": None,
                 })
 
@@ -476,6 +502,7 @@ class UsageRepository:
                        SUM(total_calls) AS calls,
                        SUM(success_calls) AS success,
                        SUM(prompt_tokens + completion_tokens) AS tokens,
+                       SUM(sum_cost_usd) AS cost_usd,
                        CASE WHEN SUM(total_calls) > 0
                             THEN (SUM(sum_latency_ms) / SUM(total_calls))::int
                             ELSE 0 END AS avg_latency
@@ -491,7 +518,8 @@ class UsageRepository:
                 "calls": int(r[1] or 0),
                 "success": int(r[2] or 0),
                 "tokens": int(r[3] or 0),
-                "avg_latency_ms": int(r[4] or 0),
+                "cost_usd": float(r[4] or 0.0),
+                "avg_latency_ms": int(r[5] or 0),
             }
             for r in by_provider_result.all()
         ]
@@ -502,6 +530,7 @@ class UsageRepository:
                        SUM(total_calls) AS calls,
                        SUM(success_calls) AS success,
                        SUM(prompt_tokens + completion_tokens) AS tokens,
+                       SUM(sum_cost_usd) AS cost_usd,
                        CASE WHEN SUM(total_calls) > 0
                             THEN (SUM(sum_latency_ms) / SUM(total_calls))::int
                             ELSE 0 END AS avg_latency
@@ -518,7 +547,8 @@ class UsageRepository:
                 "calls": int(r[1] or 0),
                 "success": int(r[2] or 0),
                 "tokens": int(r[3] or 0),
-                "avg_latency_ms": int(r[4] or 0),
+                "cost_usd": float(r[4] or 0.0),
+                "avg_latency_ms": int(r[5] or 0),
             }
             for r in by_model_result.all()
         ]
@@ -530,6 +560,7 @@ class UsageRepository:
             failed_calls=int(failed),
             success_rate=round(rate, 4),
             total_tokens=int(tokens),
+            total_cost_usd=float(cost_usd or 0.0),
             daily=daily,
             by_provider=by_provider,
             by_model=by_model,

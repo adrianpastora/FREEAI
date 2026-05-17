@@ -18,3 +18,9 @@ alembic==1.13.3
 # observability
 structlog==24.4.0
 prometheus-client==0.21.0
+
+# tokenization — single encoder (cl100k_base) used as a usage / cost
+# fallback when an upstream omits its own usage block. Close enough to
+# the true BPE for GPT-4/Claude/Llama-3 prose; biased slightly low for
+# Gemini/Mistral which is fine since we only use it as a floor.
+tiktoken==0.8.0
