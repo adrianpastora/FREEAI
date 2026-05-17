@@ -181,13 +181,16 @@
     <h3 id="masterKeyTitle">CREATE&nbsp;ADMIN</h3>
     <p class="setup-intro" id="masterKeyIntroDefault">
       Welcome. Pick an <strong>admin username</strong> and a <strong>password</strong>
-      to create the first account. That's it — encryption and bootstrap
-      protection are handled automatically.
+      to create the first account. That's it — the encryption key and the
+      one-time setup token are handled automatically because you're connecting
+      from this machine.
     </p>
     <p class="setup-intro" id="masterKeyIntroParanoid" hidden>
-      <strong>Paranoid mode</strong> is on. Copy the <strong>bootstrap token</strong>
-      and <strong>master encryption key</strong> from the server logs, then choose
-      your admin credentials and submit.
+      This server was started with <code>FREEAI_REQUIRE_BOOTSTRAP_HEADER=true</code>,
+      which means the auto-handoff of the setup token is disabled. Find the
+      one-time <strong>bootstrap token</strong> and <strong>master encryption key</strong>
+      printed in the server logs at startup and paste them below, along with
+      the admin credentials you want.
     </p>
     <label class="field" id="masterKeyBootstrapField" hidden>
       <span class="field__label">BOOTSTRAP&nbsp;TOKEN</span>

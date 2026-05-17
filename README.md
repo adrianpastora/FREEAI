@@ -55,6 +55,10 @@ you create your admin.
 Optional knobs:
 - `python scripts/ensure_dotenv.py` writes a random Postgres password to `.env`.
 - `FREEAI_LEGACY_INITIAL_SETUP=true` re-enables the old admin-token wizard.
+- `python scripts/doctor.py` reports which startup mode this install is in
+  and why — useful if the create-admin modal looks different from what
+  you expected (legacy admin token in `.env`, pending master key, paranoid
+  mode enabled, etc.).
 
 Add provider keys in the panel, create a client from *Clients*, and you have a
 working endpoint:
