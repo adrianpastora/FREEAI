@@ -4,13 +4,8 @@ __pycache__/
 .venv/
 venv/
 .env
-backend/data/config.json
-backend/data/.master_key
-backend/data/.master_key.pending
-backend/data/.jwt_secret
-backend/data/admin_token
-backend/data/clients.json
-backend/data/test*
+backend/data/*
+!backend/data/.gitkeep
 *.log
 *.db
 *.sqlite
