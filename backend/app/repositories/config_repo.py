@@ -57,8 +57,18 @@ class AppConfigDTO:
 DEFAULT_PROVIDERS: dict[str, ProviderConfigDTO] = {
     "cerebras": ProviderConfigDTO(
         name="cerebras",
-        rpm_limit=30, rpd_limit=14_400, tpd_limit=1_000_000, weight=0.9,
-        tags=["fast", "reasoning"],
+        # Weight 1.1: genuinely the fastest provider in the registry
+        # (~3000 t/s vs ~750 t/s on Groq) AND the largest free-tier model
+        # (gpt-oss-120b at 120B params vs llama-3.3-70b on Groq). Without
+        # this nudge, Groq's weight=1.0 wins every tiebreak in the DSL
+        # baseline even when bonuses match.
+        # Tags ["fast", "reasoning", "coding", "quality"]: gpt-oss-120b is
+        # production-grade across all four. Without "coding" and "quality"
+        # Cerebras would be hard-excluded by the strategies that gate on
+        # those tags (coding, best_quality), which would be silly given the
+        # model's actual capability.
+        rpm_limit=30, rpd_limit=14_400, tpd_limit=1_000_000, weight=1.1,
+        tags=["fast", "reasoning", "coding", "quality"],
         default_model="gpt-oss-120b",
     ),
     "groq": ProviderConfigDTO(
