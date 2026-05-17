@@ -1,0 +1,47 @@
+# Production overlay — adds Caddy in front of FreeAI for automatic HTTPS.
+#
+# Usage:
+#   1. Set FREEAI_DOMAIN in .env (e.g. FREEAI_DOMAIN=chat.example.com)
+#   2. Set FREEAI_CORS_ORIGINS=https://${FREEAI_DOMAIN} in .env
+#   3. docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# Caddy will:
+#   • Request a Let's Encrypt cert for ${FREEAI_DOMAIN} on first request.
+#   • Proxy https://${FREEAI_DOMAIN} → freeai:8000 (the backend stays
+#     internal, not exposed on the host).
+#   • Stream SSE responses through correctly (no buffering).
+#
+# Requires:
+#   • A public DNS A/AAAA record for ${FREEAI_DOMAIN} pointing at this host.
+#   • Ports 80 and 443 reachable from the public internet (Let's Encrypt
+#     ACME-HTTP-01 challenge).
+
+services:
+  # Remove the host port binding from the base compose: in production the
+  # backend is only reachable through Caddy, not directly on 8000.
+  freeai:
+    ports: !reset []
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - freeai
+    environment:
+      FREEAI_DOMAIN: ${FREEAI_DOMAIN:?set FREEAI_DOMAIN in .env}
+    volumes:
+      - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"  # HTTP/3
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    cpus: 1.0
+
+volumes:
+  caddy_data:
+  caddy_config:
