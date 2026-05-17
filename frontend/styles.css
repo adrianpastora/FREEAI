@@ -26,6 +26,11 @@
   --shadow-hard:    6px 6px 0 var(--char);
   --shadow-hard-sm: 3px 3px 0 var(--char);
 
+  /* Internal section divider — dotted is the "tracing-paper rule" between
+     blocks of the same card. Reserved for inside-component use; dashed
+     stays for "pending / not-yet-configured" boundaries on the outside. */
+  --rule-dotted: 1px dotted var(--char-3);
+
   --noise-url: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='220' height='220'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix type='matrix' values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.32 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
 
   /* Focus-state surface — flips per theme so inputs never blind the user */
@@ -355,18 +360,35 @@ body::before {
   white-space: nowrap;
 }
 
+/* Status indicator: typographic glyph instead of a colored dot. Each state
+   gets a distinct character + color, so the meaning survives in a screenshot,
+   on a high-contrast monitor, or for users who don't perceive color
+   differences cleanly. The mono font already in body inheritance keeps
+   alignment with the label next to it. */
 .dot {
-  width: 8px;
-  height: 8px;
-  background: var(--moss);
-  display: inline-block;
+  width: auto;
+  height: auto;
+  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--moss);
 }
+.dot::before { content: "■"; }                                      /* live */
 .dot--pulse {
-  background: var(--amber);
+  color: var(--amber);
   animation: pulse 1.4s steps(2, jump-end) infinite;
 }
-.dot--down { background: var(--rose); }
-.dot--idle { background: var(--char-3); }
+.dot--pulse::before { content: "▸"; }                               /* in-flight */
+.dot--down  { color: var(--rose); }
+.dot--down::before  { content: "✕"; }                               /* quarantined */
+.dot--idle  { color: var(--char-3); }
+.dot--idle::before  { content: "○"; }                               /* idle / no-key / disabled */
 
 @keyframes pulse {
   0%, 100% { opacity: 1; }
@@ -671,15 +693,27 @@ body.dark .primary-button:active { box-shadow: 2px 2px 0 rgba(0,0,0,0.55); }
   align-items: center;
   margin-bottom: 14px;
 }
+/* Provider names are machine endpoints, not brand wordmarks — render them
+   as lowercase mono with a leading "// " comment-prefix to keep the
+   control-room metaphor. Fraunces stays for panel titles and modal headings
+   where the human voice belongs. */
 .provider-card__name {
-  font-family: var(--serif);
-  font-weight: 600;
+  font-family: var(--mono);
+  font-weight: 500;
   font-style: italic;
-  font-size: 24px;
-  letter-spacing: -0.02em;
-  text-transform: capitalize;
+  font-size: 18px;
+  letter-spacing: 0;
+  text-transform: lowercase;
   min-width: 0;
   word-break: break-word;
+  color: var(--char);
+}
+.provider-card__name::before {
+  content: "// ";
+  color: var(--amber);
+  font-style: normal;
+  font-weight: 700;
+  letter-spacing: 0.05em;
 }
 .provider-card__status {
   display: flex;
@@ -701,15 +735,25 @@ body.dark .primary-button:active { box-shadow: 2px 2px 0 rgba(0,0,0,0.55); }
   letter-spacing: 0.14em;
   text-transform: uppercase;
   padding: 3px 7px;
-  border: 1px dashed var(--char-3);
+  border: 1px solid var(--char-3);
+  background:
+    repeating-linear-gradient(135deg,
+      transparent 0, transparent 4px,
+      rgba(60,55,45,0.06) 4px, rgba(60,55,45,0.06) 5px);
   color: var(--char-2);
+}
+body.dark .tag {
+  background:
+    repeating-linear-gradient(135deg,
+      transparent 0, transparent 4px,
+      rgba(241,236,225,0.05) 4px, rgba(241,236,225,0.05) 5px);
 }
 
 .provider-card__rows {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  border-top: 1px dashed var(--char-3);
+  border-top: var(--rule-dotted);
   padding-top: 14px;
 }
 .provider-row {
@@ -779,16 +823,25 @@ body.dark .primary-button:active { box-shadow: 2px 2px 0 rgba(0,0,0,0.55); }
   flex-direction: row;
   gap: 14px;
 }
-.meter { flex: 1; }
+.meter {
+  flex: 1;
+  /* Visual grouping: each meter is a small stack on a slightly recessed
+     background, which separates one meter from the next without adding more
+     borders to the card. */
+  background: var(--bone);
+  padding: 6px 8px;
+  border: 1px solid var(--char-3);
+}
 .meter__label {
   font-size: 9px;
   letter-spacing: 0.16em;
   color: var(--char-3);
-  margin-bottom: 4px;
+  margin-bottom: 5px;
+  text-transform: uppercase;
 }
 .meter__bar {
-  height: 8px;
-  background: var(--bone);
+  height: 6px;
+  background: var(--bone-2);
   border: 1px solid var(--char);
   position: relative;
   overflow: hidden;
@@ -802,10 +855,14 @@ body.dark .primary-button:active { box-shadow: 2px 2px 0 rgba(0,0,0,0.55); }
 .meter__fill.is-warn { background: var(--rose); }
 .meter__fill--cyan { background: var(--cyan); }
 .meter__value {
-  font-size: 10px;
-  margin-top: 3px;
+  /* Value bigger and tighter than the label so the eye lands on the number
+     first; label reads as caption to the number. */
+  font-family: var(--mono);
+  font-size: 11px;
+  margin-top: 4px;
   font-weight: 700;
   white-space: nowrap;
+  color: var(--char);
 }
 
 .provider-row--latency {
@@ -828,53 +885,64 @@ body.dark .primary-button:active { box-shadow: 2px 2px 0 rgba(0,0,0,0.55); }
   align-items: center;
   margin-top: 16px;
   padding-top: 12px;
-  border-top: 1px dashed var(--char-3);
+  border-top: var(--rule-dotted);
 }
 
 /* ─────────────── SWITCH ─────────────── */
 
+/* Bunker switch: two stacked labelled cells, the active one filled with
+   amber and embossed inward. No sliding thumb — the toggle position IS the
+   filled cell. Reads as a physical industrial switch instead of an iOS
+   slider. */
 .switch { position: relative; display: inline-block; cursor: pointer; }
-.switch input { position: absolute; opacity: 0; }
+.switch input { position: absolute; opacity: 0; width: 0; height: 0; }
 .switch__track {
-  display: inline-flex;
-  align-items: center;
+  display: inline-grid;
+  grid-template-columns: 1fr 1fr;
   position: relative;
-  width: 64px;
-  height: 26px;
+  width: 72px;
+  height: 24px;
   border: var(--line);
   background: var(--bone);
+  font-family: var(--mono);
   font-size: 9px;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.18em;
   font-weight: 700;
 }
-.switch__thumb {
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 22px;
-  height: 18px;
-  background: var(--char);
-  transition: left .18s, background .18s;
-}
-.switch__on, .switch__off {
-  position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
+.switch__thumb { display: none; }
+.switch__on,
+.switch__off {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  position: static;
+  transform: none;
   pointer-events: none;
+  color: var(--char-3);
+  transition: background .12s, color .12s, box-shadow .12s;
 }
-.switch__on  { right: 8px; opacity: 0; color: var(--char); }
-.switch__off { left: 32px; color: var(--char-3); }
+.switch__off { border-right: 1px solid var(--char-3); }
 
-.switch input:checked ~ .switch__track { background: var(--amber); }
-.switch input:checked ~ .switch__track .switch__thumb { left: 38px; background: var(--char); }
-.switch input:checked ~ .switch__track .switch__on  { opacity: 1; }
-.switch input:checked ~ .switch__track .switch__off { opacity: 0; }
+/* OFF state (default): right half "OFF" cell lit */
+.switch__on  { background: transparent; }
+.switch__off { background: var(--bone-3); color: var(--char); box-shadow: inset 0 0 0 1px var(--char); }
 
-.switch--small .switch__track { width: 52px; height: 22px; }
-.switch--small .switch__thumb { width: 18px; height: 14px; }
-.switch--small .switch__on    { right: 6px; font-size: 8px; }
-.switch--small .switch__off   { left: 26px; font-size: 8px; }
-.switch--small input:checked ~ .switch__track .switch__thumb { left: 30px; }
+/* ON state: left half "ON" cell lit in amber */
+.switch input:checked ~ .switch__track .switch__on {
+  background: var(--amber);
+  color: var(--char);
+  box-shadow: inset 0 0 0 1px var(--char);
+}
+.switch input:checked ~ .switch__track .switch__off {
+  background: transparent;
+  color: var(--char-3);
+  box-shadow: none;
+}
+
+.switch:hover .switch__track { box-shadow: var(--shadow-hard-sm); transform: translate(-1px, -1px); transition: transform .12s, box-shadow .12s; }
+
+.switch--small .switch__track { width: 60px; height: 20px; font-size: 8px; }
 
 /* ─────────────── STRATEGY GRID ─────────────── */
 
@@ -1048,7 +1116,7 @@ body.dark .primary-button:active { box-shadow: 2px 2px 0 rgba(0,0,0,0.55); }
 .output-fallback {
   margin-top: 14px;
   padding-top: 12px;
-  border-top: 1px dashed var(--char-3);
+  border-top: var(--rule-dotted);
   font-size: 10px;
   color: var(--bone-3);
   letter-spacing: 0.12em;
@@ -1311,7 +1379,7 @@ body.dark .api-card pre {
   color: var(--char-2);
 }
 .api-card p + p {
-  border-top: 1px dashed var(--char-3);
+  border-top: var(--rule-dotted);
 }
 .api-card p strong {
   color: var(--char);
@@ -1373,7 +1441,7 @@ body.dark .api-card p code {
 .api-card details[open] summary::after { content: "[-]"; }
 .api-card details pre {
   border-bottom: none;
-  border-top: 1px dashed var(--char-3);
+  border-top: var(--rule-dotted);
 }
 body.dark .api-card details summary { background: #1a1814; border-bottom-color: var(--char-3); }
 
@@ -2061,7 +2129,7 @@ body.dark .ribbon__theme { color: var(--amber); opacity: 1; }
   font-size: 10px;
   color: var(--char-3);
   word-break: break-all;
-  border-top: 1px dashed var(--char-3);
+  border-top: var(--rule-dotted);
   padding-top: 8px;
 }
 .client-card .ghost-button { align-self: flex-start; }
@@ -2591,7 +2659,7 @@ body.dark .user-card__chip { border-color: var(--char-3); box-shadow: 2px 2px 0 
   flex-wrap: wrap;
   gap: 14px;
   padding: 10px 4px 0;
-  border-top: 1px dashed var(--char-3);
+  border-top: var(--rule-dotted);
   margin-top: 10px;
   font-family: var(--mono);
   font-size: 10px;
