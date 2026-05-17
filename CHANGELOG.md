@@ -13,6 +13,73 @@ pre-1.0 versions — follow the Unreleased section if you track `main`.
 <!-- Add entries here as they land. Categories used in this changelog:
      Added, Changed, Fixed, Security, Removed, Deprecated. -->
 
+## [0.7.0] — 2026-05-17
+
+First release after the multi-user migration. Adds a new provider
+(Cerebras), a real self-host story with HTTPS, a design pass over the
+Providers panel, robustness improvements on the request pipeline, and an
+install doctor to make troubleshooting the setup flow obvious.
+
+### Added
+- **Cerebras Inference provider.** `gpt-oss-120b` on Cerebras' Wafer-Scale
+  Engine hardware (~3000 t/s, 1M tokens/day free tier, no card, no expiry).
+  Wired into the multi-step setup wizard with its own guide and added to
+  the secret-scrub regex so `csk-…` keys are redacted from error bodies
+  like the other provider key formats. Full reference doc at
+  `docs/providers/cerebras.md`.
+- **`docker-compose.prod.yml` overlay with Caddy.** One command brings up
+  FreeAI behind automatic Let's Encrypt HTTPS for a given `FREEAI_DOMAIN`.
+  SSE streaming flushes correctly (`flush_interval -1`), security headers
+  set, body size capped to match the backend.
+- **`scripts/doctor.py`** — read-only diagnostic that reports which startup
+  mode this install is in (default, paranoid, legacy admin-token, legacy
+  wizard, pending master key) and why. ASCII-only output so it runs on
+  Windows cp1252 consoles. Surfaced from the README's "Optional knobs".
+- **Per-request retry tuning.** Honors provider `Retry-After` headers
+  (capped at 5s — longer waits are quarantine's job) and applies
+  multiplicative jitter to the exponential backoff so concurrent failures
+  don't retry in lock-step.
+- **Inline-image size cap.** 20 MB hard limit on `data:` URIs forwarded to
+  vision-capable providers, checked against base64 length before decoding.
+- **`estimate_tokens()`** helper for adapters that don't get a usage block
+  back from the upstream — uses `chars/4` as a conservative under-count.
+
+### Changed
+- **`tests.yml` is manual-only now.** The workflow no longer runs on push
+  or PR; trigger it from the Actions tab when you want a clean-room
+  verification. Local pytest with testcontainers is the source of truth.
+- **`deploy.yml` renamed to `deploy-personal.yml`** with a header banner
+  explaining it is maintainer-specific (SSH+Docker to a single VPS) and
+  that forks should delete it. Behaviour unchanged: still fires only on
+  pushed `v*` tags or manual dispatch.
+- **Providers panel design refinements** (frontend/styles.css): provider
+  names render as `// groq` (mono italic lowercase) instead of `Groq`
+  (serif italic) to read as endpoints rather than wordmarks. Switch
+  toggles replaced with a two-cell brutalist control. Status dots
+  replaced with typographic glyphs (■ ✕ ○ ▸). Capability tags get a 45°
+  hatch background. Meters grouped into recessed mini-blocks. DNA
+  (amber/bone/charcoal, Fraunces headings, ASCII corner brackets,
+  brutalist shadows) preserved — this is a refinement, not a reset.
+- **Setup modal copy** clarified. The paranoid-mode paragraph now names
+  `FREEAI_REQUIRE_BOOTSTRAP_HEADER` explicitly so operators know which
+  flag put them there, instead of the unhelpful "Paranoid mode is on".
+  The bootstrap-token placeholder reads "paste the token printed in the
+  server logs" instead of the cryptic "FreeAI bootstrap token banner".
+- **httpx pool sized for multi-user concurrent traffic** — 200 connections,
+  50 keepalive, 30s pool timeout. The old 100/20 was tight under the
+  multi-user model.
+
+### Removed
+- The orphan `cloudflare/workers-autoconfig` branch and the bot-generated
+  `wrangler.jsonc` that came with it. The Cloudflare Workers integration
+  was never wired and would have broken SSE streaming on free-tier plans
+  anyway. Self-host with Docker + Caddy is the supported deploy path.
+
+### Security
+- Cerebras `csk-` keys added to `_SECRET_PATTERNS` in
+  `backend/app/providers/base.py` so leaked Cerebras tokens in error
+  bodies and logs get redacted alongside `gsk_`, `hf_`, `AIza`, `xai-`.
+
 ## [0.6.0] — 2026-05-06
 
 Code-quality + onboarding pass on top of 0.5.0. Same product surface, much
