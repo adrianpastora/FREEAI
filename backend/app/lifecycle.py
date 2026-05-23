@@ -16,7 +16,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
-from .bootstrap import ensure_bootstrap_token
+from .bootstrap import ensure_bootstrap_token, read_bootstrap_token
 from .crypto import (
     auto_confirm_pending_master_key,
     ensure_pending_master_key,
@@ -134,13 +134,24 @@ async def lifespan(app: FastAPI):
                     )
 
         new_token = ensure_bootstrap_token(needed=needs_bootstrap)
-        if new_token:
+        # In paranoid mode also reprint the banner when the token already
+        # exists on disk — a restart would otherwise leave the operator with
+        # no copy of the value in the current log stream.
+        token_to_print = new_token
+        if (
+            token_to_print is None
+            and needs_bootstrap
+            and settings.require_bootstrap_header
+        ):
+            token_to_print = read_bootstrap_token()
+
+        if token_to_print:
             if settings.require_bootstrap_header:
                 print(
                     "\n"
                     "============================================================\n"
                     "  FreeAI bootstrap token (one-time, do not share):\n"
-                    f"    {new_token}\n"
+                    f"    {token_to_print}\n"
                     "  Send it in the X-Bootstrap-Token header when calling\n"
                     "  POST /api/setup/confirm-master-key, POST /api/setup/initial,\n"
                     "  or POST /api/auth/register (first admin only).\n"
