@@ -134,41 +134,27 @@ async def lifespan(app: FastAPI):
                     )
 
         new_token = ensure_bootstrap_token(needed=needs_bootstrap)
-        # In paranoid mode also reprint the banner when the token already
-        # exists on disk — a restart would otherwise leave the operator with
-        # no copy of the value in the current log stream.
-        token_to_print = new_token
-        if (
-            token_to_print is None
-            and needs_bootstrap
-            and settings.require_bootstrap_header
-        ):
-            token_to_print = read_bootstrap_token()
+        # Always reprint the banner while a token is still pending — covers
+        # both cold starts and restarts, and both default-mode (loopback UI
+        # may not be reachable, e.g. browser on another LAN host) and
+        # paranoid-mode operators who tail the log to copy by hand.
+        token_to_print = new_token or (
+            read_bootstrap_token() if needs_bootstrap else None
+        )
 
         if token_to_print:
-            if settings.require_bootstrap_header:
-                print(
-                    "\n"
-                    "============================================================\n"
-                    "  FreeAI bootstrap token (one-time, do not share):\n"
-                    f"    {token_to_print}\n"
-                    "  Send it in the X-Bootstrap-Token header when calling\n"
-                    "  POST /api/setup/confirm-master-key, POST /api/setup/initial,\n"
-                    "  or POST /api/auth/register (first admin only).\n"
-                    "  Stored at data/.bootstrap_token until consumed.\n"
-                    "============================================================\n",
-                    flush=True,
-                )
-            else:
-                # Default mode: the frontend reads the token from
-                # GET /api/setup/bootstrap-token (loopback only) so the
-                # operator never has to copy it. Print a one-line breadcrumb
-                # for ops folks who tail logs out of habit.
-                log.info(
-                    "bootstrap_token_ready",
-                    hint="visit http://<host>:8000 to create the first admin "
-                         "(no manual token paste needed on loopback)",
-                )
+            print(
+                "\n"
+                "============================================================\n"
+                "  FreeAI bootstrap token (one-time, do not share):\n"
+                f"    {token_to_print}\n"
+                "  Paste it in the setup form's X-Bootstrap-Token field when\n"
+                "  creating the first admin (or send the header on POST\n"
+                "  /api/setup/first-admin, /api/setup/initial, /api/auth/register).\n"
+                "  Stored at data/.bootstrap_token until consumed.\n"
+                "============================================================\n",
+                flush=True,
+            )
 
     log.info("freeai_ready", providers=len(PROVIDER_REGISTRY))
     purge_task = asyncio.create_task(_periodic_purge(sessionmaker))
