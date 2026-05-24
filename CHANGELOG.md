@@ -13,6 +13,28 @@ pre-1.0 versions — follow the Unreleased section if you track `main`.
 <!-- Add entries here as they land. Categories used in this changelog:
      Added, Changed, Fixed, Security, Removed, Deprecated. -->
 
+### Changed
+- README "Quick start" restructured as numbered Docker Compose steps with a
+  separate "Useful commands" block and the paranoid / doctor / `ensure_dotenv`
+  knobs tucked under a `<details>` so the first read isn't drowned in
+  advanced options.
+- Documentation pass across `docs/` to match the current code: 13-table
+  schema (was 10 in `DATABASE.md`, 7 in `ARCHITECTURE.md`), migration 0020
+  + `model_prices` table + `cost_usd` / `sum_cost_usd` columns documented,
+  `OPERATIONS.md` env-var list completed with the JWT, paranoid-mode and
+  setup-path variables that were missing, `API.md` extended with the
+  per-user, pricing, setup, auth, users, tags and historical-analytics
+  endpoint families (was missing roughly half of the admin surface),
+  `DEVELOPMENT.md` tag table updated for Cerebras + audio + embeddings,
+  `providers/cerebras.md` status flipped from "doc only" to "integrated
+  since 0.7.0", test counts updated from 243 → 272, README test-CI
+  claim corrected to manual-only.
+
+### Fixed
+- Setup wizard: bootstrap-token banner now reprints on every restart while
+  setup is still pending (`d9cc95e`), and the paranoid-mode restart path
+  reprints the banner instead of silently swallowing it (`678a86b`).
+
 ## [0.7.3] — 2026-05-17
 
 ### Fixed

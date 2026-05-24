@@ -129,7 +129,7 @@ jobs:
           cd "$PROJECT_DIR"
 
           echo "[3/7] Stopping existing containers..."
-          docker-compose -f "$COMPOSE_FILE" down --remove-orphans 2>/dev/null || true
+          docker compose -f "$COMPOSE_FILE" down --remove-orphans 2>/dev/null || true
 
           echo "[4/7] Removing conflicting containers (typical compose names)..."
           docker rm -f freeai postgres 2>/dev/null || true
@@ -137,22 +137,22 @@ jobs:
           docker rm -f freeai_freeai_1 freeai_postgres_1 2>/dev/null || true
 
           echo "[5/7] Building Docker images..."
-          docker-compose -f "$COMPOSE_FILE" build --no-cache
+          docker compose -f "$COMPOSE_FILE" build --no-cache
 
           echo "[6/7] Starting services (postgres + freeai)..."
           docker rm -f freeai postgres 2>/dev/null || true
-          docker-compose -f "$COMPOSE_FILE" up -d --force-recreate
+          docker compose -f "$COMPOSE_FILE" up -d --force-recreate
 
           echo "[7/7] Verifying services..."
           sleep 15
 
           echo ""
           echo "Service status:"
-          docker-compose -f "$COMPOSE_FILE" ps
+          docker compose -f "$COMPOSE_FILE" ps
 
           HEALTH_PY="import urllib.request,sys; u=urllib.request.urlopen('http://127.0.0.1:8000/api/health'); sys.exit(0 if u.status==200 else 1)"
           for i in $(seq 1 30); do
-            if docker-compose -f "$COMPOSE_FILE" exec -T freeai python -c "$HEALTH_PY" > /dev/null 2>&1; then
+            if docker compose -f "$COMPOSE_FILE" exec -T freeai python -c "$HEALTH_PY" > /dev/null 2>&1; then
               echo ""
               echo "Health /api/health: OK"
               break
@@ -160,7 +160,7 @@ jobs:
             if [ "$i" -eq 30 ]; then
               echo ""
               echo "WARNING: health check failed after 30 attempts"
-              docker-compose -f "$COMPOSE_FILE" logs --tail=40 freeai
+              docker compose -f "$COMPOSE_FILE" logs --tail=40 freeai
             fi
             sleep 2
           done
@@ -170,7 +170,7 @@ jobs:
           echo "    Deploy complete"
           echo "=========================================="
           echo "  App (API + panel):  http://localhost:8000"
-          echo "  Postgres: Docker network only (no host port). psql: docker-compose exec postgres psql -U freeai -d freeai"
+          echo "  Postgres: Docker network only (no host port). psql: docker compose exec postgres psql -U freeai -d freeai"
           echo "  Observability: COMPOSE_PROFILES=observability docker compose up -d"
           echo ""
           DEPLOY_SCRIPT

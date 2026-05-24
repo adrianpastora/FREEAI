@@ -203,7 +203,7 @@ no manual renewals.
 - **Analytics panel** — the frontend has a live analytics tab reading from
   the `usage_events` table, with KPIs, time series, and breakdowns by
   provider / strategy / outcome.
-- **243 pytest tests** — unit, integration, E2E, streaming, security,
+- **272 pytest tests** — unit, integration, E2E, streaming, security,
   and fallback robustness (empty responses, content filtering, stream
   idle timeout, circuit breaker, configurable retries). A handful of pure
   tests run without Docker; the rest spin up a real Postgres via
@@ -302,8 +302,10 @@ pytest tests/test_crypto.py tests/test_auto_strategy.py \
        tests/test_known_models.py tests/test_schema_tool_calls.py
 ```
 
-Every push and pull request runs the full suite against a Postgres 16
-service container in GitHub Actions — see [`.github/workflows/tests.yml`](.github/workflows/tests.yml).
+CI is manual-only by design: the `tests` workflow runs against a Postgres 16
+service container when triggered from the Actions tab (cost discipline during
+active development — local `pytest` with testcontainers is the source of
+truth). See [`.github/workflows/tests.yml`](.github/workflows/tests.yml).
 
 ## License
 

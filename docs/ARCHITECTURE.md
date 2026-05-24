@@ -17,8 +17,9 @@
 
 **Non-goals**
 - We are not an LLM gateway with billing / team management / per-user budgets.
-  A single installation is a single logical tenant (client keys limit *who* can
-  call, not *how much* they pay).
+  A single installation supports multiple authenticated users, each with their
+  own encrypted provider keys, but inbound client API keys limit *who* can
+  call rather than enforcing per-user spend.
 - We do not replace the providers' own dashboards — their analytics are more
   accurate than ours.
 - We don't optimize prompts or transform them. Content in, content out.
@@ -55,14 +56,15 @@
                  ▼
  ┌─────────────────────────────────────────────────────────────┐
  │                         Postgres                            │
- │   7 tables • plpgsql fn `freeai_try_reserve`  • Alembic      │
+ │   13 tables • plpgsql fn `freeai_try_reserve`  • Alembic     │
  └─────────────────────────────────────────────────────────────┘
 
                  ▲ httpx.AsyncClient (shared, pooled)
                  │
  ┌─────────────────────────────────────────────────────────────┐
  │                   Provider adapters                         │
- │  OpenAICompatibleProvider (groq, mistral, openrouter, hf)   │
+ │  OpenAICompatibleProvider (cerebras, groq, mistral,         │
+ │                            openrouter, huggingface)         │
  │  GeminiProvider (Google v1beta)                              │
  │  CohereProvider (v2/chat)                                    │
  │  — all return ProviderResponse / yield StreamChunk           │

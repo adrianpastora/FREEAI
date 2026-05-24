@@ -4,29 +4,36 @@
 > [backend/alembic/versions/](../backend/alembic/versions/). `FREEAI_AUTO_MIGRATE=true`
 > (the default) runs `alembic upgrade head` on startup.
 
-## 1. Tables (10)
+## 1. Tables (13)
 
 ```
-┌──────────────┐                    ┌──────────────────┐
-│  app_config  │                    │    strategies    │
-│  (singleton) │                    │                  │
-└──────────────┘                    └──────────────────┘
+┌──────────────┐         ┌──────────────────┐         ┌──────────────┐
+│  app_config  │         │    strategies    │         │ model_prices │
+│  (singleton) │         │                  │         │              │
+└──────────────┘         └──────────────────┘         └──────────────┘
 
-┌──────────────┐ 1 :: 1 ┌──────────────────┐
-│  providers   │────────│  provider_stats  │
-└──────────────┘        └──────────────────┘
-       │ 1
-       │
-       │ N
-       ▼
-┌──────────────┐
-│ rate_events  │
-└──────────────┘
+┌─────────┐ 1 :: N ┌─────────────────┐ 1 :: N ┌──────────────────┐
+│  users  │────────│ user_providers  │────────│  provider_stats  │
+│         │        │ (per-user keys) │        │  (per-user)      │
+└─────────┘        └─────────────────┘        └──────────────────┘
+    │ 1                   │ N (provider_name FK)
+    │                     ▼
+    │ N           ┌──────────────┐ 1 :: N ┌──────────────┐
+    ▼             │  providers   │────────│ rate_events  │
+┌────────────────┐│  (catalog)   │        └──────────────┘
+│ refresh_tokens │└──────────────┘
+└────────────────┘
 
-┌──────────────┐                    ┌──────────────────┐
-│   clients    │                    │   usage_events   │
-└──────────────┘                    └──────────────────┘
-(no FKs — client_hash + provider_name in usage_events are loose references)
+┌──────────┐ 1 :: N ┌────────────────────┐
+│ clients  │────────│ client_rate_events │
+└──────────┘        └────────────────────┘
+
+┌──────────────────┐         ┌──────────────────────┐
+│   usage_events   │ rolled  │  usage_daily_rollup  │
+│ (90d retention)  │ ──────▶ │  (730d retention)    │
+└──────────────────┘         └──────────────────────┘
+(no FKs on usage_events — client_hash + provider_name are loose references
+so retention is independent from the catalog rows.)
 ```
 
 ### `app_config` — singleton
@@ -141,6 +148,7 @@ a day contribute nothing to any count, but nothing removes them either. See
 | `prompt_tokens`, `completion_tokens` | int | 0 for streaming (providers don't report tokens in SSE) |
 | `fallback_position` | int | 1 = first attempt, 2 = after one fallback, etc. |
 | `client_hash` | `varchar(64)` nullable | Which client made the call (in bootstrap mode, NULL) |
+| `cost_usd` | float nullable | Frozen cost at write time so future price edits don't rewrite history. `NULL` = no price on file when billed; `0` = explicit free-tier / `:free` route. (migration 0020) |
 
 Two indexes: `ix_usage_events_time` on `occurred_at`, and
 `ix_usage_events_provider_time` on `(provider_name, occurred_at)`. They
@@ -219,6 +227,7 @@ raw events table (which rotates out at 90 days).
 | `p50_latency_ms`, `p95_latency_ms`, `p99_latency_ms` | int | |
 | `avg_ttfb_ms` | int | |
 | `prompt_tokens`, `completion_tokens` | bigint | |
+| `sum_cost_usd` | float | Sum of `usage_events.cost_usd` for the day. Lets the long-window analytics view (≥30d) carry cost alongside tokens without scanning raw events. (migration 0020) |
 | `errors_by_kind` | JSONB | Map of `ErrorKind → count` for that day. |
 | `fallback_position_hist` | JSONB | Histogram of how often each fallback slot was hit. |
 | `updated_at` | float | |
@@ -239,6 +248,22 @@ lifespan).
 Seeded from
 [strategy_repo.BUILTIN_STRATEGIES](../backend/app/repositories/strategy_repo.py)
 on first run of `seed_builtins_if_missing()`.
+
+### `model_prices` — per-model unit cost (migration 0020)
+
+| Column | Type | Notes |
+|---|---|---|
+| `provider_name` | `varchar(64)` PK (part 1) | Matches `providers.name`. No FK — admins can seed prices for models on providers that aren't enabled yet. |
+| `model` | `varchar(256)` PK (part 2) | The model identifier as it appears in `usage_events.model`. |
+| `input_price_per_million_usd` | float | Price per million prompt tokens. Per-million is the industry-standard unit and avoids `Numeric` precision games. |
+| `output_price_per_million_usd` | float | Same for completion tokens. |
+| `currency` | `varchar(8)` | Always `"USD"` today; column exists so a future multi-currency mode doesn't need a migration. |
+| `updated_at` | float | |
+
+Seeded with the public price lists for `KNOWN_MODELS` as of 2026-05. Rows
+are `ON CONFLICT DO NOTHING`, so admin-tuned prices survive a re-run of
+the migration. Free-tier SKUs and OpenRouter `:free` routes are inserted
+as `0.0/0.0`. Maintained via `/api/pricing/*` endpoints.
 
 ## 2. Migrations
 
@@ -278,6 +303,8 @@ you never need to put it in `alembic.ini`.
        base_cooldown_s / max_cooldown_s, plus
        provider_stats.recent_failures_started_at and
        provider_stats.cooldown_level for exponential backoff.
+0020 — model_prices table for cost tracking; usage_events.cost_usd
+       (frozen at write time); usage_daily_rollup.sum_cost_usd.
 ```
 
 ### Running migrations
@@ -465,17 +492,26 @@ about indexes or adding queries.
 
 ## 5. Backups
 
-At minimum, back up `providers`, `clients`, `strategies`, and `app_config`.
-Those are your configuration. The event tables (`rate_events`, `usage_events`,
-`provider_stats`) are regenerable — losing them means losing analytics
-history and a brief window where all providers look "cold".
+At minimum, back up the configuration tables: `users`, `refresh_tokens`,
+`user_providers`, `providers`, `clients`, `strategies`, `app_config`, and
+`model_prices`. Losing them costs you accounts, encrypted provider keys
+and pricing — none of which is regenerable. The event tables
+(`rate_events`, `usage_events`, `provider_stats`, `client_rate_events`,
+`usage_daily_rollup`) are regenerable; losing them costs analytics history
+and a brief window where providers look "cold".
 
 ```bash
 pg_dump -U freeai -d freeai \
-  --table=providers --table=clients --table=strategies --table=app_config \
+  --table=users --table=refresh_tokens --table=user_providers \
+  --table=providers --table=clients --table=strategies \
+  --table=app_config --table=model_prices \
   --data-only --format=custom \
   -f freeai-config-$(date +%F).dump
 ```
+
+> Provider keys in `user_providers.api_key_encrypted` are Fernet-encrypted
+> with the master key at `backend/data/.master_key`. **Back up that file
+> too** — without it the dump above is unusable on restore.
 
 See [OPERATIONS.md § 4](OPERATIONS.md#4-backup-and-restore) for the full
 backup playbook.

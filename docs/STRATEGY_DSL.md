@@ -338,4 +338,5 @@ Shipped as 4 mergeable commits, the suite stayed green at every step:
    the wire. `StrategyUpsertIn`/`StrategyOut` now expose `definition`
    only; `_resolve_definition` and `_derive_legacy_tags` are gone.
 
-Final test count: 159 passing (up from 99 before the rework).
+Test count at the end of the DSL rework: 159 passing (up from 99
+before the rework). The suite has grown to 272 since.

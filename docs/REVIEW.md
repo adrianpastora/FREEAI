@@ -29,7 +29,7 @@ behind a reverse proxy. The full matrix of what's in the box:
 - **Observability** — structured JSON logs with request IDs, Prometheus
   `/metrics`, Grafana dashboards under the `observability` compose
   profile.
-- **Tests** — 243 pytest tests across unit, integration, E2E,
+- **Tests** — 272 pytest tests across unit, integration, E2E,
   streaming, and security categories. A handful run without Docker;
   the rest use testcontainers against a real Postgres.
 
@@ -72,7 +72,7 @@ regardless, so you can point an external Prometheus at it.
 no framework. This is deliberate — keeps the panel tiny and
 maintainable — but if you want to extend the UI significantly you'll
 feel it. Component structure is documented in
-[DEVELOPMENT.md § 4](DEVELOPMENT.md#4-frontend-structure).
+[DEVELOPMENT.md § 6](DEVELOPMENT.md#6-the-frontend).
 
 ## 3. Design decisions worth preserving
 

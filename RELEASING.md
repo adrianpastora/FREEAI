@@ -1,57 +1,61 @@
-# Cómo publicar — chuleta personal
+# Releasing — maintainer cheatsheet
 
-Dos acciones distintas. No mezclar.
+Two distinct actions. Don't mix them up.
 
-| Quiero… | Comando |
+| I want to… | Command |
 |---|---|
-| Subir código al repo público de GitHub | `git push origin main` |
-| Desplegar al VPS | `git tag -a vX.Y.Z -m "..." && git push origin vX.Y.Z` |
+| Push code to the public GitHub repo | `git push origin main` |
+| Deploy to the VPS | `git tag -a vX.Y.Z -m "..." && git push origin vX.Y.Z` |
 
-**Empujar a main NO despliega.** Solo los tags `v*` disparan `deploy-personal.yml`.
+**Pushing `main` does NOT deploy.** Only `v*` tags trigger
+`deploy-personal.yml`.
 
 ---
 
-## Flujo de release al VPS
+## Release flow to the VPS
 
 ```bash
-# 1. Asegúrate de que main está empujado primero.
+# 1. Make sure main is pushed first.
 git push origin main
 
-# 2. Tag anotado con mensaje corto.
-git tag -a v0.7.2 -m "v0.7.2 — qué cambia"
+# 2. Annotated tag with a short message.
+git tag -a vX.Y.Z -m "vX.Y.Z — what changes"
 
-# 3. Empuja el tag. Esto dispara el deploy.
-git push origin v0.7.2
+# 3. Push the tag. This triggers the deploy.
+git push origin vX.Y.Z
 ```
 
-Mira el run en https://github.com/adrianpastora/FREEAI/actions. Tarda 4–8 min.
+Watch the run at https://github.com/adrianpastora/FREEAI/actions. Takes 4–8
+minutes.
 
 ---
 
-## Re-disparar el deploy sin cambiar de versión
+## Re-running the deploy without bumping the version
 
-Si el deploy falló (secret roto, SSH caído) y quieres reintentar:
+If the deploy failed (broken secret, SSH down) and you want to retry:
 
 ```bash
 gh workflow run "Deploy FREEAI (maintainer-personal SSH+Docker)"
 ```
 
-O botón **Run workflow** en la pestaña Actions.
+Or the **Run workflow** button on the Actions tab.
 
 ---
 
-## Qué número de versión usar
+## Picking the version number
 
-| Cambio desde el último tag | Bump |
+| Change since the last tag | Bump |
 |---|---|
-| Solo bugfix, nada visible | patch — `v0.7.X+1` |
-| Feature nueva, no rompe nada | minor — `v0.X+1.0` |
-| Algo rompe (breaking) | minor en pre-1.0 + nota en CHANGELOG |
+| Bugfix only, nothing user-visible | patch — `v0.7.X+1` |
+| New feature, nothing breaks | minor — `v0.X+1.0` |
+| Something breaks | minor bump in pre-1.0 + note in CHANGELOG |
 
 ---
 
-## Errores típicos a evitar
+## Common mistakes to avoid
 
-- Empujar `main` esperando que se despliegue — no pasa nada, hay que tagear.
-- Tagear antes de empujar `main` — el VPS hace `git reset --hard origin/main`, así que el tag apuntaría a un commit que aún no está en el remoto y se desplegaría código viejo.
-- Reusar un tag (`v0.7.0` ya existe) — no lo hagas, sube el número.
+- Pushing `main` and waiting for a deploy — nothing happens, you have to tag.
+- Tagging before pushing `main` — the VPS runs `git reset --hard origin/main`,
+  so the tag would point at a commit not yet on the remote and the deploy
+  would ship stale code.
+- Reusing an existing tag (`v0.7.0` already exists) — don't; bump the number.

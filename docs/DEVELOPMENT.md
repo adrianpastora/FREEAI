@@ -31,7 +31,7 @@ and refresh the browser. No build step, no watcher.
 
 ### 2.1 Layout
 
-243 tests total in [backend/tests/](../backend/tests/). This list
+272 tests total in [backend/tests/](../backend/tests/). This list
 highlights the main buckets rather than every file:
 
 - **Pure** (no DB, no Docker): `test_auto_strategy.py`, `test_crypto.py`,
@@ -256,13 +256,15 @@ Current tag usage (from `DEFAULT_PROVIDERS`):
 
 | Tag | Providers with it |
 |---|---|
-| `fast` | groq, mistral, cohere, huggingface, gemini (implicit via `long_context`) |
+| `fast` | cerebras, groq, mistral, cohere |
 | `cheap` | groq, mistral, huggingface |
-| `quality` | gemini, openrouter, cohere |
-| `coding` | groq, mistral |
-| `reasoning` | groq, gemini, openrouter |
+| `quality` | cerebras, gemini, openrouter |
+| `coding` | cerebras, groq, mistral |
+| `reasoning` | cerebras, groq, gemini, openrouter |
 | `vision` | gemini |
 | `long_context` | gemini |
+| `embeddings` | gemini, mistral |
+| `audio` | groq |
 | `rag` | cohere |
 | `variety` | openrouter, huggingface |
 
@@ -434,7 +436,7 @@ FreeAI/
 │   │   ├── env.py
 │   │   └── versions/        (migrations)
 │   ├── app/                 (the FastAPI app, 18 modules)
-│   └── tests/               (243 pytest tests)
+│   └── tests/               (272 pytest tests)
 ├── frontend/                (3 files, no build)
 ├── deploy/                  (prometheus + grafana provisioning)
 ├── docker-compose.yml

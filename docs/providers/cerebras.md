@@ -1,8 +1,13 @@
 # Cerebras Inference API — Referencia para FreeAI
 
 > **Fecha de captura:** 2026-05-13
-> **Propósito:** Documento de referencia exhaustivo de la API de Cerebras Inference, con énfasis en la **capa gratuita**, pensado para alimentar una skill futura que integre Cerebras como provider en FreeAI.
-> **Estado:** sólo documentación. No hay código de integración en el repo todavía.
+> **Propósito:** Documento de referencia exhaustivo de la API de Cerebras Inference, con énfasis en la **capa gratuita**.
+> **Estado:** integrado desde **0.7.0**. El adaptador vive en
+> `backend/app/providers/cerebras_provider.py`, está registrado en
+> `PROVIDER_REGISTRY` y seedeado en `DEFAULT_PROVIDERS` con
+> `default_model="gpt-oss-120b"`. Esta página se mantiene como
+> referencia de la API upstream — el código es la fuente autoritativa
+> del comportamiento del provider en FreeAI.
 
 ---
 

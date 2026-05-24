@@ -23,7 +23,7 @@ decisions used by chat:
 
 ## Supported providers
 
-| Provider | Default model        | Dim  | OpenAI wire format | Free-tier limit (2026-04)                | Token usage reported |
+| Provider | Default model        | Dim  | OpenAI wire format | Free-tier limit (2026-05)                | Token usage reported |
 |----------|----------------------|------|--------------------|------------------------------------------|----------------------|
 | Mistral  | `mistral-embed`      | 1024 | ✅                  | ~1 RPS, ~1B tokens/month                 | ✅                    |
 | Gemini   | `text-embedding-004` | 768  | ❌ (custom adapter) | 1500 RPM, 30k RPD                        | ❌ (always 0)         |
