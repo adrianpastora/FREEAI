@@ -158,7 +158,8 @@ def test_dto_compute_cost_zero_pricing_is_free_tier():
 
 
 def test_seed_list_covers_every_known_provider():
-    """Migration 0020 seeds at least one row per provider in KNOWN_MODELS.
+    """Every provider in KNOWN_MODELS has at least one seed price, either
+    from migration 0020 or from the catalog (seeded by sync_catalog).
     A regression here would mean rolling out a new provider without
     pricing — every dispatch records cost_usd=NULL until an admin fixes it.
 
@@ -176,7 +177,13 @@ def test_seed_list_covers_every_known_provider():
     migration = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(migration)
 
+    from app.providers.catalog import CATALOG
+
     seed_providers = {row[0] for row in migration._SEED_PRICES}
+    seed_providers |= {
+        name for name, entry in CATALOG.items()
+        if any(m.price is not None for m in entry.models)
+    }
     assert set(KNOWN_MODELS.keys()) <= seed_providers, (
         f"missing seed coverage for providers: "
         f"{set(KNOWN_MODELS.keys()) - seed_providers}"

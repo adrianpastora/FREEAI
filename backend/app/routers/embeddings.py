@@ -17,7 +17,7 @@ from ..db import get_session
 from ..embeddings import EMBEDDING_PROVIDERS, build_embedding_provider, supports_embeddings
 from ..logging_config import get_logger
 from ..providers import ErrorKind, ProviderError
-from ..providers.base import EmbeddingResult
+from ..providers.base import EmbeddingResult, quarantine_seconds_for
 from ..repositories import (
     ProviderConfigDTO,
     RateRepository,
@@ -156,7 +156,7 @@ async def embeddings_endpoint(
                     "message": err.message[:200],
                 })
 
-                quarantine_s = None
+                quarantine_s = quarantine_seconds_for(err)
                 if err.kind == ErrorKind.SERVER_ERROR:
                     quarantine_s = 60
                 elif err.kind == ErrorKind.NETWORK:
@@ -175,8 +175,9 @@ async def embeddings_endpoint(
                     user_id=user_id, fallback_position=fallback_position,
                 ))
 
-                # Auth/client errors won't be fixed by trying another provider
-                if err.kind in (ErrorKind.AUTH, ErrorKind.CLIENT_ERROR):
+                # A malformed request fails everywhere; anything else (bad key,
+                # retired model, spent quota) is provider-specific — try the next.
+                if err.kind == ErrorKind.CLIENT_ERROR:
                     break
                 continue
         finally:

@@ -1,4 +1,4 @@
-"""Static list of well-known models per provider.
+"""Well-known models per provider, derived from ``catalog.CATALOG``.
 
 Used for:
   • Fast client-side feedback when editing default_model (no network round-trip)
@@ -8,14 +8,14 @@ It is NOT a hard validation — if the user enters a model that isn't in the lis
 we still accept it and let the provider say yes/no at request time. That way
 FreeAI never blocks a brand-new model just because we haven't updated this list.
 
-Each entry records capability hints that *could* later drive provider tag
-auto-population (e.g. "this model supports vision"). For now tags are still
-set at the provider level.
+Edit the catalog (app/providers/catalog.py), not this file.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Optional
+
+from .catalog import CATALOG
 
 
 @dataclass
@@ -27,50 +27,11 @@ class KnownModel:
 
 
 KNOWN_MODELS: dict[str, list[KnownModel]] = {
-    # Only gpt-oss-120b is registered by default. The other Cerebras models in
-    # docs/providers/cerebras.md §3 are either preview-only or deprecate on
-    # 2026-05-27. Users can still opt in to those via the Providers UI — the
-    # registry is a hint list, not a hard validator.
-    "cerebras": [
-        KnownModel("gpt-oss-120b", 131_000, ["chat", "reasoning"], note="production"),
-    ],
-    "groq": [
-        KnownModel("llama-3.3-70b-versatile", 128_000, ["chat", "tools"]),
-        KnownModel("llama-3.1-70b-versatile", 128_000, ["chat", "tools"], note="legacy"),
-        KnownModel("llama-3.1-8b-instant", 128_000, ["chat"], note="fastest"),
-        KnownModel("mixtral-8x7b-32768", 32_768, ["chat"]),
-        KnownModel("gemma2-9b-it", 8_192, ["chat"]),
-    ],
-    "gemini": [
-        KnownModel("gemini-2.5-flash", 1_048_576, ["chat", "vision", "tools", "long_context", "reasoning"]),
-        KnownModel("gemini-2.5-flash-lite", 1_048_576, ["chat", "vision", "long_context"]),
-        KnownModel("gemini-2.5-pro", 1_048_576, ["chat", "vision", "tools", "long_context", "reasoning"], note="most capable"),
-        KnownModel("gemini-3-flash-preview", 1_048_576, ["chat", "vision", "tools", "long_context", "reasoning"], note="preview"),
-    ],
-    "mistral": [
-        KnownModel("mistral-small-latest", 32_000, ["chat", "tools"]),
-        KnownModel("mistral-large-latest", 128_000, ["chat", "tools", "reasoning"]),
-        KnownModel("open-mistral-nemo", 128_000, ["chat"]),
-        KnownModel("codestral-latest", 32_000, ["chat", "coding"]),
-    ],
-    "openrouter": [
-        KnownModel("meta-llama/llama-3.3-70b-instruct:free", 131_000, ["chat"]),
-        KnownModel("meta-llama/llama-3.2-3b-instruct:free", 131_000, ["chat"]),
-        KnownModel("google/gemini-2.0-flash-exp:free", 1_048_576, ["chat", "vision"]),
-        KnownModel("mistralai/mistral-small-3.1-24b-instruct:free", 32_000, ["chat"]),
-        KnownModel("qwen/qwen-2.5-72b-instruct:free", 32_000, ["chat", "reasoning"]),
-    ],
-    "cohere": [
-        KnownModel("command-r-08-2024", 128_000, ["chat", "tools", "rag"]),
-        KnownModel("command-r-plus-08-2024", 128_000, ["chat", "tools", "rag", "reasoning"]),
-        KnownModel("command-r7b-12-2024", 128_000, ["chat"], note="smallest"),
-    ],
-    "huggingface": [
-        KnownModel("meta-llama/Llama-3.2-3B-Instruct", 131_000, ["chat"]),
-        KnownModel("meta-llama/Llama-3.3-70B-Instruct", 131_000, ["chat"]),
-        KnownModel("Qwen/Qwen2.5-72B-Instruct", 32_000, ["chat", "reasoning"]),
-        KnownModel("mistralai/Mixtral-8x7B-Instruct-v0.1", 32_000, ["chat"]),
-    ],
+    name: [
+        KnownModel(m.id, m.context_window, list(m.capabilities), m.note)
+        for m in entry.models
+    ]
+    for name, entry in CATALOG.items()
 }
 
 

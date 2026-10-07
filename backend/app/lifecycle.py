@@ -63,6 +63,16 @@ async def lifespan(app: FastAPI):
         added = await config_repo.seed_defaults_if_empty()
         if added:
             log.info("seeded_default_providers", count=added)
+        sync = await config_repo.sync_catalog()
+        if sync.applied:
+            log.info(
+                "provider_catalog_synced",
+                version=sync.version,
+                added=sync.providers_added,
+                updated=sync.providers_updated,
+                prices_added=sync.prices_added,
+                user_overrides_cleared=sync.user_overrides_cleared,
+            )
         strat_added = await strategy_repo.seed_builtins_if_missing()
         if strat_added:
             log.info("seeded_builtin_strategies", count=strat_added)

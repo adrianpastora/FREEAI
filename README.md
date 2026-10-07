@@ -4,8 +4,9 @@
 
 [![tests](https://github.com/adrianpastora/FREEAI/actions/workflows/tests.yml/badge.svg)](https://github.com/adrianpastora/FREEAI/actions/workflows/tests.yml)
 
-The free tiers of Cerebras, Groq, Gemini, Mistral, OpenRouter, Cohere and
-HuggingFace each give you 10–30 requests per minute and a few hundred per day. FreeAI
+The free tiers of Groq, Gemini, NVIDIA NIM, Mistral, OpenRouter, Cohere and
+HuggingFace (plus Cerebras, now trial-only) each give you 10–40 requests per
+minute and a few dozen to a few hundred per day. FreeAI
 adds them up behind one OpenAI-compatible endpoint and routes each request
 to the best one based on strategy, rate-limit headroom and health, falling
 back on failure — so your app gets the reliability of a paid API at the
@@ -160,8 +161,12 @@ no manual renewals.
 ## What it does
 
 - **Multi-provider routing** — adapters for Cerebras, Groq, Google Gemini,
-  Mistral, OpenRouter, Cohere and HuggingFace, all behind one
+  NVIDIA NIM, Mistral, OpenRouter, Cohere and HuggingFace, all behind one
   OpenAI-compatible endpoint.
+- **Self-healing catalog** — a retired model falls through to the provider's
+  next model, a spent quota or bad key moves on to the next provider, and
+  `scripts/check_catalog.py` flags stale models. See
+  [docs/providers/CATALOG.md](docs/providers/CATALOG.md).
 - **Strategies as data** — 8 built-in routing strategies (`auto`, `fastest`,
   `cheapest`, `best_quality`, `coding`, `reasoning`, `vision`, `long_context`)
   plus any you create from the UI at runtime.
@@ -242,7 +247,7 @@ Releases are tracked in [CHANGELOG.md](CHANGELOG.md).
 
 ## Status
 
-FreeAI is pre-1.0 (`0.7.3`) but actively maintained and used in
+FreeAI is pre-1.0 (`0.8.0`) but actively maintained and used in
 production by its author. Breaking changes land on `main` between minor
 versions — see [CHANGELOG.md](CHANGELOG.md) before upgrading. Highlights
 of what's in the box today:
@@ -278,12 +283,12 @@ circumvent any provider's rate limits or quotas — each upstream call
 counts against the account whose key was used.
 
 You are responsible for complying with each provider's Terms of Service
-(Cerebras, Groq, Google Gemini, Mistral, OpenRouter, Cohere, HuggingFace)
-on the accounts you connect. The maintainers of FreeAI are not responsible for
+(Cerebras, Groq, Google Gemini, NVIDIA, Mistral, OpenRouter, Cohere,
+HuggingFace) on the accounts you connect. The maintainers of FreeAI are not responsible for
 how you use it.
 
 FreeAI is not affiliated with, endorsed by, or sponsored by Cerebras,
-Groq, Google, Mistral, OpenRouter, Cohere, or HuggingFace. All product
+Groq, Google, NVIDIA, Mistral, OpenRouter, Cohere, or HuggingFace. All product
 names, logos, and brands are property of their respective owners and
 are used here for identification purposes only.
 

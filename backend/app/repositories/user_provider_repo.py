@@ -15,7 +15,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..crypto import decrypt, encrypt, mask_key
 from ..db.models import ProviderConfigRow, UserProviderRow
+from ..providers import catalog as provider_catalog
 from .config_repo import ProviderConfigDTO
+
+
+def _catalog_info(name: str) -> dict:
+    """Free-tier note + verification date from the code catalog, so the
+    panel never has to hard-code provider terms that go stale."""
+    entry = provider_catalog.get(name)
+    if entry is None:
+        return {"free_tier": None, "catalog_verified": None, "fallback_models": []}
+    return {
+        "free_tier": entry.free_tier,
+        "catalog_verified": entry.verified,
+        "fallback_models": [m.id for m in entry.models if m.auto_fallback],
+    }
 
 
 @dataclass
@@ -83,6 +97,7 @@ class UserProviderRepository:
                 "weight": r.weight,
                 "tags": r.tags or [],
                 "default_model": r.default_model,
+                **_catalog_info(r.name),
             }
             for r in rows
         ]

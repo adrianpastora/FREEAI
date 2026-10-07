@@ -50,6 +50,7 @@ so retention is independent from the catalog rows.)
 | `circuit_breaker_window_s` | int | Sliding window for the streak; older failures are forgotten. Default `300`. (migration 0019) |
 | `circuit_breaker_base_cooldown_s` | int | First cooldown after a trip. Default `30`. (migration 0019) |
 | `circuit_breaker_max_cooldown_s` | int | Upper bound. Effective cooldown is `min(base * 2^level, max)`. Default `3600`. (migration 0019) |
+| `catalog_version` | `varchar(32)` nullable | `CATALOG_VERSION` last pushed into `providers` / `model_prices` by `ConfigRepository.sync_catalog()`. A mismatch at boot re-syncs. (migration 0021) |
 | `updated_at` | float (epoch) | |
 
 This exists as a table instead of an env var because strategy, fallback
@@ -102,7 +103,8 @@ is used. It's a separate table from `providers` because it's mutated on every
 request — keeping it separate avoids row-level contention on the config row
 and lets operators edit provider config without blocking the hot path.
 
-**Benign error kinds** (`rate_limited`, `client_error`, `auth`, `content_filtered`)
+**Benign error kinds** (`rate_limited`, `client_error`, `auth`, `quota_exhausted`,
+`model_unavailable`, `content_filtered`)
 update `last_error*` but **do not** tick `consecutive_failures` — they're not
 provider health failures, just request-specific refusals. See
 [rate_repo.py:`_BENIGN_ERRORS`](../backend/app/repositories/rate_repo.py).
@@ -305,6 +307,8 @@ you never need to put it in `alembic.ini`.
        provider_stats.cooldown_level for exponential backoff.
 0020 — model_prices table for cost tracking; usage_events.cost_usd
        (frozen at write time); usage_daily_rollup.sum_cost_usd.
+0021 — app_config.catalog_version: last provider catalog applied by
+       sync_catalog() at startup (see docs/providers/CATALOG.md).
 ```
 
 ### Running migrations

@@ -28,6 +28,7 @@ from .metrics import (
     orchestrator_fallbacks_total,
     provider_call_duration_seconds,
     provider_calls_total,
+    provider_model_unavailable_total,
 )
 from .providers import (
     PROVIDER_REGISTRY,
@@ -37,6 +38,8 @@ from .providers import (
     ProviderResponse,
     StreamChunk,
 )
+from .providers import catalog
+from .providers.base import quarantine_seconds_for
 from .repositories import (
     AppConfigDTO,
     ConfigRepository,
@@ -76,6 +79,39 @@ class _AttemptResult:
     response: Optional[ProviderResponse]
     error: Optional[ProviderError]
     latency_ms: int
+    # True when every model tried for this provider came back as
+    # MODEL_UNAVAILABLE — the provider as a whole is unusable for now.
+    all_models_unavailable: bool = False
+
+
+class _DeadModels:
+    """In-process memory of (user, provider, model) triples that answered
+    MODEL_UNAVAILABLE, so later requests skip straight to a working model
+    instead of paying one failed call each. Scoped per user because
+    availability is per account (e.g. Gemini only serves 2.5 to projects
+    that used it before). Entries expire so a model that comes back — or a
+    misclassified error — heals on its own."""
+
+    _TTL_S = 6 * 3600
+    _MAX_KEYS = 10_000
+
+    def __init__(self):
+        self._data: dict[tuple[int, str, str], float] = {}
+
+    def mark(self, user_id: int, provider: str, model: str) -> None:
+        if len(self._data) >= self._MAX_KEYS:
+            self._data.clear()
+        self._data[(user_id, provider, model)] = time.monotonic() + self._TTL_S
+
+    def is_dead(self, user_id: int, provider: str, model: str) -> bool:
+        key = (user_id, provider, model)
+        until = self._data.get(key)
+        if until is None:
+            return False
+        if until <= time.monotonic():
+            self._data.pop(key, None)
+            return False
+        return True
 
 
 class _StrategyCache:
@@ -161,8 +197,13 @@ class Orchestrator:
         self._in_flight: dict[tuple[int, str], int] = {}
         # In-memory rate counters — avoids COUNT over rate_events on hot path
         self._counter_store = RateCounterStore()
+        self._dead_models = _DeadModels()
 
     _IN_FLIGHT_MAX_KEYS = 10_000
+    # Upstream CLIENT_ERRORs are usually provider-specific (context window,
+    # unsupported parameter), so we fall back — but once this many distinct
+    # providers reject the request, it's the request that's wrong.
+    _MAX_CLIENT_ERROR_PROVIDERS = 2
 
     @property
     def http_client(self) -> httpx.AsyncClient:
@@ -314,7 +355,10 @@ class Orchestrator:
         rate_repo: RateRepository,
         definition: Optional[Definition],
         preferred: Optional[str],
+        unhealthy: Optional[list[str]] = None,
     ) -> list[_Candidate]:
+        """Score and sort the user's usable providers. Names skipped because
+        they are quarantined / tripped are appended to ``unhealthy``."""
         user_providers = await user_provider_repo.list_for_user(user_id)
         eligible = [dto for dto in user_providers if dto.enabled and dto.api_key]
         if not eligible:
@@ -331,6 +375,8 @@ class Orchestrator:
         for dto in provider_dtos:
             snap = snapshots.get(dto.name)
             if not snap or not snap.healthy:
+                if unhealthy is not None:
+                    unhealthy.append(dto.name)
                 continue
             provider = self._build_provider(dto)
             if not provider:
@@ -406,6 +452,64 @@ class Orchestrator:
                 break
         latency_ms = int((time.perf_counter() - started) * 1000)
         return _AttemptResult(response=None, error=last_error, latency_ms=latency_ms)
+
+    def _models_for(
+        self, user_id: int, cand: _Candidate, provider_model: Optional[str],
+    ) -> list[Optional[str]]:
+        """Models to try, in order, for one candidate.
+
+        An explicit model from the client is passed through untouched — we
+        never silently swap what the caller asked for. Otherwise: configured
+        default, then the catalog's fallback chain, minus models known dead.
+        """
+        if provider_model is not None:
+            return [provider_model]
+        chain = catalog.model_chain(cand.name, cand.config.default_model)
+        if not chain:
+            return [None]  # unknown provider: adapter picks its own default
+        alive = [m for m in chain if not self._dead_models.is_dead(user_id, cand.name, m)]
+        # All known-dead: probe the first one anyway so the memory self-heals.
+        return alive or chain[:1]
+
+    def _mark_model_dead(
+        self, user_id: int, provider: str, model: Optional[str], nxt: Optional[str],
+    ) -> None:
+        if model is None:
+            return
+        self._dead_models.mark(user_id, provider, model)
+        provider_model_unavailable_total.labels(provider=provider, model=model).inc()
+        log.warning(
+            "model unavailable — update app/providers/catalog.py",
+            provider=provider, model=model, trying_next=nxt,
+        )
+
+    async def _try_models(
+        self,
+        user_id: int,
+        cand: _Candidate,
+        req: ChatCompletionRequest,
+        models: list[Optional[str]],
+        max_retries: int,
+        explicit_model: bool = False,
+    ) -> _AttemptResult:
+        """Run _try_with_retry over the candidate's model chain, moving on to
+        the next model only when the current one is MODEL_UNAVAILABLE."""
+        started = time.perf_counter()
+        result: Optional[_AttemptResult] = None
+        for i, model in enumerate(models):
+            result = await self._try_with_retry(cand, req, model, max_retries)
+            if result.error is None or result.error.kind != ErrorKind.MODEL_UNAVAILABLE:
+                break
+            nxt = models[i + 1] if i + 1 < len(models) else None
+            self._mark_model_dead(user_id, cand.name, model, nxt)
+        assert result is not None
+        result.latency_ms = int((time.perf_counter() - started) * 1000)
+        result.all_models_unavailable = (
+            result.error is not None
+            and result.error.kind == ErrorKind.MODEL_UNAVAILABLE
+            and not explicit_model
+        )
+        return result
 
     @staticmethod
     async def _resolve_cost(
@@ -518,9 +622,9 @@ class Orchestrator:
         assert err is not None
         outcome = err.kind.value
         provider_calls_total.labels(provider=reservation.provider, outcome=outcome).inc()
-        quarantine = err.retry_after if err.kind == ErrorKind.RATE_LIMITED else None
-        if err.kind == ErrorKind.AUTH:
-            quarantine = 24 * 3600
+        quarantine = quarantine_seconds_for(
+            err, all_models_unavailable=result.all_models_unavailable,
+        )
         cb_kwargs = self._circuit_breaker_kwargs(app_cfg)
         await rate_repo.commit(
             reservation,
@@ -571,13 +675,13 @@ class Orchestrator:
                 has_vision=signal.has_vision,
             )
 
-        candidates = await self._rank(user_id, user_provider_repo, rate_repo, definition, req.preferred_provider)
+        unhealthy: list[str] = []
+        candidates = await self._rank(
+            user_id, user_provider_repo, rate_repo, definition, req.preferred_provider,
+            unhealthy=unhealthy,
+        )
         if not candidates:
-            raise ProviderError(
-                "orchestrator",
-                "no provider configured/available — add an API key in settings",
-                kind=ErrorKind.CLIENT_ERROR,
-            )
+            raise self._no_candidates_error(unhealthy)
 
         # Filter to vision-capable providers when the request contains images
         request_has_images = any(m.has_images for m in req.messages)
@@ -594,6 +698,8 @@ class Orchestrator:
             candidates = vision_candidates
 
         fallback_chain: list[str] = []
+        skipped: list[str] = []
+        client_error_providers = 0
         last_error: Optional[ProviderError] = None
         use_fallback = req.fallback and app_cfg.enable_fallback
         attempts = candidates if use_fallback else candidates[:1]
@@ -605,6 +711,7 @@ class Orchestrator:
             )
             if reservation is None:
                 log.info("provider over capacity, skipping", provider=cand.name)
+                skipped.append(cand.name)
                 continue
             self._counter_store.record(user_id, cand.name)
 
@@ -629,7 +736,10 @@ class Orchestrator:
             reservation_settled = False
             result: Optional[_AttemptResult] = None
             try:
-                result = await self._try_with_retry(cand, req, provider_model, max_retries)
+                result = await self._try_models(
+                    user_id, cand, req, self._models_for(user_id, cand, provider_model), max_retries,
+                    explicit_model=provider_model is not None,
+                )
                 await self._commit_attempt(
                     rate_repo, usage_repo, reservation, result,
                     strategy=strategy,
@@ -699,13 +809,11 @@ class Orchestrator:
                 message=last_error.message if last_error else "?",
             )
             if last_error and last_error.kind == ErrorKind.CLIENT_ERROR:
-                break
+                client_error_providers += 1
+                if client_error_providers >= self._MAX_CLIENT_ERROR_PROVIDERS:
+                    break
 
-        raise ProviderError(
-            "orchestrator",
-            f"all providers failed; last: {last_error.message if last_error else 'unknown'}",
-            kind=last_error.kind if last_error else ErrorKind.UNKNOWN,
-        )
+        raise self._exhausted_error(last_error, skipped)
 
     # ──────────────── public: streaming ────────────────
 
@@ -723,13 +831,13 @@ class Orchestrator:
     ) -> AsyncIterator[dict]:
         app_cfg = await config_repo.get_app_config()
         strategy, definition, _, virtual_model_id, provider_model = await self._resolve_strategy(req, strategy_repo)
-        candidates = await self._rank(user_id, user_provider_repo, rate_repo, definition, req.preferred_provider)
+        unhealthy: list[str] = []
+        candidates = await self._rank(
+            user_id, user_provider_repo, rate_repo, definition, req.preferred_provider,
+            unhealthy=unhealthy,
+        )
         if not candidates:
-            raise ProviderError(
-                "orchestrator",
-                "no provider configured/available — add an API key in settings",
-                kind=ErrorKind.CLIENT_ERROR,
-            )
+            raise self._no_candidates_error(unhealthy)
 
         # Filter to vision-capable providers when the request contains images
         request_has_images = any(m.has_images for m in req.messages)
@@ -750,7 +858,10 @@ class Orchestrator:
         completion_id = f"freeai-{uuid.uuid4().hex[:12]}"
         created = int(time.time())
         last_error: Optional[ProviderError] = None
+        skipped: list[str] = []
+        client_error_providers = 0
         fallback_position = 0
+        explicit_model = provider_model is not None
 
         for cand in attempts:
             if not cand.provider.supports_streaming:
@@ -759,6 +870,7 @@ class Orchestrator:
                 user_id, cand.name, cand.config.rpm_limit, cand.config.rpd_limit
             )
             if reservation is None:
+                skipped.append(cand.name)
                 continue
             self._counter_store.record(user_id, cand.name)
             fallback_position += 1
@@ -773,56 +885,59 @@ class Orchestrator:
             reservation_settled = False
             stream_iter = None
             idle_timeout = getattr(app_cfg, "stream_idle_timeout_s", 45.0)
+            models = self._models_for(user_id, cand, provider_model)
+            all_models_unavailable = False
             try:
                 try:
-                    stream_iter = cand.provider.stream(
-                        req.messages,
-                        model=provider_model,
-                        temperature=req.temperature,
-                        max_tokens=req.max_tokens,
-                        client=self._client,
-                    )
-                    # Manual iteration so we can enforce a per-chunk idle timeout.
-                    # A provider that goes silent after accepting the request
-                    # would otherwise hang this coroutine indefinitely.
-                    while True:
+                    for model_idx, model in enumerate(models):
+                        stream_iter = cand.provider.stream(
+                            req.messages,
+                            model=model,
+                            temperature=req.temperature,
+                            max_tokens=req.max_tokens,
+                            client=self._client,
+                        )
                         try:
-                            chunk = await asyncio.wait_for(
-                                stream_iter.__anext__(), timeout=idle_timeout
-                            )
-                        except StopAsyncIteration:
+                            async for chunk in self._pump_stream(stream_iter, cand.name, idle_timeout):
+                                if not first_chunk_sent:
+                                    first_chunk_sent = True
+                                    ttfb_ms = int((time.perf_counter() - started) * 1000)
+                                model_seen = chunk.model
+                                if chunk.prompt_tokens:
+                                    prompt_tokens = chunk.prompt_tokens
+                                if chunk.completion_tokens:
+                                    completion_tokens = chunk.completion_tokens
+                                # Override model name in SSE chunks when using virtual models
+                                if virtual_model_id:
+                                    chunk = StreamChunk(
+                                        delta=chunk.delta,
+                                        provider=chunk.provider,
+                                        model=virtual_model_id,
+                                        finish_reason=chunk.finish_reason,
+                                        prompt_tokens=chunk.prompt_tokens,
+                                        completion_tokens=chunk.completion_tokens,
+                                    )
+                                yield self._format_sse_chunk(chunk, completion_id, created, strategy)
                             break
-                        except asyncio.TimeoutError as te:
-                            # Close the upstream generator; it owns the httpx
-                            # stream context and must release it.
-                            try:
-                                await stream_iter.aclose()
-                            except Exception:  # noqa: BLE001
-                                pass
+                        except ProviderError as e:
+                            if e.kind != ErrorKind.MODEL_UNAVAILABLE or first_chunk_sent:
+                                raise
+                            nxt = models[model_idx + 1] if model_idx + 1 < len(models) else None
+                            self._mark_model_dead(user_id, cand.name, model, nxt)
+                            if nxt is None:
+                                all_models_unavailable = not explicit_model
+                                raise
+                            await self._aclose_quietly(stream_iter)
+                            stream_iter = None
+                        except Exception as e:  # noqa: BLE001
+                            # Adapter bug / unexpected payload. Before any byte
+                            # reached the client we can still fall back.
+                            if first_chunk_sent:
+                                raise
                             raise ProviderError(
-                                cand.name,
-                                f"stream idle for {idle_timeout}s",
-                                kind=ErrorKind.NETWORK,
-                            ) from te
-                        if not first_chunk_sent:
-                            first_chunk_sent = True
-                            ttfb_ms = int((time.perf_counter() - started) * 1000)
-                        model_seen = chunk.model
-                        if chunk.prompt_tokens:
-                            prompt_tokens = chunk.prompt_tokens
-                        if chunk.completion_tokens:
-                            completion_tokens = chunk.completion_tokens
-                        # Override model name in SSE chunks when using virtual models
-                        if virtual_model_id:
-                            chunk = StreamChunk(
-                                delta=chunk.delta,
-                                provider=chunk.provider,
-                                model=virtual_model_id,
-                                finish_reason=chunk.finish_reason,
-                                prompt_tokens=chunk.prompt_tokens,
-                                completion_tokens=chunk.completion_tokens,
-                            )
-                        yield self._format_sse_chunk(chunk, completion_id, created, strategy)
+                                cand.name, f"unexpected stream error: {e!r}",
+                                kind=ErrorKind.UNKNOWN,
+                            ) from e
                     latency_ms = int((time.perf_counter() - started) * 1000)
                     provider_call_duration_seconds.labels(provider=cand.name).observe(latency_ms / 1000.0)
                     provider_calls_total.labels(provider=cand.name, outcome="success").inc()
@@ -860,13 +975,12 @@ class Orchestrator:
                 except ProviderError as e:
                     latency_ms = int((time.perf_counter() - started) * 1000)
                     provider_calls_total.labels(provider=cand.name, outcome=e.kind.value).inc()
-                    quarantine = e.retry_after if e.kind == ErrorKind.RATE_LIMITED else None
-                    if e.kind == ErrorKind.AUTH:
-                        quarantine = 24 * 3600
                     await rate_repo.commit(
                         reservation, latency_ms, ok=False,
                         error=e.message, error_kind=e.kind.value,
-                        quarantine_seconds=quarantine,
+                        quarantine_seconds=quarantine_seconds_for(
+                            e, all_models_unavailable=all_models_unavailable,
+                        ),
                         **self._circuit_breaker_kwargs(app_cfg),
                     )
                     reservation_settled = True
@@ -886,7 +1000,9 @@ class Orchestrator:
                     if first_chunk_sent:
                         raise
                     if e.kind == ErrorKind.CLIENT_ERROR:
-                        break
+                        client_error_providers += 1
+                        if client_error_providers >= self._MAX_CLIENT_ERROR_PROVIDERS:
+                            break
                     continue
             finally:
                 # Always release in-flight counter — otherwise a cancelled
@@ -908,15 +1024,81 @@ class Orchestrator:
                 # client disconnect — otherwise the connection stays checked
                 # out of the httpx pool.
                 if stream_iter is not None:
-                    try:
-                        await stream_iter.aclose()
-                    except Exception:  # noqa: BLE001
-                        pass
+                    await self._aclose_quietly(stream_iter)
 
-        raise ProviderError(
+        raise self._exhausted_error(last_error, skipped)
+
+    @staticmethod
+    async def _pump_stream(
+        stream_iter: AsyncIterator[StreamChunk], provider: str, idle_timeout: float,
+    ) -> AsyncIterator[StreamChunk]:
+        """Re-yield chunks from an adapter stream with a per-chunk idle timeout.
+
+        Manual iteration so a provider that goes silent after accepting the
+        request can't hang the coroutine indefinitely.
+        """
+        while True:
+            try:
+                chunk = await asyncio.wait_for(
+                    stream_iter.__anext__(), timeout=idle_timeout
+                )
+            except StopAsyncIteration:
+                return
+            except asyncio.TimeoutError as te:
+                # Close the upstream generator; it owns the httpx stream
+                # context and must release it.
+                await Orchestrator._aclose_quietly(stream_iter)
+                raise ProviderError(
+                    provider,
+                    f"stream idle for {idle_timeout}s",
+                    kind=ErrorKind.NETWORK,
+                ) from te
+            yield chunk
+
+    @staticmethod
+    async def _aclose_quietly(stream_iter) -> None:
+        try:
+            await stream_iter.aclose()
+        except Exception:  # noqa: BLE001
+            pass
+
+    @staticmethod
+    def _no_candidates_error(unhealthy: list[str]) -> ProviderError:
+        if unhealthy:
+            return ProviderError(
+                "orchestrator",
+                "every configured provider is temporarily quarantined "
+                f"(bad key, spent quota, retired models or repeated failures): "
+                f"{', '.join(unhealthy)} — check the providers panel",
+                kind=ErrorKind.RATE_LIMITED,
+            )
+        return ProviderError(
             "orchestrator",
-            f"all providers failed; last: {last_error.message if last_error else 'unknown'}",
-            kind=last_error.kind if last_error else ErrorKind.UNKNOWN,
+            "no provider configured/available — add an API key in settings",
+            kind=ErrorKind.CLIENT_ERROR,
+        )
+
+    @staticmethod
+    def _exhausted_error(
+        last_error: Optional[ProviderError], skipped: list[str],
+    ) -> ProviderError:
+        """Final error once every candidate failed or was skipped."""
+        if last_error is not None:
+            note = f" (skipped at capacity/quarantined: {', '.join(skipped)})" if skipped else ""
+            return ProviderError(
+                "orchestrator",
+                f"all providers failed; last: [{last_error.provider}] {last_error.message}{note}",
+                kind=last_error.kind,
+            )
+        if skipped:
+            return ProviderError(
+                "orchestrator",
+                "every provider is at its rate limit or temporarily quarantined: "
+                + ", ".join(skipped),
+                kind=ErrorKind.RATE_LIMITED,
+            )
+        return ProviderError(
+            "orchestrator", "all providers failed; last: unknown", kind=ErrorKind.UNKNOWN,
         )
 
     @staticmethod

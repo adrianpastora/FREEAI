@@ -13,27 +13,122 @@ pre-1.0 versions — follow the Unreleased section if you track `main`.
 <!-- Add entries here as they land. Categories used in this changelog:
      Added, Changed, Fixed, Security, Removed, Deprecated. -->
 
-### Changed
-- README "Quick start" restructured as numbered Docker Compose steps with a
-  separate "Useful commands" block and the paranoid / doctor / `ensure_dotenv`
-  knobs tucked under a `<details>` so the first read isn't drowned in
-  advanced options.
-- Documentation pass across `docs/` to match the current code: 13-table
-  schema (was 10 in `DATABASE.md`, 7 in `ARCHITECTURE.md`), migration 0020
-  + `model_prices` table + `cost_usd` / `sum_cost_usd` columns documented,
-  `OPERATIONS.md` env-var list completed with the JWT, paranoid-mode and
-  setup-path variables that were missing, `API.md` extended with the
-  per-user, pricing, setup, auth, users, tags and historical-analytics
-  endpoint families (was missing roughly half of the admin surface),
-  `DEVELOPMENT.md` tag table updated for Cerebras + audio + embeddings,
-  `providers/cerebras.md` status flipped from "doc only" to "integrated
-  since 0.7.0", test counts updated from 243 → 272, README test-CI
-  claim corrected to manual-only.
+## [0.8.0] — 2026-10-08
+
+Reliable fallback and a self-maintaining provider catalog. Between May and
+October 2026 most free tiers changed under FreeAI. Cerebras went card-only
+(2026-07-16), Groq shut down Llama 3.x (2026-08-16), OpenRouter rotated
+every `:free` model, the HuggingFace default left the router, and Gemini
+2.5 / `text-embedding-004` were restricted or retired. The fallback chain
+also stopped at the first of those errors, so most requests failed outright.
+
+### Upgrade notes
+- Migration **0021** adds `app_config.catalog_version`. It runs automatically
+  with `FREEAI_AUTO_MIGRATE=true` (the default).
+- On the first boot after upgrading, `sync_catalog()` updates the built-in
+  provider rows to the 2026-10-07 catalog: default models, limits, weights and
+  tags. Admin edits to those rows are overwritten once. API keys and the
+  enabled flag are not touched. Per-user `default_model` overrides that point
+  at a retired model are cleared. Admin-tuned prices are kept.
+- New provider **NVIDIA NIM** (`nvidia`). Its card appears in the panel.
+  Get a free key at build.nvidia.com; no card required.
+- Gemini embeddings now default to `gemini-embedding-001` (3072 dims).
+  `text-embedding-004` (768 dims) was shut down by Google on 2026-01-14.
+  Re-embed stored vectors if you mix the two.
+- Behaviour change: an upstream 4xx (`client_error`) now falls back to the
+  next provider. The chain stops only once two providers reject the same
+  request. A 429 without `Retry-After` parks the provider for 60 s.
 
 ### Fixed
-- Setup wizard: bootstrap-token banner now reprints on every restart while
-  setup is still pending (`d9cc95e`), and the paranoid-mode restart path
+- Fallback stopped at the first provider that returned a non-auth 4xx, so a
+  retired model (Groq `model_decommissioned`, OpenRouter 404) or a spent quota
+  (HuggingFace 402) killed every request. Those errors were also "benign",
+  so the broken provider stayed first in the ranking forever.
+- The 24 h quarantine for `auth` errors was computed but never applied,
+  because the breaker path ignored it. A revoked key was retried every 30 s
+  to 1 h.
+- A 429 without `Retry-After` no longer gets the same provider retried on the
+  very next request.
+- Streaming: an unexpected adapter exception before the first chunk now falls
+  back instead of killing the stream. The Gemini stream no longer crashes on
+  `candidates: []`. Gemini and Cohere non-JSON bodies surface as `parsing`.
+- Embeddings and transcription no longer stop the chain on `auth` errors.
+- When every provider is quarantined, the error now names them instead of
+  saying "no provider configured".
+- Setup wizard: the bootstrap-token banner now reprints on every restart while
+  setup is still pending (`d9cc95e`). The paranoid-mode restart path now
   reprints the banner instead of silently swallowing it (`678a86b`).
+
+### Added
+- `model_unavailable` and `quota_exhausted` error kinds, classified from the
+  status code *and* the error body: 402, `model_not_found`,
+  `decommissioned`, "no endpoints found", Gemini `limit: 0`, trial/credits
+  wording, and daily-quota 429s.
+- Shared quarantine policy (`providers.base.quarantine_seconds_for`):
+  - auth: 24 h
+  - 402: 6 h
+  - daily quota: 1 h
+  - 429: `Retry-After` or 60 s
+  - every model of a provider gone: 1 h
+- Per-provider model fallback. When a model is retired, the orchestrator tries
+  the provider's next catalog model before moving to another provider. A
+  model the client named explicitly is never swapped. Dead models are
+  remembered for 6 h, per user (availability is per account).
+- `backend/app/providers/catalog.py` is now the single source of truth for
+  default and fallback models, retired models, limits, tags, seed prices and
+  free-tier notes. `KNOWN_MODELS` and `DEFAULT_PROVIDERS` are derived from it.
+  It is synced to the DB on boot whenever `CATALOG_VERSION` changes, so
+  future refreshes need no migration.
+- `scripts/check_catalog.py` checks the catalog against each provider's live
+  `/models` list. It exits 1 on missing models and suggests new OpenRouter
+  `:free` models.
+- Prometheus counter `freeai_provider_model_unavailable_total{provider,model}`.
+  A non-zero rate means the catalog is stale.
+- `GET /api/me/providers/catalog` now returns `free_tier`,
+  `catalog_verified` and `fallback_models`. The panel shows the backend's
+  free-tier text instead of hard-coded copy.
+- NVIDIA NIM provider (OpenAI-compatible, `integrate.api.nvidia.com`).
+  `nvapi-` keys are redacted from error messages.
+- Saving a new key or model for a provider clears its quarantine.
+- `docs/providers/CATALOG.md`: how the catalog works and the update
+  procedure.
+
+### Changed
+- Catalog refresh, verified 2026-10-07:
+
+  | Provider | New default (fallbacks) | Notes |
+  |---|---|---|
+  | Groq | `openai/gpt-oss-120b` (`gpt-oss-20b`, `qwen/qwen3.8-27b`) | Llama 3.x / Gemma / Mixtral retired; ~1,000 RPD, 200K TPD |
+  | Gemini | `gemini-3.5-flash` (3.5 Flash-Lite, 3 Flash preview, 3.1 Flash-Lite, 2.5 Flash) | 2.5 only for projects that used it before |
+  | OpenRouter | `nvidia/nemotron-3-super-120b-a12b:free` (Gemma 4 31B, Nemotron 3 Ultra, Gemma 4 26B) | old `:free` models gone; 50 RPD without credits |
+  | HuggingFace | `openai/gpt-oss-120b` (Qwen3.6-27B, Llama 3.3 70B, Llama 3.1 8B) | $0.10/month of credit on free accounts |
+  | NVIDIA | `nvidia/nemotron-3-super-120b-a12b` (DeepSeek v4.1 Flash, GLM 5.3 Flash, gpt-oss-20b) | new; ~40 RPM, no card |
+  | Mistral | `mistral-small-latest` (medium, codestral, nemo) | `mistral-large` no longer an automatic fallback |
+  | Cohere | `command-r-08-2024` (`command-r7b-12-2024`) | unchanged; 1,000 calls/month |
+  | Cerebras | `gpt-oss-120b` | trial-only: $5 for 30 days with a payment method |
+
+- Gemini transcription defaults to `gemini-3.5-flash`.
+- The setup wizard lists providers that need no card first; Cerebras is last.
+- README "Quick start" restructured as numbered Docker Compose steps, with a
+  separate "Useful commands" block. The paranoid / doctor / `ensure_dotenv`
+  knobs are tucked under a `<details>` so the first read isn't drowned in
+  advanced options.
+- Documentation pass across `docs/` to match the current code:
+  - 13-table schema (was 10 in `DATABASE.md`, 7 in `ARCHITECTURE.md`).
+  - Migration 0020, the `model_prices` table and the `cost_usd` /
+    `sum_cost_usd` columns documented.
+  - `OPERATIONS.md` env-var list completed with the JWT, paranoid-mode and
+    setup-path variables that were missing.
+  - `API.md` extended with the per-user, pricing, setup, auth, users, tags
+    and historical-analytics endpoint families (roughly half of the admin
+    surface was missing).
+  - `DEVELOPMENT.md` tag table updated for Cerebras, audio and embeddings.
+  - `providers/cerebras.md` status changed from "doc only" to "integrated
+    since 0.7.0".
+  - Test counts updated from 243 to 272.
+  - README claim about tests running in CI corrected to manual-only.
+  - `ARCHITECTURE.md`, `API.md` and `DATABASE.md` updated for the new error
+    kinds, quarantine policy and migration 0021.
 
 ## [0.7.3] — 2026-05-17
 
@@ -321,7 +416,8 @@ infrastructure.
 - Drop the legacy "Sprint N shipped" changelog section from README —
   replaced with a themed Status section.
 
-[Unreleased]: https://github.com/adrianpastora/FREEAI/compare/v0.7.3...HEAD
+[Unreleased]: https://github.com/adrianpastora/FREEAI/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/adrianpastora/FREEAI/releases/tag/v0.8.0
 [0.7.3]: https://github.com/adrianpastora/FREEAI/releases/tag/v0.7.3
 [0.7.2]: https://github.com/adrianpastora/FREEAI/releases/tag/v0.7.2
 [0.7.1]: https://github.com/adrianpastora/FREEAI/releases/tag/v0.7.1

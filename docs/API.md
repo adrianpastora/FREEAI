@@ -74,8 +74,8 @@ HTTP status mapping (from `main.py::_KIND_TO_STATUS`):
 | `kind` | HTTP status |
 |---|---|
 | `client_error` | 400 |
-| `auth`, `server_error`, `parsing`, `empty_response`, `content_filtered`, `unknown` | 502 |
-| `rate_limited` | 503 |
+| `auth`, `server_error`, `parsing`, `empty_response`, `content_filtered`, `model_unavailable`, `unknown` | 502 |
+| `rate_limited`, `quota_exhausted` | 503 |
 | `network` | 504 |
 
 Two kinds trigger internal fallback but almost never reach the client
@@ -393,7 +393,7 @@ OpenAI-compatible text embeddings with multi-provider fallback. Request body:
 > **Do not pass OpenAI model names.** `text-embedding-3-small`,
 > `text-embedding-3-large` and `text-embedding-ada-002` are forwarded
 > verbatim to Mistral/Gemini, which return `400 invalid model`. Use
-> `mistral-embed` (1024 dim) or `text-embedding-004` (768 dim), or omit
+> `mistral-embed` (1024 dim) or `gemini-embedding-001` (3072 dim), or omit
 > `model` to let each provider use its default. See
 > [EMBEDDINGS.md § Only these model names are valid](EMBEDDINGS.md#-only-these-model-names-are-valid).
 
@@ -422,11 +422,12 @@ calls work without modification.
 | Provider | Default model | Dimension | Free-tier limit (2026-05) | Token counts? |
 |----------|---------------|-----------|---------------------------|---------------|
 | **Mistral** | `mistral-embed` | 1024 | 1 RPS, ~1B tokens/month | yes |
-| **Gemini**  | `text-embedding-004` | 768 | 1500 RPM, 30k RPD | no (always 0) |
+| **Gemini**  | `gemini-embedding-001` | 3072 | per-project free quota | no (estimated) |
 
 You can force a specific model by passing `model`. Mistral accepts any of
-its embedding models; Gemini accepts the `text-embedding-*` family (the
-`models/` prefix is added automatically).
+its embedding models; Gemini accepts the `gemini-embedding-*` family (the
+`models/` prefix is added automatically). `text-embedding-004` was shut down
+on 2026-01-14.
 
 #### Provider selection
 
@@ -437,9 +438,10 @@ its embedding models; Gemini accepts the `text-embedding-*` family (the
 3. Each candidate reserves capacity through the same `freeai_try_reserve`
    function used by chat (per-user RPM/RPD). Providers at capacity are
    skipped, not counted as failures.
-4. On transient failure (`server_error`, `network`, `rate_limited`) the next
-   candidate is tried. On `auth`/`client_error` the loop stops — those won't
-   be fixed by switching provider.
+4. On any provider-specific failure (`server_error`, `network`,
+   `rate_limited`, `auth`, `quota_exhausted`, `model_unavailable`) the next
+   candidate is tried. Only `client_error` stops the loop, since a malformed
+   request fails everywhere.
 5. All 2xx/4xx/5xx outcomes are written to `usage_events` with
    `strategy = "embedding"`, so the analytics dashboard shows embedding
    traffic alongside chat automatically.
@@ -691,10 +693,11 @@ Stored directly in the `app_config` singleton row; no dedicated endpoint yet
 | `circuit_breaker_base_cooldown_s` | `30` | First cooldown after a trip. |
 | `circuit_breaker_max_cooldown_s` | `3600` | Upper bound. Cooldown is `min(base * 2^level, max)` where `level` escalates on every re-trip and resets on success. |
 
-RATE_LIMITED, CLIENT_ERROR, AUTH and CONTENT_FILTERED are "benign" failures —
-they trigger fallback but never trip the circuit breaker, because the
-provider itself is alive and the problem is with the request (or a
-per-user quota).
+RATE_LIMITED, CLIENT_ERROR, AUTH, QUOTA_EXHAUSTED, MODEL_UNAVAILABLE and
+CONTENT_FILTERED are "benign" failures — they trigger fallback but never trip
+the circuit breaker, because the provider itself is alive and the problem is
+the request, the key, the quota or the model. Some of them park the provider
+for a while instead (see ARCHITECTURE.md § Error handling).
 
 ### Per-provider retry override (user_providers)
 

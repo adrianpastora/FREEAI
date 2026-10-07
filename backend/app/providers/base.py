@@ -36,6 +36,7 @@ _SECRET_PATTERNS = (
     re.compile(r"\bgsk_[A-Za-z0-9_\-]{16,}\b"),
     re.compile(r"\bhf_[A-Za-z0-9_\-]{16,}\b"),
     re.compile(r"\bxai-[A-Za-z0-9_\-]{16,}\b"),
+    re.compile(r"\bnvapi-[A-Za-z0-9_\-]{16,}\b"),
     re.compile(r"\bAIza[0-9A-Za-z_\-]{30,}\b"),
     re.compile(r"(?i)[?&](?:key|api_key|access_token)=[^&\s]+"),
 )
@@ -54,7 +55,9 @@ class ErrorKind(str, Enum):
     """Classification used by the orchestrator to decide retry/fallback behavior."""
     AUTH = "auth"                 # 401/403 — bad key, disable provider, alert user
     RATE_LIMITED = "rate_limited" # 429 — fall back immediately, NOT a health failure
-    CLIENT_ERROR = "client_error" # 4xx other — bad request, propagate to caller
+    CLIENT_ERROR = "client_error" # 4xx other — bad request; fall back, stop if a 2nd provider agrees
+    MODEL_UNAVAILABLE = "model_unavailable"  # model retired/unknown/not on this tier — try next model, then next provider
+    QUOTA_EXHAUSTED = "quota_exhausted"      # 402 / credits spent — quarantine for hours, fall back
     SERVER_ERROR = "server_error" # 5xx — transient, retry-then-fallback
     NETWORK = "network"           # connection / timeout — transient
     PARSING = "parsing"           # response shape changed — likely a bug
@@ -92,13 +95,49 @@ class ProviderError(Exception):
 
     @property
     def is_benign(self) -> bool:
-        """Provider is healthy, just don't pick it right now (or ever, for auth)."""
+        """Provider is reachable, just don't pick it right now. These never
+        feed the circuit breaker; the orchestrator quarantines some of them
+        explicitly instead (see Orchestrator._quarantine_for)."""
         return self.kind in {
             ErrorKind.RATE_LIMITED,
             ErrorKind.CLIENT_ERROR,
             ErrorKind.AUTH,
             ErrorKind.CONTENT_FILTERED,
+            ErrorKind.MODEL_UNAVAILABLE,
+            ErrorKind.QUOTA_EXHAUSTED,
         }
+
+
+# ─── quarantine policy (shared by chat, embeddings, transcription) ───
+# How long a (user, provider) pair is skipped after a benign-but-blocking
+# error. Breaker-style failures (5xx, network) are handled by RateRepository.
+RATE_LIMIT_DEFAULT_QUARANTINE_S = 60          # 429 without Retry-After
+DAILY_QUOTA_QUARANTINE_S = 3600               # daily allowance spent: re-probe hourly
+BILLING_QUOTA_QUARANTINE_S = 6 * 3600         # 402 / credits exhausted
+AUTH_QUARANTINE_S = 24 * 3600                 # bad/revoked key; cleared when the key is updated
+MODEL_UNAVAILABLE_QUARANTINE_S = 3600         # every model of the provider is gone
+
+
+def quarantine_seconds_for(
+    err: "ProviderError", *, all_models_unavailable: bool = False,
+) -> Optional[float]:
+    """Quarantine to apply for ``err``, or None for no quarantine.
+
+    MODEL_UNAVAILABLE only quarantines the provider when the caller has
+    already tried every model it knows for it (``all_models_unavailable``);
+    otherwise the dead model is skipped and the provider stays usable.
+    """
+    if err.kind == ErrorKind.RATE_LIMITED:
+        return err.retry_after if err.retry_after else RATE_LIMIT_DEFAULT_QUARANTINE_S
+    if err.kind == ErrorKind.QUOTA_EXHAUSTED:
+        if err.retry_after:
+            return err.retry_after
+        return BILLING_QUOTA_QUARANTINE_S if err.status == 402 else DAILY_QUOTA_QUARANTINE_S
+    if err.kind == ErrorKind.AUTH:
+        return AUTH_QUARANTINE_S
+    if err.kind == ErrorKind.MODEL_UNAVAILABLE and all_models_unavailable:
+        return MODEL_UNAVAILABLE_QUARANTINE_S
+    return None
 
 
 # Fallback chars-per-token used when tiktoken is not importable for any
@@ -170,10 +209,48 @@ def assert_inline_image_within_limit(provider: str, b64_payload: str) -> None:
         )
 
 
-def classify_status(status: int) -> ErrorKind:
+# Error-body wording providers use when the *model* (not the request) is the
+# problem: retired, renamed, unknown, or not available on the caller's tier.
+_MODEL_UNAVAILABLE_RE = re.compile(
+    r"(?i)(model[_ ]not[_ ]found|model[_ ]decommissioned|decommissioned"
+    r"|model .{0,80}(does not exist|not found|is not supported|no longer (available|supported)|deprecated|not available)"
+    r"|(unknown|invalid) model|no endpoints found|is not a valid model"
+    r"|not supported by any provider|limit: 0\b)"
+)
+# Credits / billing wording on non-402 statuses (some gateways use 400/403/429).
+_QUOTA_EXHAUSTED_RE = re.compile(
+    r"(?i)(insufficient[_ ](credits|balance|quota)|exceeded your monthly included credits"
+    r"|out of credits|payment required|add a payment method)"
+)
+# 429s caused by a *daily* allowance (OpenRouter free-models-per-day, Gemini
+# ...PerDay... quotas). Retrying in a minute is pointless; quarantine longer.
+_DAILY_QUOTA_RE = re.compile(r"(?i)(per[-_ ]?day|daily)")
+
+
+def classify_status(status: int, body: str = "") -> ErrorKind:
+    """Map an upstream HTTP error to an ErrorKind.
+
+    ``body`` (the error message, if any) refines the status: a 400/403/404/429
+    that talks about a missing model becomes MODEL_UNAVAILABLE and billing
+    wording becomes QUOTA_EXHAUSTED, so the orchestrator falls back instead of
+    treating it as a bad request or a dead key.
+    """
+    if status == 402:
+        return ErrorKind.QUOTA_EXHAUSTED
+    if 400 <= status < 500 and body:
+        if _MODEL_UNAVAILABLE_RE.search(body):
+            return ErrorKind.MODEL_UNAVAILABLE
+        if _QUOTA_EXHAUSTED_RE.search(body):
+            return ErrorKind.QUOTA_EXHAUSTED
     if status in (401, 403):
         return ErrorKind.AUTH
+    if status == 404:
+        # Chat endpoints are fixed URLs; a 404 there means the model path
+        # (Gemini) or model routing (OpenRouter, HF) doesn't exist.
+        return ErrorKind.MODEL_UNAVAILABLE
     if status == 429:
+        if body and _DAILY_QUOTA_RE.search(body):
+            return ErrorKind.QUOTA_EXHAUSTED
         return ErrorKind.RATE_LIMITED
     if 400 <= status < 500:
         return ErrorKind.CLIENT_ERROR
@@ -380,7 +457,6 @@ class BaseProvider:
         """Translate an httpx Response into a typed ProviderError."""
         if resp.status_code < 400:
             return
-        kind = classify_status(resp.status_code)
         retry_after = parse_retry_after(resp.headers)
         # Try to extract a useful message from the body. Some providers
         # return HTML or malformed JSON on errors; fall back to the raw
@@ -396,6 +472,11 @@ class BaseProvider:
             )
         except (ValueError, AttributeError):
             pass
+        if not isinstance(body, str):
+            body = str(body)
+        # Classify on the full raw text too: the extracted message can drop
+        # the machine-readable code (e.g. {"code": "model_not_found"}).
+        kind = classify_status(resp.status_code, f"{body} {resp.text[:2000]}")
         raise ProviderError(
             self.name,
             _sanitize_error_message(body),

@@ -48,6 +48,8 @@ class AppConfigRow(Base):
     circuit_breaker_window_s: Mapped[int] = mapped_column(Integer, default=300, nullable=False)
     circuit_breaker_base_cooldown_s: Mapped[int] = mapped_column(Integer, default=30, nullable=False)
     circuit_breaker_max_cooldown_s: Mapped[int] = mapped_column(Integer, default=3600, nullable=False)
+    # providers.catalog.CATALOG_VERSION last applied by ConfigRepository.sync_catalog.
+    catalog_version: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     updated_at: Mapped[float] = mapped_column(
         Float, default=time.time, onupdate=time.time, nullable=False
     )

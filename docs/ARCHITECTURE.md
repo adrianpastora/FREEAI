@@ -186,9 +186,11 @@ Every provider adapter must translate any failure into a
 
 | Kind | Example | Retry in place? | Fall back? | Counts as health failure? |
 |---|---|---|---|---|
-| `AUTH` | 401, 403, missing key | no | yes | no, but quarantines 24h so the admin notices |
-| `RATE_LIMITED` | 429 | no | yes | no, respects `Retry-After` |
-| `CLIENT_ERROR` | 400, 422 | no | **no** — same request would fail elsewhere | no |
+| `AUTH` | 401, 403, missing key | no | yes | no, but quarantines 24h (cleared when the key is updated) |
+| `RATE_LIMITED` | 429 | no | yes | no, quarantines `Retry-After` or 60s |
+| `QUOTA_EXHAUSTED` | 402, credits wording, daily-quota 429 | no | yes | no, quarantines 6h (402) / 1h (daily 429) |
+| `MODEL_UNAVAILABLE` | 404, `model_not_found`, `decommissioned`, Gemini `limit: 0` | no | next **model** of the same provider first, then next provider | no; provider quarantined 1h only once every catalog model is gone |
+| `CLIENT_ERROR` | other 400, 422 | no | yes — stops once 2 providers reject the request | no |
 | `SERVER_ERROR` | 5xx | yes (configurable, default 1 retry) | yes | yes, ticks circuit breaker |
 | `NETWORK` | timeout, conn reset, stream idle | yes (configurable) | yes | yes, ticks circuit breaker |
 | `PARSING` | unexpected response shape, 5+ malformed stream frames | no | yes | yes, ticks circuit breaker |
@@ -197,10 +199,16 @@ Every provider adapter must translate any failure into a
 | `UNKNOWN` | unexpected exception | no | yes | yes, ticks circuit breaker |
 
 The rules live in `rate_repo.commit()`:
-`rate_limited`, `client_error`, `auth` and `content_filtered` are **benign** —
-we never use them as evidence that the provider is unhealthy. Benign errors
-don't count toward the circuit-breaker streak. AUTH is the one benign kind
-that still triggers quarantine (24h), because a bad key won't fix itself.
+`rate_limited`, `client_error`, `auth`, `quota_exhausted`, `model_unavailable`
+and `content_filtered` are **benign**. We never use them as evidence that the
+provider is unhealthy, and they don't count toward the circuit-breaker streak.
+The quarantine periods above come from `providers.base.quarantine_seconds_for`,
+which chat, streaming, embeddings and transcription share.
+
+Model churn is handled by the provider catalog (`providers/catalog.py`):
+each provider has an ordered model chain, retired models are skipped, and a
+model that answers `MODEL_UNAVAILABLE` is remembered as dead for 6h. See
+[providers/CATALOG.md](providers/CATALOG.md) for how to keep it current.
 
 ### Circuit breaker and retry budget
 
@@ -229,7 +237,9 @@ The orchestrator wraps the upstream chunk iterator in
 If the upstream goes silent for longer than that:
 
 - **Before any chunk was flushed to the client** → raised as
-  `ErrorKind.NETWORK`, triggers fallback to the next provider.
+  `ErrorKind.NETWORK`, triggers fallback to the next provider. The same
+  applies to any unexpected adapter exception (wrapped as `UNKNOWN`), and a
+  `MODEL_UNAVAILABLE` retries the stream on the provider's next model.
 - **After at least one chunk** → propagated to the client as an SSE
   error; no fallback is possible once bytes are in flight.
 
@@ -260,7 +270,7 @@ The orchestrator's `ProviderError.kind` maps to an HTTP status in
 | Kind | HTTP |
 |---|---|
 | `CLIENT_ERROR` | 400 |
-| `RATE_LIMITED` | 503 |
+| `RATE_LIMITED`, `QUOTA_EXHAUSTED` | 503 |
 | `NETWORK` | 504 |
 | anything else | 502 |
 
@@ -280,7 +290,8 @@ Prometheus histograms live next to the middleware:
 
 - `freeai_http_requests_total{method,path,status}`
 - `freeai_http_request_duration_seconds{method,path}`
-- `freeai_provider_calls_total{provider,outcome}` — `outcome` ∈ {success, server_error, rate_limited, auth, network, client_error, parsing, empty_response, content_filtered, unknown}
+- `freeai_provider_calls_total{provider,outcome}` — `outcome` ∈ {success, server_error, rate_limited, auth, network, client_error, parsing, empty_response, content_filtered, model_unavailable, quota_exhausted, unknown}
+- `freeai_provider_model_unavailable_total{provider,model}` — non-zero means the catalog is stale
 - `freeai_provider_call_duration_seconds{provider}`
 - `freeai_orchestrator_fallbacks_total{from_provider,to_provider}`
 - `freeai_provider_circuit_breaker_trips_total{provider}` — incremented each time the breaker trips for any user of that provider.

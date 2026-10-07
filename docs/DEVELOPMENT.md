@@ -31,11 +31,12 @@ and refresh the browser. No build step, no watcher.
 
 ### 2.1 Layout
 
-272 tests total in [backend/tests/](../backend/tests/). This list
+314 tests total in [backend/tests/](../backend/tests/). This list
 highlights the main buckets rather than every file:
 
 - **Pure** (no DB, no Docker): `test_auto_strategy.py`, `test_crypto.py`,
-  `test_known_models.py`, `test_strategy_dsl.py`,
+  `test_known_models.py`, `test_provider_catalog.py` (catalog coherence,
+  error classification, per-provider model fallback), `test_strategy_dsl.py`,
   `test_virtual_models.py`, `test_provider_robustness.py` (empty response
   / content filter / stream parsing), `test_orchestrator_retry_budget.py`
   (retry budget + circuit-breaker kwargs), `test_schema_tool_calls.py`

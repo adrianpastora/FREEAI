@@ -68,7 +68,7 @@ class GroqProvider(OpenAICompatibleProvider):
             raise ProviderError(
                 self.name,
                 resp.text[:500],
-                kind=classify_status(resp.status_code),
+                kind=classify_status(resp.status_code, resp.text[:2000]),
                 status=resp.status_code,
                 retry_after=parse_retry_after(resp.headers),
             )

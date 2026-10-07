@@ -151,22 +151,93 @@ async def test_falls_back_on_rate_limit_without_retry(session):
     await session.commit()
     assert res.provider == "secondary"
     assert primary.calls == 1
+    # A 429 doesn't feed the circuit breaker, but without Retry-After the
+    # provider is parked briefly so the next request doesn't hit it again.
     snap = await RateRepository(session).snapshot(1, "primary")
-    assert snap.healthy is True
+    assert snap.last_error_kind == "rate_limited"
+    assert snap.quarantined_until is not None
 
 
 @pytest.mark.asyncio
-async def test_client_error_does_not_fall_back(session):
+async def test_client_error_from_one_provider_falls_back(session):
+    """An upstream 4xx is usually provider-specific (context window, param
+    support) — the next provider gets a chance."""
     primary = FakeProvider(name="primary", error=_make_error("primary", ErrorKind.CLIENT_ERROR))
     secondary = FakeProvider(name="secondary", response=_make_response("secondary"))
     orch = await _setup_two_providers(session, primary, secondary)
 
+    res = await _run_chat(
+        orch, session,
+        ChatCompletionRequest(messages=[ChatMessage(role="user", content="hi")]),
+    )
+    await session.commit()
+    assert res.provider == "secondary"
+    assert primary.calls == 1  # client errors are not retried
+
+
+@pytest.mark.asyncio
+async def test_client_error_from_two_providers_stops(session):
+    """Once two providers reject the request, it's the request — stop."""
+    primary = FakeProvider(name="primary", error=_make_error("primary", ErrorKind.CLIENT_ERROR))
+    secondary = FakeProvider(name="secondary", error=_make_error("secondary", ErrorKind.CLIENT_ERROR))
+    orch = await _setup_two_providers(session, primary, secondary)
+
+    with pytest.raises(ProviderError) as exc:
+        await _run_chat(
+            orch, session,
+            ChatCompletionRequest(messages=[ChatMessage(role="user", content="hi")]),
+        )
+    assert exc.value.kind == ErrorKind.CLIENT_ERROR
+    assert secondary.calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", [ErrorKind.MODEL_UNAVAILABLE, ErrorKind.QUOTA_EXHAUSTED, ErrorKind.AUTH])
+async def test_provider_specific_errors_fall_back_and_quarantine(session, kind):
+    """Retired model / spent credits / bad key on the top provider must not
+    end the chain, and must keep that provider out of the next ranking."""
+    primary = FakeProvider(name="primary", error=_make_error("primary", kind))
+    secondary = FakeProvider(name="secondary", response=_make_response("secondary"))
+    orch = await _setup_two_providers(session, primary, secondary)
+
+    res = await _run_chat(
+        orch, session,
+        ChatCompletionRequest(messages=[ChatMessage(role="user", content="hi")]),
+    )
+    await session.commit()
+    assert res.provider == "secondary"
+    snap = await RateRepository(session).snapshot(1, "primary")
+    assert snap.healthy is False
+    assert snap.quarantined_until is not None
+
+    # Second request goes straight to the secondary.
+    res2 = await _run_chat(
+        orch, session,
+        ChatCompletionRequest(messages=[ChatMessage(role="user", content="hi again")]),
+    )
+    await session.commit()
+    assert res2.fallback_chain == ["secondary"]
+    assert primary.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_all_providers_quarantined_reports_which(session):
+    primary = FakeProvider(name="primary", error=_make_error("primary", ErrorKind.AUTH))
+    secondary = FakeProvider(name="secondary", error=_make_error("secondary", ErrorKind.AUTH))
+    orch = await _setup_two_providers(session, primary, secondary)
     with pytest.raises(ProviderError):
         await _run_chat(
             orch, session,
             ChatCompletionRequest(messages=[ChatMessage(role="user", content="hi")]),
         )
-    assert secondary.calls == 0
+    await session.commit()
+    with pytest.raises(ProviderError) as exc:
+        await _run_chat(
+            orch, session,
+            ChatCompletionRequest(messages=[ChatMessage(role="user", content="hi")]),
+        )
+    # Both are quarantined → filtered out of the ranking entirely.
+    assert "no provider" in exc.value.message or "quarantined" in exc.value.message
 
 
 @pytest.mark.asyncio

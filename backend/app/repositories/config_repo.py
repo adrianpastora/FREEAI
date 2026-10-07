@@ -15,7 +15,8 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..crypto import decrypt, encrypt
-from ..db.models import AppConfigRow, ProviderConfigRow
+from ..db.models import AppConfigRow, ModelPriceRow, ProviderConfigRow, UserProviderRow
+from ..providers.catalog import CATALOG, CATALOG_VERSION
 
 
 @dataclass
@@ -45,69 +46,31 @@ class AppConfigDTO:
     circuit_breaker_max_cooldown_s: int = 3600
 
 
-# Defaults — used to seed an empty database on first run.
-# Limits reflect each provider's free tier as of 2026-04:
-#   Cerebras free:   30 RPM, 14 400 RPD, 1 000 000 TPD (gpt-oss-120b)
-#   Groq free:       30 RPM, 14 400 RPD, 500k TPD (llama-3.3-70b)
-#   Gemini free:     10 RPM,   250 RPD (Flash), ~unlimited TPD at 250k TPM
-#   Mistral exper:    2 RPM, ~unlimited RPD, ~1B tokens/month ≈ 33M/day
-#   OpenRouter free: 20 RPM,   200 RPD (per model), no TPD
-#   Cohere trial:    20 RPM, 1 000/month ≈ 33/day, no TPD
-#   HuggingFace:     ~30 RPM, ~1 000 RPD (varies), no TPD
+# Defaults — used to seed an empty database on first run and re-applied by
+# sync_catalog() whenever catalog.CATALOG_VERSION changes. Edit the catalog
+# (app/providers/catalog.py), not this mapping.
 DEFAULT_PROVIDERS: dict[str, ProviderConfigDTO] = {
-    "cerebras": ProviderConfigDTO(
-        name="cerebras",
-        # Weight 1.1: genuinely the fastest provider in the registry
-        # (~3000 t/s vs ~750 t/s on Groq) AND the largest free-tier model
-        # (gpt-oss-120b at 120B params vs llama-3.3-70b on Groq). Without
-        # this nudge, Groq's weight=1.0 wins every tiebreak in the DSL
-        # baseline even when bonuses match.
-        # Tags ["fast", "reasoning", "coding", "quality"]: gpt-oss-120b is
-        # production-grade across all four. Without "coding" and "quality"
-        # Cerebras would be hard-excluded by the strategies that gate on
-        # those tags (coding, best_quality), which would be silly given the
-        # model's actual capability.
-        rpm_limit=30, rpd_limit=14_400, tpd_limit=1_000_000, weight=1.1,
-        tags=["fast", "reasoning", "coding", "quality"],
-        default_model="gpt-oss-120b",
-    ),
-    "groq": ProviderConfigDTO(
-        name="groq",
-        rpm_limit=30, rpd_limit=14_400, tpd_limit=500_000, weight=1.0,
-        tags=["fast", "cheap", "coding", "reasoning", "audio"],
-        default_model="llama-3.3-70b-versatile",
-    ),
-    "gemini": ProviderConfigDTO(
-        name="gemini",
-        rpm_limit=10, rpd_limit=250, tpd_limit=None, weight=0.9,
-        tags=["quality", "vision", "long_context", "reasoning", "embeddings"],
-        default_model="gemini-2.5-flash",
-    ),
-    "mistral": ProviderConfigDTO(
-        name="mistral",
-        rpm_limit=2, rpd_limit=1_000_000_000, tpd_limit=33_000_000, weight=0.8,
-        tags=["coding", "fast", "cheap", "embeddings"],
-        default_model="mistral-small-latest",
-    ),
-    "openrouter": ProviderConfigDTO(
-        name="openrouter",
-        rpm_limit=20, rpd_limit=200, tpd_limit=None, weight=0.7,
-        tags=["quality", "variety", "reasoning"],
-        default_model="meta-llama/llama-3.3-70b-instruct:free",
-    ),
-    "cohere": ProviderConfigDTO(
-        name="cohere",
-        rpm_limit=20, rpd_limit=33, tpd_limit=None, weight=0.6,
-        tags=["fast", "rag"],
-        default_model="command-r-08-2024",
-    ),
-    "huggingface": ProviderConfigDTO(
-        name="huggingface",
-        rpm_limit=30, rpd_limit=1_000, tpd_limit=None, weight=0.5,
-        tags=["variety", "cheap"],
-        default_model="meta-llama/Llama-3.2-3B-Instruct",
-    ),
+    name: ProviderConfigDTO(
+        name=name,
+        rpm_limit=entry.rpm_limit,
+        rpd_limit=entry.rpd_limit,
+        tpd_limit=entry.tpd_limit,
+        weight=entry.weight,
+        tags=list(entry.tags),
+        default_model=entry.default_model,
+    )
+    for name, entry in CATALOG.items()
 }
+
+
+@dataclass
+class CatalogSyncResult:
+    applied: bool
+    version: str
+    providers_added: list[str] = field(default_factory=list)
+    providers_updated: list[str] = field(default_factory=list)
+    prices_added: int = 0
+    user_overrides_cleared: int = 0
 
 
 class ConfigRepository:
@@ -182,6 +145,82 @@ class ConfigRepository:
             self.session.add(AppConfigRow(id=1))
         await self.session.flush()
         return added
+
+    async def sync_catalog(self) -> CatalogSyncResult:
+        """Push catalog defaults into the database when CATALOG_VERSION changed.
+
+        On a version bump, for every built-in provider:
+          • missing catalog rows are inserted;
+          • default_model / limits / weight / tags are overwritten with the
+            catalog values (enabled flag and stored key are left alone);
+          • user overrides of default_model that point at a retired model
+            are cleared so the user falls back to the catalog default;
+          • catalog price hints are inserted for models without a price
+            (ON CONFLICT DO NOTHING keeps admin-tuned prices).
+        Admin edits to catalog rows therefore survive until the next bump.
+        """
+        cfg_row = await self.session.get(AppConfigRow, 1)
+        if not cfg_row:
+            cfg_row = AppConfigRow(id=1)
+            self.session.add(cfg_row)
+            await self.session.flush()
+        result = CatalogSyncResult(applied=False, version=CATALOG_VERSION)
+        if cfg_row.catalog_version == CATALOG_VERSION:
+            return result
+        result.applied = True
+
+        rows = (await self.session.execute(select(ProviderConfigRow))).scalars().all()
+        by_name = {r.name: r for r in rows}
+        for name, entry in CATALOG.items():
+            row = by_name.get(name)
+            if row is None:
+                await self.upsert_provider(DEFAULT_PROVIDERS[name])
+                result.providers_added.append(name)
+                continue
+            new_values = {
+                "default_model": entry.default_model,
+                "rpm_limit": entry.rpm_limit,
+                "rpd_limit": entry.rpd_limit,
+                "tpd_limit": entry.tpd_limit,
+                "weight": entry.weight,
+                "tags": list(entry.tags),
+            }
+            if any(getattr(row, k) != v for k, v in new_values.items()):
+                for k, v in new_values.items():
+                    setattr(row, k, v)
+                result.providers_updated.append(name)
+
+            if entry.retired_models:
+                cleared = await self.session.execute(
+                    update(UserProviderRow)
+                    .where(
+                        UserProviderRow.provider_name == name,
+                        UserProviderRow.default_model.in_(entry.retired_models),
+                    )
+                    .values(default_model=None)
+                )
+                result.user_overrides_cleared += cleared.rowcount or 0
+
+            for m in entry.models:
+                if m.price is None:
+                    continue
+                ins = (
+                    pg_insert(ModelPriceRow)
+                    .values(
+                        provider_name=name, model=m.id,
+                        input_price_per_million_usd=m.price[0],
+                        output_price_per_million_usd=m.price[1],
+                    )
+                    .on_conflict_do_nothing(
+                        index_elements=[ModelPriceRow.provider_name, ModelPriceRow.model],
+                    )
+                )
+                res = await self.session.execute(ins)
+                result.prices_added += res.rowcount or 0
+
+        cfg_row.catalog_version = CATALOG_VERSION
+        await self.session.flush()
+        return result
 
     @staticmethod
     def _row_to_dto(row: ProviderConfigRow) -> ProviderConfigDTO:

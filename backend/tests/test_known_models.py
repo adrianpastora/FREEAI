@@ -13,7 +13,7 @@ def test_known_models_populated():
 
 
 def test_is_known_positive():
-    assert is_known("groq", "llama-3.3-70b-versatile") is True
+    assert is_known("groq", "openai/gpt-oss-120b") is True
 
 
 def test_is_known_negative():
@@ -25,8 +25,8 @@ def test_is_known_unknown_provider():
 
 
 def test_suggest_similar_finds_typo():
-    suggestions = suggest_similar("groq", "llama-3.3-70b")
-    assert any("llama-3.3-70b" in s for s in suggestions)
+    suggestions = suggest_similar("groq", "gpt-oss-120")
+    assert any("gpt-oss-120b" in s for s in suggestions)
 
 
 def test_suggest_similar_empty_for_nonsense():

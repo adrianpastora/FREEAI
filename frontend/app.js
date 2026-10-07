@@ -777,7 +777,7 @@ const PROVIDER_GUIDES = {
     displayName: "Cerebras",
     signupUrl: "https://cloud.cerebras.ai",
     docsUrl: "https://inference-docs.cerebras.ai/introduction",
-    freeTier: "Free: 30 req/min, 14,400 req/day, 1M tokens/day on gpt-oss-120b — no credit card, no expiry",
+    freeTier: "No permanent free tier: $5 trial credit (30 days) after adding a payment method",
     steps: [
       "Go to <a href=\"https://cloud.cerebras.ai\" target=\"_blank\" rel=\"noopener\">cloud.cerebras.ai</a> and sign up (Google/GitHub work).",
       "Open <strong>API Keys</strong> in the left sidebar.",
@@ -789,7 +789,7 @@ const PROVIDER_GUIDES = {
     displayName: "Groq",
     signupUrl: "https://console.groq.com/signup",
     docsUrl: "https://console.groq.com/docs/quickstart",
-    freeTier: "Free: 30 req/min, 14,400 req/day, no credit card required",
+    freeTier: "Free, no card: 30 req/min, ~1,000 req/day, ~200K tokens/day per model",
     steps: [
       "Go to <a href=\"https://console.groq.com/signup\" target=\"_blank\" rel=\"noopener\">console.groq.com/signup</a> and create an account (Google/GitHub work).",
       "Once in, open <strong>API Keys</strong> from the left sidebar.",
@@ -801,7 +801,7 @@ const PROVIDER_GUIDES = {
     displayName: "Google Gemini",
     signupUrl: "https://aistudio.google.com/apikey",
     docsUrl: "https://ai.google.dev/gemini-api/docs/quickstart",
-    freeTier: "Free: 15 req/min, 1,500 req/day, requires a Google account",
+    freeTier: "Free with a Google account, no card: Flash / Flash-Lite models, per-project quotas in AI Studio",
     steps: [
       "Go to <a href=\"https://aistudio.google.com/apikey\" target=\"_blank\" rel=\"noopener\">aistudio.google.com/apikey</a> and sign in with your Google account.",
       "Click <strong>Create API Key</strong> and pick a Google Cloud project (one is created automatically if you don't have any).",
@@ -813,7 +813,7 @@ const PROVIDER_GUIDES = {
     displayName: "Mistral AI",
     signupUrl: "https://console.mistral.ai/",
     docsUrl: "https://docs.mistral.ai/getting-started/quickstart/",
-    freeTier: "Free: 60 req/min on the experimental free plan; signup required",
+    freeTier: "Free plan, no card: $10/month of API credits",
     steps: [
       "Go to <a href=\"https://console.mistral.ai/\" target=\"_blank\" rel=\"noopener\">console.mistral.ai</a> and create an account.",
       "From the dashboard, open <strong>API Keys</strong> in the sidebar.",
@@ -825,7 +825,7 @@ const PROVIDER_GUIDES = {
     displayName: "OpenRouter",
     signupUrl: "https://openrouter.ai/",
     docsUrl: "https://openrouter.ai/docs/quickstart",
-    freeTier: "Free: 20 req/min, 200 req/day on models flagged with \":free\"",
+    freeTier: "Free, no card: 20 req/min, 50 req/day on \":free\" models (1,000/day after buying $10 of credits)",
     steps: [
       "Go to <a href=\"https://openrouter.ai/\" target=\"_blank\" rel=\"noopener\">openrouter.ai</a> and sign up (Google/GitHub work).",
       "Open <strong>Keys</strong> in your profile (<a href=\"https://openrouter.ai/keys\" target=\"_blank\" rel=\"noopener\">openrouter.ai/keys</a>).",
@@ -838,7 +838,7 @@ const PROVIDER_GUIDES = {
     displayName: "Cohere",
     signupUrl: "https://dashboard.cohere.com/welcome/register",
     docsUrl: "https://docs.cohere.com/docs/the-cohere-platform",
-    freeTier: "Free (Trial): 20 req/min, 1,000 req/day, no credit card required",
+    freeTier: "Trial key, no card: 1,000 calls/month, 20 req/min",
     steps: [
       "Go to <a href=\"https://dashboard.cohere.com/welcome/register\" target=\"_blank\" rel=\"noopener\">dashboard.cohere.com</a> and create an account.",
       "From the dashboard, open <strong>API Keys</strong> in the sidebar.",
@@ -850,22 +850,43 @@ const PROVIDER_GUIDES = {
     displayName: "Hugging Face",
     signupUrl: "https://huggingface.co/join",
     docsUrl: "https://huggingface.co/docs/api-inference/",
-    freeTier: "Free: 30 req/min, 1,000 req/day on the free Inference API",
+    freeTier: "Free account: only $0.10/month of routed credit",
     steps: [
       "Go to <a href=\"https://huggingface.co/join\" target=\"_blank\" rel=\"noopener\">huggingface.co/join</a> and create an account.",
       "Open <strong>Settings → Access Tokens</strong> (<a href=\"https://huggingface.co/settings/tokens\" target=\"_blank\" rel=\"noopener\">huggingface.co/settings/tokens</a>).",
       "Click <strong>Create new token</strong>, pick the <strong>Read</strong> scope (or <em>Fine-grained</em> with Inference access), name it, and generate the token.",
       "Copy the token (starts with <code>hf_</code>) and paste it into the <em>API KEY</em> field on the HuggingFace card in FreeAI. Click <strong>SAVE</strong>."
     ]
+  },
+  nvidia: {
+    displayName: "NVIDIA NIM",
+    signupUrl: "https://build.nvidia.com/",
+    docsUrl: "https://docs.api.nvidia.com/nim/reference/llm-apis",
+    freeTier: "Free NVIDIA Developer Program, no card: ~40 req/min per model",
+    steps: [
+      "Go to <a href=\"https://build.nvidia.com/\" target=\"_blank\" rel=\"noopener\">build.nvidia.com</a> and sign in (joins the free NVIDIA Developer Program).",
+      "Open any model page and click <strong>Get API Key</strong> (or go to your profile → <strong>API Keys</strong>).",
+      "Generate the key and copy it (starts with <code>nvapi-</code>).",
+      "Paste the key into the <em>API KEY</em> field on the NVIDIA card in FreeAI and click <strong>SAVE</strong>."
+    ]
   }
 };
+
+// Free-tier notes served by the backend catalog (app/providers/catalog.py).
+// They win over the hard-coded guide text so terms only need updating in one place.
+const _catalogFreeTier = {};
+
+function freeTierFor(name) {
+  const guide = PROVIDER_GUIDES[name];
+  return _catalogFreeTier[name] || (guide ? guide.freeTier : "");
+}
 
 function openSetupWizard(providerName) {
   const guide = PROVIDER_GUIDES[providerName];
   if (!guide) return;
   const modal = document.getElementById("wizardModal");
   modal.querySelector(".wizard__provider-name").textContent = guide.displayName;
-  modal.querySelector(".wizard__free-tier").textContent = guide.freeTier;
+  modal.querySelector(".wizard__free-tier").textContent = freeTierFor(providerName);
   const stepsList = modal.querySelector(".wizard__steps");
   stepsList.innerHTML = guide.steps
     .map((s, i) => `<li><span class="wizard__step-num">${i + 1}</span><span class="wizard__step-text">${s}</span></li>`)
@@ -886,7 +907,8 @@ document.addEventListener("click", (e) => {
 
 // ─────────────── multi-step provider setup wizard ───────────────
 
-const _pwProviderOrder = ["cerebras", "groq", "gemini", "mistral", "openrouter", "cohere", "huggingface"];
+// No-card free tiers first; Cerebras last (trial needs a payment method).
+const _pwProviderOrder = ["groq", "gemini", "nvidia", "openrouter", "mistral", "cohere", "huggingface", "cerebras"];
 let _pwStep = 0; // 0..N-1 = providers, N = summary
 let _pwConfigured = {}; // { providerName: bool }
 
@@ -976,7 +998,7 @@ function _pwRenderProviderStep(body, name) {
           ${isConfigured ? "✓ CONFIGURED" : "⚠ PENDING"}
         </span>
       </div>
-      <div class="pw__free-tier">${escapeHtml(guide.freeTier)}</div>
+      <div class="pw__free-tier">${escapeHtml(freeTierFor(name))}</div>
 
       ${isConfigured ? `
         <div class="pw__configured-msg">
@@ -1454,6 +1476,7 @@ async function refreshProviders(fullRender = false) {
     ]);
     const myMap = {};
     myProviders.forEach(p => { myMap[p.provider_name] = p; });
+    catalog.forEach(c => { if (c.free_tier) _catalogFreeTier[c.name] = c.free_tier; });
     const data = catalog.map(c => {
       const my = myMap[c.name] || {};
       const hasKey = my.has_key || false;

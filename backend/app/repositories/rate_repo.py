@@ -20,7 +20,13 @@ from ..metrics import provider_circuit_breaker_trips_total
 # Outcomes that don't signal provider ill-health — provider is alive and
 # reachable, it just refused this specific request. These must not trip the
 # consecutive_failures streak that quarantines a provider.
-_BENIGN_ERRORS = {"rate_limited", "client_error", "content_filtered"}
+# auth / quota_exhausted / model_unavailable are blocking but not "sick":
+# they skip the breaker and rely on the explicit quarantine_seconds the caller
+# passes (see providers.base.quarantine_seconds_for).
+_BENIGN_ERRORS = {
+    "rate_limited", "client_error", "content_filtered",
+    "auth", "quota_exhausted", "model_unavailable",
+}
 
 
 @dataclass

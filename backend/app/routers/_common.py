@@ -28,6 +28,10 @@ _KIND_TO_STATUS = {
     ErrorKind.NETWORK:      504,
     ErrorKind.PARSING:      502,
     ErrorKind.UNKNOWN:      502,
+    ErrorKind.MODEL_UNAVAILABLE: 502,
+    ErrorKind.QUOTA_EXHAUSTED:   503,
+    ErrorKind.EMPTY_RESPONSE:    502,
+    ErrorKind.CONTENT_FILTERED:  502,
 }
 
 

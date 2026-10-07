@@ -20,13 +20,19 @@ http_request_duration_seconds = Histogram(
 provider_calls_total = Counter(
     "freeai_provider_calls_total",
     "Calls dispatched to a provider",
-    ["provider", "outcome"],  # outcome: success | server_error | rate_limited | auth | network | client_error | parsing | empty_response | content_filtered | unknown
+    ["provider", "outcome"],  # outcome: success | server_error | rate_limited | auth | network | client_error | parsing | empty_response | content_filtered | model_unavailable | quota_exhausted | unknown
 )
 
 provider_circuit_breaker_trips_total = Counter(
     "freeai_provider_circuit_breaker_trips_total",
     "Times a provider crossed the failure threshold and entered cooldown",
     ["provider"],
+)
+provider_model_unavailable_total = Counter(
+    "freeai_provider_model_unavailable_total",
+    "Calls where the provider reported the model as retired/unknown — "
+    "a non-zero rate means app/providers/catalog.py needs an update",
+    ["provider", "model"],
 )
 provider_call_duration_seconds = Histogram(
     "freeai_provider_call_duration_seconds",

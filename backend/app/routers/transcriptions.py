@@ -22,6 +22,7 @@ from ..providers import (
     ProviderError,
     TranscriptionResult,
 )
+from ..providers.base import quarantine_seconds_for
 from ..repositories import (
     ProviderConfigDTO,
     RateRepository,
@@ -41,12 +42,12 @@ router = APIRouter(tags=["audio"])
 log = get_logger("freeai.transcriptions")
 
 
-def _quarantine_for(kind: ErrorKind) -> Optional[int]:
-    if kind == ErrorKind.SERVER_ERROR:
+def _quarantine_for(err: ProviderError) -> Optional[float]:
+    if err.kind == ErrorKind.SERVER_ERROR:
         return 60
-    if kind == ErrorKind.NETWORK:
+    if err.kind == ErrorKind.NETWORK:
         return 30
-    return None
+    return quarantine_seconds_for(err)
 
 
 @router.post("/v1/audio/transcriptions")
@@ -137,7 +138,7 @@ async def audio_transcriptions(
                 await rate_repo.commit(
                     reservation, 0, ok=False,
                     error=err.message, error_kind=err.kind.value,
-                    quarantine_seconds=_quarantine_for(err.kind),
+                    quarantine_seconds=_quarantine_for(err),
                 )
                 reservation_settled = True
                 await usage_repo.record(UsageEvent(
@@ -146,8 +147,9 @@ async def audio_transcriptions(
                     latency_ms=0, client_hash=client_hash,
                     user_id=user_id, fallback_position=fallback_position,
                 ))
-                # Auth/client errors won't be fixed by trying another provider.
-                if err.kind in (ErrorKind.AUTH, ErrorKind.CLIENT_ERROR):
+                # A malformed request fails everywhere; anything else (bad key,
+                # retired model, spent quota) is provider-specific — try the next.
+                if err.kind == ErrorKind.CLIENT_ERROR:
                     break
                 continue
         finally:

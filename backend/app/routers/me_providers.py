@@ -19,6 +19,7 @@ from ..crypto import (
 from ..db import get_session
 from ..db.models import ProviderConfigRow, UserProviderRow
 from ..logging_config import get_logger
+from ..repositories.rate_repo import RateRepository
 from ..repositories.user_provider_repo import UserProviderRepository
 from ..security import get_current_user
 from ..settings import get_settings
@@ -136,6 +137,10 @@ async def update_my_provider(
         dto = await repo.upsert(user.id, name, **fields)
     except KeyError as e:
         raise HTTPException(404, str(e)) from e
+    if "api_key" in fields or "default_model" in fields:
+        # A new key or model is the usual fix for an auth / quota / retired-model
+        # quarantine — don't make the user wait it out.
+        await RateRepository(session).reset_health(user.id, name)
     return repo.mask_dto(dto)
 
 

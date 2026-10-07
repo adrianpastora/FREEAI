@@ -46,7 +46,12 @@ class CohereProvider(BaseProvider):
         except httpx.HTTPError as e:
             raise ProviderError(self.name, f"network: {e}", kind=ErrorKind.NETWORK) from e
         self._raise_for_status(resp)
-        data = resp.json()
+        try:
+            data = resp.json()
+        except ValueError as e:
+            raise ProviderError(
+                self.name, f"unexpected response shape: {e}", kind=ErrorKind.PARSING
+            ) from e
         try:
             parts = data["message"]["content"]
             text = "".join(p.get("text", "") for p in parts if p.get("type") == "text")

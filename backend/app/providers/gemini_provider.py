@@ -53,14 +53,15 @@ _TRANSCRIPTION_PROMPT = (
     "Output ONLY the transcript text, no timestamps, no speaker labels, "
     "no commentary."
 )
-_DEFAULT_TRANSCRIPTION_MODEL = "gemini-2.5-flash"
+_DEFAULT_TRANSCRIPTION_MODEL = "gemini-3.5-flash"
 _TRANSCRIPTION_TIMEOUT = 120.0
 
 
 class GeminiProvider(BaseProvider):
     name = "gemini"
     BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
-    DEFAULT_EMBEDDING_MODEL = "text-embedding-004"
+    # text-embedding-004 was shut down on 2026-01-14.
+    DEFAULT_EMBEDDING_MODEL = "gemini-embedding-001"
     supports_streaming = True
     supports_vision = True
     supports_embeddings = True
@@ -143,7 +144,7 @@ class GeminiProvider(BaseProvider):
         return payload
 
     def _resolve_model(self, model: Optional[str]) -> str:
-        return model or self.default_model or "gemini-2.5-flash"
+        return model or self.default_model or "gemini-3.5-flash"
 
     async def complete(
         self,
@@ -166,10 +167,10 @@ class GeminiProvider(BaseProvider):
         except httpx.HTTPError as e:
             raise ProviderError(self.name, f"network: {e}", kind=ErrorKind.NETWORK) from e
         self._raise_for_status(resp)
-        data = resp.json()
         try:
+            data = resp.json()
             candidate = data["candidates"][0]
-        except (KeyError, IndexError) as e:
+        except (KeyError, IndexError, ValueError) as e:
             raise ProviderError(
                 self.name, f"unexpected response shape: {e}", kind=ErrorKind.PARSING
             ) from e
@@ -262,7 +263,8 @@ class GeminiProvider(BaseProvider):
                         text = "".join(p.get("text", "") for p in parts)
                     except (KeyError, IndexError, TypeError):
                         text = ""
-                    finish = chunk.get("candidates", [{}])[0].get("finishReason")
+                    candidates = chunk.get("candidates") or [{}]
+                    finish = candidates[0].get("finishReason")
                     if finish in _GEMINI_BLOCKED_FINISH and not saw_content:
                         raise ProviderError(
                             self.name,

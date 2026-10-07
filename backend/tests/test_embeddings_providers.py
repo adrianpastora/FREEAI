@@ -110,18 +110,18 @@ async def test_gemini_embed_builds_batch_request_and_parses():
     kwargs = post.call_args[1]
     # Default embedding model used + key in query string
     assert ":batchEmbedContents" in url
-    assert "text-embedding-004" in url
+    assert "gemini-embedding-001" in url
     assert "key=goog-test" in url
     # Payload is a list of per-text requests with the "models/" prefix
     reqs = kwargs["json"]["requests"]
     assert len(reqs) == 2
-    assert reqs[0]["model"] == "models/text-embedding-004"
+    assert reqs[0]["model"] == "models/gemini-embedding-001"
     assert reqs[0]["content"]["parts"][0]["text"] == "hi"
     assert reqs[1]["content"]["parts"][0]["text"] == "there"
 
     assert result.vectors == [[0.1, 0.2], [0.3, 0.4]]
     assert result.provider == "gemini"
-    assert result.model == "text-embedding-004"
+    assert result.model == "gemini-embedding-001"
     # Gemini doesn't report token counts for embeddings — the adapter
     # estimates per-input via the shared tokenizer so tpd_limit accounting
     # stays honest. We only assert "non-zero and consistent with the
