@@ -259,17 +259,17 @@ Current tag usage (from `DEFAULT_PROVIDERS`):
 
 | Tag | Providers with it |
 |---|---|
-| `fast` | cerebras, groq, mistral, cohere |
-| `cheap` | groq, mistral, huggingface |
-| `quality` | cerebras, gemini, openrouter |
-| `coding` | cerebras, groq, mistral |
-| `reasoning` | cerebras, groq, gemini, openrouter |
+| `fast` | groq, mistral, cohere |
+| `cheap` | groq, mistral |
+| `quality` | gemini, openrouter, nvidia |
+| `coding` | groq, mistral, nvidia |
+| `reasoning` | groq, gemini, openrouter, nvidia |
 | `vision` | gemini |
 | `long_context` | gemini |
 | `embeddings` | gemini, mistral |
 | `audio` | groq |
 | `rag` | cohere |
-| `variety` | openrouter, huggingface |
+| `variety` | openrouter, nvidia |
 
 If you add a new tag, either:
 

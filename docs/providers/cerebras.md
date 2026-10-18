@@ -2,12 +2,11 @@
 
 > **Fecha de captura:** 2026-05-13
 > **Propósito:** Documento de referencia exhaustivo de la API de Cerebras Inference, con énfasis en la **capa gratuita**.
-> **Estado:** integrado desde **0.7.0**. El adaptador vive en
-> `backend/app/providers/cerebras_provider.py`, está registrado en
-> `PROVIDER_REGISTRY` y seedeado en `DEFAULT_PROVIDERS` con
-> `default_model="gpt-oss-120b"`. Esta página se mantiene como
-> referencia de la API upstream — el código es la fuente autoritativa
-> del comportamiento del provider en FreeAI.
+> **Estado: RETIRADO en 0.12.0.** El 16 de julio de 2026 Cerebras eliminó la
+> capa gratuita permanente (ahora solo hay una prueba de $5 durante 30 días que
+> exige un método de pago), así que el adaptador se quitó de FreeAI. Esta página
+> se conserva solo como referencia histórica; la información de la capa
+> gratuita de más abajo **ya no es válida**.
 
 ---
 

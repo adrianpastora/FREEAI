@@ -140,10 +140,10 @@ Full list. All prefixed with `FREEAI_` except provider keys. Parsed by
 | `MISTRAL_API_KEY` | — | Same for mistral |
 | `OPENROUTER_API_KEY` | — | Same for openrouter |
 | `COHERE_API_KEY` | — | Same for cohere |
-| `HF_API_KEY` | — | Same for huggingface |
 
-> Cerebras (added in 0.7.0) does **not** have an env-var seed — its key
-> is set from the UI / `/api/me/providers` only.
+> NVIDIA NIM has no env-var seed: set its key from the UI or
+> `/api/me/providers`. Cerebras and HuggingFace were removed in 0.12.0;
+> `FREEAI_HF_API_KEY` is still accepted but ignored.
 
 **Provider env vars are a convenience**, not a permanent source. They're only
 read on startup when seeding defaults. After that, keys live in the DB and the

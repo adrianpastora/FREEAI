@@ -1,5 +1,5 @@
 """Shared base for providers that speak the OpenAI chat-completions wire format.
-Groq, Mistral, OpenRouter, and HuggingFace router all use this exact shape, so
+Groq, Mistral, OpenRouter and NVIDIA NIM all use this exact shape, so
 the body of complete()/stream() lives here once instead of in four near-identical
 files."""
 from __future__ import annotations

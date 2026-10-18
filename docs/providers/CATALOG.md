@@ -51,11 +51,11 @@ before a limit turns into a failed request:
 
 Every catalog provider declares a `quota_scope`:
 
-- `"model"` (Groq, Gemini, Cerebras, NVIDIA). Each model has its own bucket.
+- `"model"` (Groq, Gemini, NVIDIA). Each model has its own bucket.
   A 429 or daily quota on one model cools **that model** and the provider's
   next model is tried. The provider is only parked once all its models are
   cooling.
-- `"key"` (OpenRouter, HuggingFace, Mistral, Cohere). One bucket per account.
+- `"key"` (OpenRouter, Mistral, Cohere). One bucket per account.
   A 429 parks the whole provider and the next provider is tried. A 402 is
   always treated as per key.
 
@@ -70,9 +70,9 @@ leave the default `"key"`, which is the conservative choice.
 1. Check the catalog against the live model lists:
 
    ```bash
-   # OpenRouter, HuggingFace and NVIDIA lists are public; the rest need a key
+   # OpenRouter and NVIDIA lists are public; the rest need a key
    GROQ_API_KEY=... GEMINI_API_KEY=... MISTRAL_API_KEY=... \
-   COHERE_API_KEY=... CEREBRAS_API_KEY=... \
+   COHERE_API_KEY=... \
    python scripts/check_catalog.py
    ```
 
@@ -97,6 +97,17 @@ leave the default `"key"`, which is the conservative choice.
 
 Re-run step 1 at least monthly. The script warns when the catalog is more
 than 60 days old.
+
+## Removing a provider
+
+1. Delete its `CatalogProvider` entry and add it to `RETIRED_PROVIDERS`
+   with the reason. Then remove the adapter, the registry entry, the
+   `check_catalog.py` fetcher and the `PROVIDER_GUIDES` / `_pwProviderOrder`
+   entries in the frontend.
+2. Bump `CATALOG_VERSION`. On the next boot, `sync_catalog()` deletes the
+   provider's row, its health stats and every user's stored key for it
+   (`ON DELETE CASCADE`). Historical `usage_events` and `model_prices` rows
+   are kept.
 
 ## Adding a provider
 

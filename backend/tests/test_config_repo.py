@@ -143,3 +143,31 @@ async def test_sync_catalog_keeps_admin_tuned_prices(seeded_session):
     await session.commit()
     price = await session.get(ModelPriceRow, ("mistral", model))
     assert price.input_price_per_million_usd == 9.0
+
+
+@pytest.mark.asyncio
+async def test_sync_catalog_removes_retired_providers(seeded_session):
+    """Cerebras / HuggingFace rows (and users' keys for them) left over from
+    older versions are deleted on the next catalog sync."""
+    from app.db.models import AppConfigRow, UserProviderRow
+    from app.providers.catalog import RETIRED_PROVIDERS
+    from app.repositories.user_provider_repo import UserProviderRepository
+
+    session = seeded_session
+    repo = ConfigRepository(session)
+    await repo.get_app_config()
+    for name in RETIRED_PROVIDERS:
+        await repo.upsert_provider(ProviderConfigDTO(name=name, default_model="x"))
+        await UserProviderRepository(session).upsert(1, name, api_key="k")
+    await UserProviderRepository(session).upsert(1, "groq", api_key="k")
+    cfg = await session.get(AppConfigRow, 1)
+    cfg.catalog_version = None
+    await session.commit()
+
+    result = await repo.sync_catalog()
+    await session.commit()
+    assert set(result.providers_removed) == set(RETIRED_PROVIDERS)
+    for name in RETIRED_PROVIDERS:
+        assert await session.get(ProviderConfigRow, name) is None
+    left = {r.provider_name for r in (await session.execute(select(UserProviderRow))).scalars()}
+    assert left == {"groq"}  # other providers' keys untouched

@@ -63,8 +63,8 @@
                  │
  ┌─────────────────────────────────────────────────────────────┐
  │                   Provider adapters                         │
- │  OpenAICompatibleProvider (cerebras, groq, mistral,         │
- │                            openrouter, huggingface)         │
+ │  OpenAICompatibleProvider (groq, mistral, openrouter,       │
+ │                            nvidia)                          │
  │  GeminiProvider (Google v1beta)                              │
  │  CohereProvider (v2/chat)                                    │
  │  — all return ProviderResponse / yield StreamChunk           │

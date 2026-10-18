@@ -71,6 +71,7 @@ async def lifespan(app: FastAPI):
                 version=sync.version,
                 added=sync.providers_added,
                 updated=sync.providers_updated,
+                removed=sync.providers_removed,
                 prices_added=sync.prices_added,
                 user_overrides_cleared=sync.user_overrides_cleared,
             )

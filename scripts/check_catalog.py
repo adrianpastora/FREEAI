@@ -5,10 +5,10 @@
     python scripts/check_catalog.py --strict   # exit 1 if a provider can't be checked
 
 Reads backend/app/providers/catalog.py and, for every provider, fetches the
-upstream ``/models`` list. OpenRouter, HuggingFace and NVIDIA publish theirs
+upstream ``/models`` list. OpenRouter and NVIDIA publish theirs
 without a key; the rest need one in the environment:
 
-    GROQ_API_KEY  GEMINI_API_KEY  MISTRAL_API_KEY  COHERE_API_KEY  CEREBRAS_API_KEY
+    GROQ_API_KEY  GEMINI_API_KEY  MISTRAL_API_KEY  COHERE_API_KEY
 
 Exit code 1 when a catalog model is missing upstream (retired / renamed) —
 that's the signal to edit catalog.py and bump CATALOG_VERSION. Also prints
@@ -89,10 +89,8 @@ def _keyed(url: str, env: str) -> Callable[[], Optional[set[str]]]:
 
 FETCHERS: dict[str, Callable[[], Optional[set[str]]]] = {
     "openrouter": lambda: _fetch_openai_style("https://openrouter.ai/api/v1/models"),
-    "huggingface": lambda: _fetch_openai_style("https://router.huggingface.co/v1/models"),
     "nvidia": lambda: _fetch_openai_style("https://integrate.api.nvidia.com/v1/models"),
     "groq": _keyed("https://api.groq.com/openai/v1/models", "GROQ_API_KEY"),
-    "cerebras": _keyed("https://api.cerebras.ai/v1/models", "CEREBRAS_API_KEY"),
     "mistral": _keyed("https://api.mistral.ai/v1/models", "MISTRAL_API_KEY"),
     "gemini": _gemini,
     "cohere": _cohere,

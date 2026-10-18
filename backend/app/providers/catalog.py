@@ -26,7 +26,7 @@ from typing import Optional
 
 # Bump on every edit below. Stored in app_config.catalog_version; a mismatch
 # at startup triggers a sync of catalog rows + seed prices.
-CATALOG_VERSION = "2026-10-07"
+CATALOG_VERSION = "2026-10-18"
 
 
 @dataclass(frozen=True)
@@ -54,10 +54,10 @@ class CatalogProvider:
     tags: tuple[str, ...] = ()
     free_tier: str = ""
     # Where the provider enforces rate limits / quotas:
-    #   "model" — each model has its own bucket (Groq, Gemini, Cerebras,
-    #             NVIDIA): a 429 on one model means try the next model.
+    #   "model" — each model has its own bucket (Groq, Gemini, NVIDIA):
+    #             a 429 on one model means try the next model.
     #   "key"   — one bucket per account (OpenRouter free-models-per-day,
-    #             HF credits, Mistral, Cohere): a 429 parks the provider.
+    #             Mistral, Cohere): a 429 parks the provider.
     quota_scope: str = "key"
     # Models the provider no longer serves. Skipped even if a user pinned
     # them as default_model, and cleared from user overrides on sync.
@@ -71,19 +71,6 @@ class CatalogProvider:
 
 
 CATALOG: dict[str, CatalogProvider] = {
-    "cerebras": CatalogProvider(
-        name="cerebras",
-        quota_scope="model",
-        models=(
-            CatalogModel("gpt-oss-120b", 131_000, ("chat", "reasoning")),
-        ),
-        rpm_limit=30, rpd_limit=14_400, tpd_limit=1_000_000, weight=1.0,
-        tags=("fast", "reasoning", "coding", "quality"),
-        free_tier=(
-            "No permanent free tier since 2026-07-16: $5 trial credit valid "
-            "30 days, only after adding a payment method."
-        ),
-    ),
     "groq": CatalogProvider(
         name="groq",
         quota_scope="model",
@@ -173,24 +160,6 @@ CATALOG: dict[str, CatalogProvider] = {
         tags=("fast", "rag"),
         free_tier="Trial key, no card: 1,000 calls/month, 20 req/min on chat.",
     ),
-    "huggingface": CatalogProvider(
-        name="huggingface",
-        models=(
-            CatalogModel("openai/gpt-oss-120b", 131_072, ("chat", "reasoning"), price=(0.0, 0.0)),
-            CatalogModel("Qwen/Qwen3.6-27B", 131_072, ("chat", "reasoning"), price=(0.0, 0.0)),
-            CatalogModel("meta-llama/Llama-3.3-70B-Instruct", 131_000, ("chat",), price=(0.0, 0.0)),
-            CatalogModel("meta-llama/Llama-3.1-8B-Instruct", 131_000, ("chat",), note="smallest", price=(0.0, 0.0)),
-        ),
-        rpm_limit=30, rpd_limit=100, tpd_limit=None, weight=0.5,
-        tags=("variety", "cheap"),
-        free_tier=(
-            "Free account: only $0.10/month of routed credit (HTTP 402 once spent). "
-            "PRO accounts get $2/month."
-        ),
-        retired_models=(
-            "meta-llama/Llama-3.2-3B-Instruct", "mistralai/Mixtral-8x7B-Instruct-v0.1",
-        ),
-    ),
     "nvidia": CatalogProvider(
         name="nvidia",
         quota_scope="model",
@@ -206,6 +175,14 @@ CATALOG: dict[str, CatalogProvider] = {
     ),
 }
 
+
+# Built-in providers that were removed. sync_catalog() deletes their rows on
+# the next boot after a CATALOG_VERSION bump (which also removes users'
+# stored keys for them, via ON DELETE CASCADE).
+RETIRED_PROVIDERS: dict[str, str] = {
+    "cerebras": "no free tier since 2026-07-16 (trial needs a payment method)",
+    "huggingface": "free accounts only get $0.10/month of routed credit",
+}
 
 def get(provider: str) -> Optional[CatalogProvider]:
     return CATALOG.get(provider)

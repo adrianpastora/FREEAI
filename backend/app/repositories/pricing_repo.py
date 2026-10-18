@@ -53,7 +53,7 @@ class PricingRepository:
     # Class-level cache so the lookup is shared across sessions in the same
     # worker. Keyed on (provider, model). A negative entry (None) is also
     # cached to avoid repeated DB hits for unpriced models — those are
-    # expected (HuggingFace open-weight, new previews) and shouldn't trash
+    # expected (open-weight models, new previews) and shouldn't trash
     # request latency by hammering the DB on every call.
     _cache: dict[tuple[str, str], tuple[Optional[ModelPriceDTO], float]] = {}
 

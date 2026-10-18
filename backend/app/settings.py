@@ -98,6 +98,8 @@ class Settings(BaseSettings):
     mistral_api_key: Optional[str] = None
     openrouter_api_key: Optional[str] = None
     cohere_api_key: Optional[str] = None
+    # Deprecated: HuggingFace was removed in 0.12.0. Kept so existing .env
+    # files that still set FREEAI_HF_API_KEY don't fail validation.
     hf_api_key: Optional[str] = None
 
     @property
@@ -112,7 +114,6 @@ class Settings(BaseSettings):
             "mistral": self.mistral_api_key,
             "openrouter": self.openrouter_api_key,
             "cohere": self.cohere_api_key,
-            "huggingface": self.hf_api_key,
         }
 
 

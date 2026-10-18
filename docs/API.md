@@ -131,7 +131,7 @@ Other common OpenAI SDK fields (`tools`, `tool_choice`, `response_format`,
 `seed`, `top_p`, `n`, `stop`, `presence_penalty`, `frequency_penalty`,
 `logit_bias`, `user`) are accepted without erroring so a standard OpenAI
 SDK payload round-trips. Most are forwarded to OpenAI-compatible providers
-(Groq, Mistral, OpenRouter, HuggingFace); the Gemini adapter ignores the
+(Groq, Mistral, OpenRouter, NVIDIA); the Gemini adapter ignores the
 ones it doesn't understand. `tool_calls` in assistant messages and
 `tool_call_id` in tool messages are preserved end-to-end.
 
@@ -215,7 +215,7 @@ standard content-block format:
   base64, `fileData` for HTTP URLs).
 - **OpenRouter** receives the OpenAI multimodal format as-is (works with
   vision models like Llama 3.2 Vision, etc.).
-- Providers without vision support (Groq, Mistral, Cohere, HuggingFace) are
+- Providers without vision support (Groq, Mistral, Cohere, NVIDIA) are
   excluded from the candidate pool when images are present.
 
 **Image formats supported:**
@@ -272,8 +272,8 @@ unchanged. A typical multi-turn flow looks like this:
 - `tool_call_id` ties a `role: tool` message back to the originating
   `tool_calls[].id`. Required by the OpenAI spec and preserved here.
 - `tools`, `tool_choice` and `parallel_tool_calls` are forwarded to the
-  OpenAI-compatible providers (Groq, Mistral, OpenRouter, NVIDIA, HuggingFace,
-  Cerebras) and translated for **Gemini**:
+  OpenAI-compatible providers (Groq, Mistral, OpenRouter, NVIDIA) and
+  translated for **Gemini**:
   - tools become `functionDeclarations` with the full JSON Schema
     (`parametersJsonSchema`);
   - `tool_choice` becomes `toolConfig`;

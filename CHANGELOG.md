@@ -13,6 +13,30 @@ pre-1.0 versions — follow the Unreleased section if you track `main`.
 <!-- Add entries here as they land. Categories used in this changelog:
      Added, Changed, Fixed, Security, Removed, Deprecated. -->
 
+## [0.12.0] — 2026-10-18
+
+### Removed
+- **Cerebras.** There has been no free tier since 2026-07-16: only a $5,
+  30-day trial that needs a payment method.
+- **HuggingFace.** Free accounts only get $0.10/month of routed credit, and
+  in the production smoke test it never served a request.
+
+### Upgrade notes
+- The catalog version moves to 2026-10-18. On the first boot,
+  `sync_catalog()` deletes the `cerebras` and `huggingface` provider rows,
+  their health stats, and **every user's stored key for them**
+  (`ON DELETE CASCADE`). Historical `usage_events` and `model_prices` rows
+  are kept, so analytics still show past traffic.
+- `FREEAI_HF_API_KEY` is still accepted in `.env` but ignored.
+- Remaining providers: Groq, Gemini, NVIDIA NIM, OpenRouter, Mistral and
+  Cohere. Mistral stays, although it returned 429 in the smoke test: its
+  free plan ($10/month of credit) still exists, and it is one of the two
+  embeddings providers. Repeated 429s now escalate its quarantine (0.11.1).
+
+### Added
+- `catalog.RETIRED_PROVIDERS`, plus the "Removing a provider" procedure in
+  `docs/providers/CATALOG.md`.
+
 ## [0.11.1] — 2026-10-18
 
 Fixes found by running `scripts/smoke_test.py` against the production
@@ -594,7 +618,8 @@ infrastructure.
 - Drop the legacy "Sprint N shipped" changelog section from README —
   replaced with a themed Status section.
 
-[Unreleased]: https://github.com/adrianpastora/FREEAI/compare/v0.11.1...HEAD
+[Unreleased]: https://github.com/adrianpastora/FREEAI/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/adrianpastora/FREEAI/releases/tag/v0.12.0
 [0.11.1]: https://github.com/adrianpastora/FREEAI/releases/tag/v0.11.1
 [0.11.0]: https://github.com/adrianpastora/FREEAI/releases/tag/v0.11.0
 [0.10.2]: https://github.com/adrianpastora/FREEAI/releases/tag/v0.10.2

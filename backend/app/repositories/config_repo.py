@@ -10,13 +10,19 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..crypto import decrypt, encrypt
-from ..db.models import AppConfigRow, ModelPriceRow, ProviderConfigRow, UserProviderRow
-from ..providers.catalog import CATALOG, CATALOG_VERSION
+from ..db.models import (
+    AppConfigRow,
+    ModelPriceRow,
+    ProviderConfigRow,
+    ProviderStatsRow,
+    UserProviderRow,
+)
+from ..providers.catalog import CATALOG, CATALOG_VERSION, RETIRED_PROVIDERS
 
 
 @dataclass
@@ -69,6 +75,7 @@ class CatalogSyncResult:
     version: str
     providers_added: list[str] = field(default_factory=list)
     providers_updated: list[str] = field(default_factory=list)
+    providers_removed: list[str] = field(default_factory=list)
     prices_added: int = 0
     user_overrides_cleared: int = 0
 
@@ -156,7 +163,9 @@ class ConfigRepository:
           • user overrides of default_model that point at a retired model
             are cleared so the user falls back to the catalog default;
           • catalog price hints are inserted for models without a price
-            (ON CONFLICT DO NOTHING keeps admin-tuned prices).
+            (ON CONFLICT DO NOTHING keeps admin-tuned prices);
+          • providers listed in RETIRED_PROVIDERS are deleted, together with
+            users' stored keys for them and their health stats.
         Admin edits to catalog rows therefore survive until the next bump.
         """
         cfg_row = await self.session.get(AppConfigRow, 1)
@@ -217,6 +226,17 @@ class ConfigRepository:
                 )
                 res = await self.session.execute(ins)
                 result.prices_added += res.rowcount or 0
+
+        for name in RETIRED_PROVIDERS:
+            if name in by_name:
+                # user_providers rows go with it (ON DELETE CASCADE).
+                await self.session.execute(
+                    delete(ProviderStatsRow).where(ProviderStatsRow.provider_name == name)
+                )
+                await self.session.execute(
+                    delete(ProviderConfigRow).where(ProviderConfigRow.name == name)
+                )
+                result.providers_removed.append(name)
 
         cfg_row.catalog_version = CATALOG_VERSION
         await self.session.flush()

@@ -773,18 +773,6 @@ const tpl  = document.getElementById("providerCardTemplate");
 
 // ─── Provider setup wizard data ───
 const PROVIDER_GUIDES = {
-  cerebras: {
-    displayName: "Cerebras",
-    signupUrl: "https://cloud.cerebras.ai",
-    docsUrl: "https://inference-docs.cerebras.ai/introduction",
-    freeTier: "No permanent free tier: $5 trial credit (30 days) after adding a payment method",
-    steps: [
-      "Go to <a href=\"https://cloud.cerebras.ai\" target=\"_blank\" rel=\"noopener\">cloud.cerebras.ai</a> and sign up (Google/GitHub work).",
-      "Open <strong>API Keys</strong> in the left sidebar.",
-      "Click <strong>Create API Key</strong>, name it (e.g. \"FreeAI\") and copy the key (starts with <code>csk-</code>).",
-      "Paste the key into the <em>API KEY</em> field on the Cerebras card in FreeAI and click <strong>SAVE</strong>."
-    ]
-  },
   groq: {
     displayName: "Groq",
     signupUrl: "https://console.groq.com/signup",
@@ -846,18 +834,6 @@ const PROVIDER_GUIDES = {
       "Copy the key and paste it into the <em>API KEY</em> field on the Cohere card in FreeAI. Click <strong>SAVE</strong>."
     ]
   },
-  huggingface: {
-    displayName: "Hugging Face",
-    signupUrl: "https://huggingface.co/join",
-    docsUrl: "https://huggingface.co/docs/api-inference/",
-    freeTier: "Free account: only $0.10/month of routed credit",
-    steps: [
-      "Go to <a href=\"https://huggingface.co/join\" target=\"_blank\" rel=\"noopener\">huggingface.co/join</a> and create an account.",
-      "Open <strong>Settings → Access Tokens</strong> (<a href=\"https://huggingface.co/settings/tokens\" target=\"_blank\" rel=\"noopener\">huggingface.co/settings/tokens</a>).",
-      "Click <strong>Create new token</strong>, pick the <strong>Read</strong> scope (or <em>Fine-grained</em> with Inference access), name it, and generate the token.",
-      "Copy the token (starts with <code>hf_</code>) and paste it into the <em>API KEY</em> field on the HuggingFace card in FreeAI. Click <strong>SAVE</strong>."
-    ]
-  },
   nvidia: {
     displayName: "NVIDIA NIM",
     signupUrl: "https://build.nvidia.com/",
@@ -907,8 +883,8 @@ document.addEventListener("click", (e) => {
 
 // ─────────────── multi-step provider setup wizard ───────────────
 
-// No-card free tiers first; Cerebras last (trial needs a payment method).
-const _pwProviderOrder = ["groq", "gemini", "nvidia", "openrouter", "mistral", "cohere", "huggingface", "cerebras"];
+// Most generous no-card free tiers first.
+const _pwProviderOrder = ["groq", "gemini", "nvidia", "openrouter", "mistral", "cohere"];
 let _pwStep = 0; // 0..N-1 = providers, N = summary
 let _pwConfigured = {}; // { providerName: bool }
 
