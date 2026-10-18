@@ -415,7 +415,9 @@ Compatibility is tested against the official `openai` Python SDK.
 | `tools` (type `function`), `tool_choice`, `parallel_tool_calls` | supported. The tools are routed to tool-capable providers, see [Tool calling](#tool-calling) |
 | `function_call` / `function_call_output` input items | supported. Consecutive calls are merged into one assistant turn, and outputs become `tool` messages |
 | built-in tools (`web_search`, `file_search`, `code_interpreter`, `mcp`, …) | dropped: no free provider offers them, so the request runs without them |
-| `input_file`, `computer_call`, `background` | **not supported** → 400 with a clear message |
+| `item_reference` input items | resolved against items FreeAI returned or received earlier (in memory per user, 6 h). Unknown references are dropped; a tool result left without its call is then sent as plain text so providers don't reject the history |
+| other item types (`web_search_call`, `computer_call`, …) | dropped (logged), the rest of the request proceeds |
+| `input_file`, `background` | **not supported** → 400 with a clear message |
 
 The response is a standard `response` object. Its `output` has an assistant
 `message` item and/or one `function_call` item per tool call (`call_id`,

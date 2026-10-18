@@ -13,6 +13,20 @@ pre-1.0 versions — follow the Unreleased section if you track `main`.
 <!-- Add entries here as they land. Categories used in this changelog:
      Added, Changed, Fixed, Security, Removed, Deprecated. -->
 
+## [0.10.2] — 2026-10-18
+
+### Fixed
+- `/v1/responses` rejected `item_reference` input items with a 400. Clients
+  such as Codex send these instead of resending earlier items. FreeAI now
+  keeps the items it returns (and the input items it receives) in memory
+  per user for 6 h, and resolves references against them.
+- Input items with no chat equivalent (`web_search_call`, `computer_call`
+  and other built-in tool history) are dropped and logged, instead of
+  failing the whole request.
+- A tool result whose call can no longer be resolved is sent as plain user
+  text. A dangling `tool` message would make every provider reject the
+  request.
+
 ## [0.10.1] — 2026-10-18
 
 ### Fixed
@@ -521,7 +535,8 @@ infrastructure.
 - Drop the legacy "Sprint N shipped" changelog section from README —
   replaced with a themed Status section.
 
-[Unreleased]: https://github.com/adrianpastora/FREEAI/compare/v0.10.1...HEAD
+[Unreleased]: https://github.com/adrianpastora/FREEAI/compare/v0.10.2...HEAD
+[0.10.2]: https://github.com/adrianpastora/FREEAI/releases/tag/v0.10.2
 [0.10.1]: https://github.com/adrianpastora/FREEAI/releases/tag/v0.10.1
 [0.10.0]: https://github.com/adrianpastora/FREEAI/releases/tag/v0.10.0
 [0.9.0]: https://github.com/adrianpastora/FREEAI/releases/tag/v0.9.0

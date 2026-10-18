@@ -61,7 +61,6 @@ def test_image_part_maps_to_image_url():
 
 
 @pytest.mark.parametrize("body,needle", [
-    ({"input": [{"type": "computer_call", "call_id": "c"}]}, "computer_call"),
     ({"input": [{"role": "user", "content": [{"type": "input_file", "file_id": "f"}]}]}, "input_file"),
     ({"input": []}, "input"),
     ({"input": "x", "background": True}, "background"),
@@ -102,7 +101,8 @@ async def test_stream_event_sequence():
     stored = []
     events = [e async for e in responses_api.stream_events(
         chunks(), response_id="resp_x", body={}, requested_model="freeai-fast",
-        input_messages=[ChatMessage(role="user", content="hi")], on_complete=stored.append,
+        input_messages=[ChatMessage(role="user", content="hi")],
+        on_complete=lambda text, item: stored.append(text),
     )]
     parsed = [json.loads(e.split("data: ", 1)[1]) for e in events]
     types = [p["type"] for p in parsed]
@@ -501,3 +501,54 @@ async def test_quarantined_tool_provider_is_reported(client, seeded_session):
     r = await client.post("/v1/responses", json={"input": "x", "tools": [WEATHER_TOOL]})
     body = r.json()["error"]["message"]
     assert "quarantined" in body and "groq" in body
+
+
+
+# ──────────────── item_reference & tolerant input ────────────────
+
+
+def test_item_reference_is_resolved_and_unknown_items_dropped():
+    items = {
+        "msg_1": {"type": "message", "id": "msg_1", "role": "assistant",
+                  "content": [{"type": "output_text", "text": "earlier answer"}]},
+        "fc_1": {"type": "function_call", "id": "fc_1", "call_id": "call_1",
+                 "name": "get_weather", "arguments": "{}"},
+    }
+    req, _ = responses_api.to_chat_request({"input": [
+        {"role": "user", "content": "first"},
+        {"type": "item_reference", "id": "msg_1"},
+        {"type": "web_search_call", "id": "ws_1", "status": "completed"},  # dropped
+        {"type": "item_reference", "id": "fc_1"},
+        {"type": "function_call_output", "call_id": "call_1", "output": "22C"},
+        {"type": "item_reference", "id": "msg_gone"},                        # dropped
+        {"role": "user", "content": "next"},
+    ]}, resolve=items.get)
+    assert [m.role for m in req.messages] == ["user", "assistant", "assistant", "tool", "user"]
+    assert req.messages[1].content == "earlier answer"
+    assert req.messages[2].tool_calls[0]["id"] == "call_1"
+
+
+def test_orphan_tool_result_becomes_user_text():
+    """If the referenced function_call can't be resolved, its output must not
+    reach the provider as a dangling tool message (every provider 400s)."""
+    req, _ = responses_api.to_chat_request({"input": [
+        {"role": "user", "content": "q"},
+        {"type": "item_reference", "id": "fc_lost"},
+        {"type": "function_call_output", "call_id": "call_lost", "output": "22C"},
+    ]}, resolve=lambda _id: None)
+    assert [m.role for m in req.messages] == ["user", "user"]
+    assert "22C" in req.messages[1].content and "call_lost" in req.messages[1].content
+
+
+@pytest.mark.asyncio
+async def test_item_reference_to_previous_output_end_to_end(client):
+    """Clients like Codex send item_reference to items FreeAI returned."""
+    with patch.object(PROVIDER_REGISTRY["groq"], "complete", _complete):
+        first = (await client.post("/v1/responses", json={"input": "uno"})).json()
+        item_id = first["output"][0]["id"]
+        second = (await client.post("/v1/responses", json={"input": [
+            {"role": "user", "content": "uno"},
+            {"type": "item_reference", "id": item_id},
+            {"role": "user", "content": "dos"},
+        ]})).json()
+    assert second["output_text"] == "echo:dos|turns:3"

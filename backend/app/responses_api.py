@@ -22,10 +22,13 @@ import json
 import time
 import uuid
 from collections import OrderedDict
-from typing import Any, AsyncIterator, Optional
+from typing import Any, AsyncIterator, Callable, Optional
 
+from .logging_config import get_logger
 from .providers.base import estimate_tokens
 from .schemas import ChatCompletionRequest, ChatCompletionResponse, ChatMessage
+
+log = get_logger("freeai.responses")
 
 # ChatCompletionRequest caps max_tokens; clamp instead of failing with 422.
 _MAX_OUTPUT_TOKENS = 32_000
@@ -128,6 +131,32 @@ class ResponseStore:
             return None
         return list(entry[1])
 
+    # Individual items (msg_…, fc_…) for ``item_reference`` input items,
+    # which point at items from earlier responses / requests by id.
+    _ITEMS_MAX = 20_000
+
+    def put_items(self, user_id: int, items: list[dict]) -> None:
+        store = self.__dict__.setdefault("_items", OrderedDict())
+        expires = time.monotonic() + self._ttl
+        for item in items:
+            item_id = item.get("id") if isinstance(item, dict) else None
+            if not item_id or item.get("type") == "item_reference":
+                continue
+            store[(user_id, item_id)] = (expires, item)
+            store.move_to_end((user_id, item_id))
+        while len(store) > self._ITEMS_MAX:
+            store.popitem(last=False)
+
+    def get_item(self, user_id: int, item_id: str) -> Optional[dict]:
+        store = self.__dict__.get("_items")
+        entry = store.get((user_id, item_id)) if store else None
+        if entry is None:
+            return None
+        if entry[0] <= time.monotonic():
+            store.pop((user_id, item_id), None)
+            return None
+        return entry[1]
+
 
 # ──────────────── request translation ────────────────
 
@@ -167,8 +196,16 @@ def _content_to_chat(content: Any) -> Any:
 _ROLE_MAP = {"developer": "system", "system": "system", "user": "user", "assistant": "assistant"}
 
 
-def input_to_messages(input_value: Any) -> list[ChatMessage]:
-    """Responses ``input`` (string or list of items) → chat messages."""
+def input_to_messages(
+    input_value: Any, resolve: Optional[Callable[[str], Optional[dict]]] = None,
+) -> list[ChatMessage]:
+    """Responses ``input`` (string or list of items) → chat messages.
+
+    ``resolve(item_id)`` looks up ``item_reference`` items. Unresolvable
+    references and item types with no chat equivalent (built-in tool call
+    history, reasoning) are dropped with a log line rather than failing the
+    whole request.
+    """
     if input_value is None:
         return []
     if isinstance(input_value, str):
@@ -179,53 +216,89 @@ def input_to_messages(input_value: Any) -> list[ChatMessage]:
     for item in input_value:
         if not isinstance(item, dict):
             raise ResponsesRequestError("input items must be objects")
-        itype = item.get("type", "message")
-        if itype == "reasoning":
-            continue  # opaque reasoning items from other models: safe to drop
-        if itype == "function_call":
-            call = {
-                "id": item.get("call_id") or item.get("id") or new_function_call_id(),
-                "type": "function",
-                "function": {
-                    "name": item.get("name", ""),
-                    "arguments": item.get("arguments") or "{}",
-                },
-            }
-            # Consecutive calls belong to one assistant turn.
-            last = messages[-1] if messages else None
-            if last is not None and last.role == "assistant" and last.tool_calls:
-                last.tool_calls.append(call)
-            else:
-                messages.append(ChatMessage(role="assistant", content=None, tool_calls=[call]))
-            continue
-        if itype == "function_call_output":
-            messages.append(ChatMessage(
-                role="tool",
-                tool_call_id=item.get("call_id"),
-                content=_tool_output_text(item.get("output")),
-            ))
-            continue
-        if itype in ("custom_tool_call", "custom_tool_call_output",
-                     "computer_call", "computer_call_output"):
-            raise ResponsesRequestError(f"input item type '{itype}' is not supported")
-        if itype != "message":
-            raise ResponsesRequestError(f"unsupported input item type '{itype}'")
-        role = _ROLE_MAP.get(item.get("role", "user"))
-        if role is None:
-            raise ResponsesRequestError(f"unsupported role '{item.get('role')}'")
-        messages.append(ChatMessage(role=role, content=_content_to_chat(item.get("content"))))
+        if item.get("type") == "item_reference":
+            ref_id = item.get("id")
+            resolved = resolve(ref_id) if (resolve and ref_id) else None
+            if resolved is None:
+                log.warning("item_reference not found, dropping", item_id=ref_id)
+                continue
+            item = resolved
+        _append_item(messages, item)
     return messages
 
 
+def _append_item(messages: list[ChatMessage], item: dict) -> None:
+    itype = item.get("type", "message")
+    if itype == "function_call":
+        call = {
+            "id": item.get("call_id") or item.get("id") or new_function_call_id(),
+            "type": "function",
+            "function": {
+                "name": item.get("name", ""),
+                "arguments": item.get("arguments") or "{}",
+            },
+        }
+        # Consecutive calls belong to one assistant turn.
+        last = messages[-1] if messages else None
+        if last is not None and last.role == "assistant" and last.tool_calls:
+            last.tool_calls.append(call)
+        else:
+            messages.append(ChatMessage(role="assistant", content=None, tool_calls=[call]))
+        return
+    if itype == "function_call_output":
+        messages.append(ChatMessage(
+            role="tool",
+            tool_call_id=item.get("call_id"),
+            content=_tool_output_text(item.get("output")),
+        ))
+        return
+    if itype != "message":
+        # reasoning, web_search_call, file_search_call, computer_call, …:
+        # no equivalent other providers understand.
+        log.info("dropping unsupported input item", item_type=itype)
+        return
+    role = _ROLE_MAP.get(item.get("role", "user"))
+    if role is None:
+        raise ResponsesRequestError(f"unsupported role '{item.get('role')}'")
+    messages.append(ChatMessage(role=role, content=_content_to_chat(item.get("content"))))
+
+
+def _repair_tool_pairs(messages: list[ChatMessage]) -> list[ChatMessage]:
+    """Turn orphan tool results into plain user text.
+
+    A ``tool`` message whose call isn't in a preceding assistant turn (e.g.
+    its ``function_call`` was an item_reference we could no longer resolve)
+    makes every provider reject the request; as text it still gives the
+    model the information.
+    """
+    known: set[str] = set()
+    out: list[ChatMessage] = []
+    for m in messages:
+        if m.role == "assistant" and m.tool_calls:
+            known.update(tc.get("id", "") for tc in m.tool_calls)
+        if m.role == "tool" and (m.tool_call_id or "") not in known:
+            out.append(ChatMessage(
+                role="user",
+                content=f"[tool result for call {m.tool_call_id}]\n{m.text_content}",
+            ))
+            continue
+        out.append(m)
+    return out
+
+
 def to_chat_request(
-    body: dict, history: Optional[list[ChatMessage]] = None,
+    body: dict,
+    history: Optional[list[ChatMessage]] = None,
+    resolve: Optional[Callable[[str], Optional[dict]]] = None,
 ) -> tuple[ChatCompletionRequest, list[ChatMessage]]:
     """Build the chat request. Returns it plus the conversation (without the
     system instructions) to store for ``previous_response_id`` chaining."""
     if body.get("background"):
         raise ResponsesRequestError("background mode is not supported")
 
-    conversation = list(history or []) + input_to_messages(body.get("input"))
+    conversation = _repair_tool_pairs(
+        list(history or []) + input_to_messages(body.get("input"), resolve)
+    )
     if not conversation:
         raise ResponsesRequestError("'input' is required")
 
@@ -401,8 +474,8 @@ async def stream_events(
 ) -> AsyncIterator[str]:
     """Turn orchestrator SSE chunk dicts into Responses API events.
 
-    ``on_complete(text)`` is called once the full text is known (used to
-    store the turn for ``previous_response_id``). Provider errors raised by
+    ``on_complete(text, item)`` is called once the full text is known (used
+    to store the turn for ``previous_response_id`` / ``item_reference``). Provider errors raised by
     ``chunks`` propagate to the caller, which emits ``response.failed``.
     """
     created_at = int(time.time())
@@ -457,7 +530,7 @@ async def stream_events(
     yield ev("response.output_item.done", output_index=0, item=item)
 
     if on_complete is not None:
-        on_complete(text)
+        on_complete(text, item)
     input_tokens = sum(estimate_tokens(m.text_content) for m in input_messages)
     yield ev("response.completed", response=snapshot(
         "completed", [item],

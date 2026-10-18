@@ -219,16 +219,20 @@ async def create_response(
                 param="previous_response_id", code="previous_response_not_found",
             )
     try:
-        req, conversation = responses_api.to_chat_request(body, history)
+        req, conversation = responses_api.to_chat_request(
+            body, history, resolve=lambda item_id: _RESPONSE_STORE.get_item(user_id, item_id),
+        )
     except (responses_api.ResponsesRequestError, ValidationError, TypeError, ValueError) as e:
         return _openai_error(400, str(e))
 
     response_id = responses_api.new_response_id()
     store = body.get("store", True) is not False
 
-    def remember(turn: ChatMessage) -> None:
+    def remember(turn: ChatMessage, output: list[dict]) -> None:
         if store:
             _RESPONSE_STORE.put(user_id, response_id, conversation + [turn])
+            inputs = body.get("input") if isinstance(body.get("input"), list) else []
+            _RESPONSE_STORE.put_items(user_id, [i for i in inputs if isinstance(i, dict)] + output)
 
     if req.stream and not req.wants_tools:
         requested_model = req.model or DEFAULT_VIRTUAL_MODEL
@@ -239,7 +243,9 @@ async def create_response(
                     _orchestrator_stream(request, orch, req, user_id, client_hash),
                     response_id=response_id, body=body,
                     requested_model=requested_model, input_messages=req.messages,
-                    on_complete=lambda text: remember(responses_api.assistant_turn(text, None)),
+                    on_complete=lambda text, item: remember(
+                        responses_api.assistant_turn(text, None), [item],
+                    ),
                 ):
                     yield event
             except ProviderError as e:
@@ -259,7 +265,7 @@ async def create_response(
         )
     obj = responses_api.from_chat_response(result, response_id=response_id, body=body)
     msg = result.choices[0].message
-    remember(responses_api.assistant_turn(msg.content, msg.tool_calls))
+    remember(responses_api.assistant_turn(msg.content, msg.tool_calls), obj["output"])
     if req.stream:
         return _sse(responses_api.replay_events(obj))
     return obj
