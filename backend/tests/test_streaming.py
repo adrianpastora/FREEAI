@@ -262,3 +262,41 @@ async def test_stream_per_model_rate_limit_uses_next_model(repos):
     await session.commit()
     assert seen == [first, second]
     assert chunks[0]["provider"] == "groq"
+
+
+@pytest.mark.asyncio
+async def test_stream_that_ends_empty_falls_through_to_next_model(repos):
+    """Reasoning models can spend max_tokens thinking and stream nothing but a
+    role header + finish_reason=length. That must not count as success."""
+    from app.providers import PROVIDER_REGISTRY
+    from app.providers.catalog import model_chain
+
+    config_repo, rate_repo, usage_repo, strategy_repo, user_provider_repo, user_id, session = repos
+    await user_provider_repo.upsert(user_id, "groq", api_key="test-key", enabled=True)
+    await session.commit()
+    first, second = model_chain("groq", None)[:2]
+    seen = []
+
+    async def stream(self, messages, *, model=None, **kwargs):
+        seen.append(model)
+        if model == first:
+            yield StreamChunk(delta="", provider="groq", model=model, finish_reason="length")
+            return
+        yield StreamChunk(delta="", provider="groq", model=model)          # role header
+        yield StreamChunk(delta="1 2 3", provider="groq", model=model)
+        yield StreamChunk(delta="", provider="groq", model=model, finish_reason="stop")
+
+    orch = Orchestrator()
+    with patch.object(PROVIDER_REGISTRY["groq"], "stream", stream):
+        chunks = [c async for c in orch.stream(
+            _make_req(), user_id, user_provider_repo,
+            config_repo, rate_repo, usage_repo, strategy_repo,
+        )]
+    await orch.aclose()
+    await session.commit()
+    assert seen == [first, second]
+    text = "".join(c["choices"][0]["delta"].get("content") or "" for c in chunks)
+    assert text == "1 2 3"
+    # the held role-header chunk is still delivered, before the content
+    assert chunks[0]["choices"][0]["delta"]["content"] == ""
+    assert chunks[-1]["choices"][0]["finish_reason"] == "stop"

@@ -12,3 +12,4 @@ class CerebrasProvider(OpenAICompatibleProvider):
     name = "cerebras"
     BASE_URL = "https://api.cerebras.ai/v1/chat/completions"
     request_timeout = 60.0
+    supports_reasoning_effort = True

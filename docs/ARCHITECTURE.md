@@ -256,6 +256,9 @@ If the upstream goes silent for longer than that:
   `ErrorKind.NETWORK`, triggers fallback to the next provider. The same
   applies to any unexpected adapter exception (wrapped as `UNKNOWN`), and a
   `MODEL_UNAVAILABLE` retries the stream on the provider's next model.
+  Chunks without text are held back until real content arrives, so a stream
+  that ends empty (a reasoning model that used `max_tokens` thinking) is
+  treated as `EMPTY_RESPONSE` and falls back too.
 - **After at least one chunk** → propagated to the client as an SSE
   error; no fallback is possible once bytes are in flight.
 

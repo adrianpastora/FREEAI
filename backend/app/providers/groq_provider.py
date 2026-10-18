@@ -31,6 +31,7 @@ class GroqProvider(OpenAICompatibleProvider):
     name = "groq"
     BASE_URL = "https://api.groq.com/openai/v1/chat/completions"
     request_timeout = 60.0
+    supports_reasoning_effort = True
     supports_transcription = True
 
     async def transcribe(

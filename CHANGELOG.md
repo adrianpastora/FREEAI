@@ -13,6 +13,28 @@ pre-1.0 versions — follow the Unreleased section if you track `main`.
 <!-- Add entries here as they land. Categories used in this changelog:
      Added, Changed, Fixed, Security, Removed, Deprecated. -->
 
+## [0.11.1] — 2026-10-18
+
+Fixes found by running `scripts/smoke_test.py` against the production
+deployment with real providers.
+
+### Fixed
+- Streaming returned an empty stream as a success when a reasoning model
+  (Groq `openai/gpt-oss-120b`) spent the whole `max_tokens` budget thinking:
+  only a role header and `finish_reason: "length"` came back. Chunks without
+  text are now held back until real content arrives. A stream that ends
+  empty is treated as `empty_response` and moves on to the next model or
+  provider; the held chunks are still delivered once content arrives.
+- Providers that answer 429 to every call with a tiny or missing wait hint
+  (seen with Mistral) were retried on every request. Consecutive 429s now
+  escalate the quarantine: the first follows the hint, then at least 2 min,
+  4 min, … up to 1 h. The streak resets on the first success.
+
+### Changed
+- With a small `max_tokens` (under 1024), `gpt-oss` models on Groq and
+  Cerebras are sent `reasoning_effort: "low"`, so the budget goes to the
+  answer instead of the reasoning.
+
 ## [0.11.0] — 2026-10-18
 
 Robustness pass: requests no longer fail on model names FreeAI doesn't
@@ -572,7 +594,8 @@ infrastructure.
 - Drop the legacy "Sprint N shipped" changelog section from README —
   replaced with a themed Status section.
 
-[Unreleased]: https://github.com/adrianpastora/FREEAI/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/adrianpastora/FREEAI/compare/v0.11.1...HEAD
+[0.11.1]: https://github.com/adrianpastora/FREEAI/releases/tag/v0.11.1
 [0.11.0]: https://github.com/adrianpastora/FREEAI/releases/tag/v0.11.0
 [0.10.2]: https://github.com/adrianpastora/FREEAI/releases/tag/v0.10.2
 [0.10.1]: https://github.com/adrianpastora/FREEAI/releases/tag/v0.10.1

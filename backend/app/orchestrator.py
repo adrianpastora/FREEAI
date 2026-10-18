@@ -234,6 +234,11 @@ class Orchestrator:
         # In-memory rate counters — avoids COUNT over rate_events on hot path
         self._counter_store = RateCounterStore()
         self._cooldowns = _ModelCooldowns()
+        # Consecutive RATE_LIMITED per (user, provider). Some providers send
+        # a tiny or missing wait hint while a longer limit is in force (e.g.
+        # Mistral answering 429 to every call); escalating stops us from
+        # spending one failed call per request on them. Reset on success.
+        self._rate_limit_streaks: dict[tuple[int, str], int] = {}
 
     _IN_FLIGHT_MAX_KEYS = 10_000
     # Upstream CLIENT_ERRORs are usually provider-specific (context window,
@@ -263,6 +268,34 @@ class Orchestrator:
             if val is not None:
                 kwargs[attr] = val
         return kwargs
+
+    _RL_ESCALATION_BASE_S = 60.0
+    _RL_ESCALATION_MAX_S = 3600.0
+
+    def _quarantine(
+        self, user_id: int, provider: str, err: ProviderError,
+        all_models_unavailable: bool = False,
+    ) -> Optional[float]:
+        """quarantine_seconds_for() plus escalation for repeated 429s:
+        2nd in a row -> >= 2 min, 3rd -> >= 4 min, ... capped at 1 h."""
+        seconds = quarantine_seconds_for(err, all_models_unavailable=all_models_unavailable)
+        if err.kind != ErrorKind.RATE_LIMITED:
+            return seconds
+        key = (user_id, provider)
+        if key not in self._rate_limit_streaks and len(self._rate_limit_streaks) >= self._IN_FLIGHT_MAX_KEYS:
+            self._rate_limit_streaks.clear()
+        streak = self._rate_limit_streaks.get(key, 0) + 1
+        self._rate_limit_streaks[key] = streak
+        if streak >= 2:
+            floor = min(self._RL_ESCALATION_MAX_S, self._RL_ESCALATION_BASE_S * 2 ** (streak - 1))
+            if not seconds or seconds < floor:
+                log.info("escalating rate-limit quarantine", provider=provider,
+                         streak=streak, seconds=floor)
+                seconds = floor
+        return seconds
+
+    def _rate_limit_ok(self, user_id: int, provider: str) -> None:
+        self._rate_limit_streaks.pop((user_id, provider), None)
 
     def _inc_in_flight(self, user_id: int, name: str) -> None:
         key = (user_id, name)
@@ -764,6 +797,7 @@ class Orchestrator:
         outcome: str
         if result.response is not None:
             outcome = "success"
+            self._rate_limit_ok(reservation.user_id, reservation.provider)
             provider_calls_total.labels(provider=reservation.provider, outcome="success").inc()
             await rate_repo.commit(
                 reservation, result.latency_ms, ok=True,
@@ -798,8 +832,9 @@ class Orchestrator:
         assert err is not None
         outcome = err.kind.value
         provider_calls_total.labels(provider=reservation.provider, outcome=outcome).inc()
-        quarantine = quarantine_seconds_for(
-            err, all_models_unavailable=result.all_models_unavailable,
+        quarantine = self._quarantine(
+            reservation.user_id, reservation.provider, err,
+            all_models_unavailable=result.all_models_unavailable,
         )
         cb_kwargs = self._circuit_breaker_kwargs(app_cfg)
         await rate_repo.commit(
@@ -1118,6 +1153,12 @@ class Orchestrator:
             try:
                 try:
                     for model_idx, model in enumerate(models):
+                        # Chunks without text (role header, finish marker) are
+                        # held back until real content arrives, so a stream
+                        # that ends empty — typically a reasoning model that
+                        # spent max_tokens thinking — can still fall back.
+                        held: list[dict] = []
+                        last_finish: Optional[str] = None
                         stream_iter = cand.provider.stream(
                             req.messages,
                             model=model,
@@ -1127,9 +1168,9 @@ class Orchestrator:
                         )
                         try:
                             async for chunk in self._pump_stream(stream_iter, cand.name, idle_timeout):
-                                if not first_chunk_sent:
-                                    first_chunk_sent = True
+                                if ttfb_ms is None:
                                     ttfb_ms = int((time.perf_counter() - started) * 1000)
+                                last_finish = chunk.finish_reason or last_finish
                                 if chunk.rate_limit is not None:
                                     self._note_rate_limit(
                                         user_id, cand.name, model or chunk.model, chunk.rate_limit,
@@ -1149,13 +1190,40 @@ class Orchestrator:
                                         prompt_tokens=chunk.prompt_tokens,
                                         completion_tokens=chunk.completion_tokens,
                                     )
-                                yield self._format_sse_chunk(chunk, completion_id, created, strategy)
+                                formatted = self._format_sse_chunk(chunk, completion_id, created, strategy)
+                                if first_chunk_sent:
+                                    yield formatted
+                                elif chunk.delta:
+                                    first_chunk_sent = True
+                                    for pending in held:
+                                        yield pending
+                                    held.clear()
+                                    yield formatted
+                                else:
+                                    held.append(formatted)
+                            if not first_chunk_sent:
+                                raise ProviderError(
+                                    cand.name,
+                                    f"empty stream (finish_reason={last_finish or 'unspecified'})",
+                                    kind=ErrorKind.EMPTY_RESPONSE,
+                                )
                             break
                         except ProviderError as e:
-                            skip = self._model_skip(cand.name, e)
-                            if skip is None or first_chunk_sent:
+                            if first_chunk_sent:
                                 raise
                             nxt = models[model_idx + 1] if model_idx + 1 < len(models) else None
+                            skip = self._model_skip(cand.name, e)
+                            if skip is None:
+                                if e.try_next_model and nxt is not None:
+                                    log.info(
+                                        "trying next model", provider=cand.name, model=model,
+                                        reason=e.kind.value, next=nxt,
+                                    )
+                                    await self._aclose_quietly(stream_iter)
+                                    stream_iter = None
+                                    ttfb_ms = None
+                                    continue
+                                raise
                             self._cool_model(user_id, cand.name, model, skip, nxt)
                             if nxt is None:
                                 all_models_unavailable = (
@@ -1176,6 +1244,7 @@ class Orchestrator:
                     latency_ms = int((time.perf_counter() - started) * 1000)
                     provider_call_duration_seconds.labels(provider=cand.name).observe(latency_ms / 1000.0)
                     provider_calls_total.labels(provider=cand.name, outcome="success").inc()
+                    self._rate_limit_ok(user_id, cand.name)
                     await rate_repo.commit(
                         reservation, latency_ms, ok=True,
                         prompt_tokens=prompt_tokens,
@@ -1213,8 +1282,9 @@ class Orchestrator:
                     await rate_repo.commit(
                         reservation, latency_ms, ok=False,
                         error=e.message, error_kind=e.kind.value,
-                        quarantine_seconds=quarantine_seconds_for(
-                            e, all_models_unavailable=all_models_unavailable,
+                        quarantine_seconds=self._quarantine(
+                            user_id, cand.name, e,
+                            all_models_unavailable=all_models_unavailable,
                         ),
                         **self._circuit_breaker_kwargs(app_cfg),
                     )

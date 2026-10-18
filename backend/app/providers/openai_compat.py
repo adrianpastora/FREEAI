@@ -32,6 +32,11 @@ _MAX_PARSE_ERRORS = 5
 _CONNECT_TIMEOUT = 5.0
 
 
+def _is_reasoning_model(model: str) -> bool:
+    """Open-weight reasoning families that honour reasoning_effort."""
+    return "gpt-oss" in (model or "").lower()
+
+
 def _normalize_tool_calls(raw) -> list[dict]:
     """Coerce provider tool_calls into the strict OpenAI shape clients parse:
     ``{"id", "type": "function", "function": {"name", "arguments": str}}``.
@@ -64,6 +69,11 @@ class OpenAICompatibleProvider(BaseProvider):
     BASE_URL: str = ""
     supports_streaming = True
     supports_tools = True
+    # Providers that accept OpenAI's ``reasoning_effort`` for reasoning models.
+    supports_reasoning_effort = False
+    # Below this max_tokens a reasoning model can spend the whole budget
+    # thinking and return nothing; ask it to reason briefly instead.
+    LOW_EFFORT_BELOW_TOKENS = 1024
     request_timeout: float = 60.0
 
     def _auth_headers(self) -> dict[str, str]:
@@ -88,6 +98,12 @@ class OpenAICompatibleProvider(BaseProvider):
         }
         if max_tokens:
             payload["max_tokens"] = max_tokens
+            if (
+                self.supports_reasoning_effort
+                and max_tokens < self.LOW_EFFORT_BELOW_TOKENS
+                and _is_reasoning_model(model)
+            ):
+                payload["reasoning_effort"] = "low"
         if stream:
             payload["stream_options"] = {"include_usage": True}
         return payload

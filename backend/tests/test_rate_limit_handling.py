@@ -326,3 +326,46 @@ async def test_cooldown_expires():
         assert orch._cooldowns.reason(1, "groq", "m") is None
     finally:
         await orch.aclose()
+
+
+# ──────────────── escalation for repeated 429s ────────────────
+
+
+@pytest.mark.asyncio
+async def test_repeated_rate_limits_escalate_and_reset_on_success():
+    orch = Orchestrator()
+    try:
+        err = ProviderError("mistral", "Rate limit exceeded", kind=ErrorKind.RATE_LIMITED, retry_after=1)
+        assert orch._quarantine(1, "mistral", err) == 1        # first: trust the hint
+        assert orch._quarantine(1, "mistral", err) == 120      # second in a row: >= 2 min
+        assert orch._quarantine(1, "mistral", err) == 240
+        assert orch._quarantine(2, "mistral", err) == 1        # per user
+        orch._rate_limit_ok(1, "mistral")
+        assert orch._quarantine(1, "mistral", err) == 1        # reset after a success
+        for _ in range(20):
+            last = orch._quarantine(1, "mistral", err)
+        assert last == 3600                                    # capped
+        other = ProviderError("mistral", "x", kind=ErrorKind.SERVER_ERROR)
+        assert orch._quarantine(1, "mistral", other) is None   # only 429s escalate
+    finally:
+        await orch.aclose()
+
+
+# ──────────────── reasoning effort for small budgets ────────────────
+
+
+def test_reasoning_effort_low_only_for_small_budgets_on_supporting_providers():
+    from app.providers.groq_provider import GroqProvider
+    from app.providers.mistral_provider import MistralProvider
+
+    groq = GroqProvider(api_key="k")
+    small = groq._build_payload([], "openai/gpt-oss-120b", 0.7, 40, stream=False)
+    assert small["reasoning_effort"] == "low"
+    big = groq._build_payload([], "openai/gpt-oss-120b", 0.7, 4000, stream=False)
+    assert "reasoning_effort" not in big
+    unbounded = groq._build_payload([], "openai/gpt-oss-120b", 0.7, None, stream=False)
+    assert "reasoning_effort" not in unbounded
+    other_model = groq._build_payload([], "qwen/qwen3.8-27b", 0.7, 40, stream=False)
+    assert "reasoning_effort" not in other_model
+    mistral = MistralProvider(api_key="k")._build_payload([], "gpt-oss-x", 0.7, 40, stream=False)
+    assert "reasoning_effort" not in mistral
