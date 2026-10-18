@@ -230,3 +230,35 @@ async def test_stream_unexpected_exception_falls_back(repos):
     contents = [c["choices"][0]["delta"].get("content") for c in chunks]
     assert "rescued" in contents
     assert chunks[0]["provider"] == "mistral"
+
+
+@pytest.mark.asyncio
+async def test_stream_per_model_rate_limit_uses_next_model(repos):
+    """Groq's limits are per model: a 429 on the default model mid-setup
+    streams from the next model instead of leaving Groq."""
+    from app.providers import PROVIDER_REGISTRY
+    from app.providers.catalog import model_chain
+
+    config_repo, rate_repo, usage_repo, strategy_repo, user_provider_repo, user_id, session = repos
+    await user_provider_repo.upsert(user_id, "groq", api_key="test-key", enabled=True)
+    await session.commit()
+
+    first, second = model_chain("groq", None)[:2]
+    seen = []
+
+    async def stream(self, messages, *, model=None, **kwargs):
+        seen.append(model)
+        if model == first:
+            raise ProviderError("groq", "rate limited", kind=ErrorKind.RATE_LIMITED, status=429, retry_after=20)
+        yield StreamChunk(delta="ok", provider="groq", model=model)
+
+    orch = Orchestrator()
+    with patch.object(PROVIDER_REGISTRY["groq"], "stream", stream):
+        chunks = [c async for c in orch.stream(
+            _make_req(), user_id, user_provider_repo,
+            config_repo, rate_repo, usage_repo, strategy_repo,
+        )]
+    await orch.aclose()
+    await session.commit()
+    assert seen == [first, second]
+    assert chunks[0]["provider"] == "groq"

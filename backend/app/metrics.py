@@ -34,6 +34,12 @@ provider_model_unavailable_total = Counter(
     "a non-zero rate means app/providers/catalog.py needs an update",
     ["provider", "model"],
 )
+provider_model_cooldowns_total = Counter(
+    "freeai_provider_model_cooldowns_total",
+    "Times a model (or a whole provider key) was put on cool-down -- "
+    "reason: unavailable | rate_limited | quota | headers",
+    ["provider", "reason"],
+)
 provider_call_duration_seconds = Histogram(
     "freeai_provider_call_duration_seconds",
     "Provider call latency",

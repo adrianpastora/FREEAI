@@ -28,6 +28,7 @@ from .metrics import (
     orchestrator_fallbacks_total,
     provider_call_duration_seconds,
     provider_calls_total,
+    provider_model_cooldowns_total,
     provider_model_unavailable_total,
 )
 from .providers import (
@@ -39,7 +40,11 @@ from .providers import (
     StreamChunk,
 )
 from .providers import catalog
-from .providers.base import quarantine_seconds_for
+from .providers.base import (
+    RATE_LIMIT_DEFAULT_QUARANTINE_S,
+    RateLimitInfo,
+    quarantine_seconds_for,
+)
 from .repositories import (
     AppConfigDTO,
     ConfigRepository,
@@ -84,34 +89,51 @@ class _AttemptResult:
     all_models_unavailable: bool = False
 
 
-class _DeadModels:
-    """In-process memory of (user, provider, model) triples that answered
-    MODEL_UNAVAILABLE, so later requests skip straight to a working model
-    instead of paying one failed call each. Scoped per user because
-    availability is per account (e.g. Gemini only serves 2.5 to projects
-    that used it before). Entries expire so a model that comes back — or a
-    misclassified error — heals on its own."""
+# Pseudo-model key meaning "the whole provider (account/key) is cooling".
+_PROVIDER_WIDE = "*"
+_UNAVAILABLE_COOLDOWN_S = 6 * 3600
 
-    _TTL_S = 6 * 3600
+
+class _ModelCooldowns:
+    """In-process memory of (user, provider, model) triples to skip for a while.
+
+    Reasons:
+      unavailable  -- the model answered MODEL_UNAVAILABLE (retired, not on
+                      this account's tier); remembered 6 h.
+      rate_limited / quota -- the model's own bucket is empty on providers
+                      whose limits are per model (catalog quota_scope="model").
+      headers      -- a successful response reported 0 remaining requests or
+                      tokens; skipped until the provider's reset time.
+    The model ``"*"`` cools the whole provider (per-key quota exhausted
+    according to headers). Scoped per user because quotas and availability
+    are per account. Process-local by design: a lost entry only costs one
+    extra upstream call, which is then re-learned.
+    """
+
     _MAX_KEYS = 10_000
 
     def __init__(self):
-        self._data: dict[tuple[int, str, str], float] = {}
+        self._data: dict[tuple[int, str, str], tuple[float, str]] = {}
 
-    def mark(self, user_id: int, provider: str, model: str) -> None:
+    def cool(self, user_id: int, provider: str, model: str, seconds: float, reason: str) -> None:
         if len(self._data) >= self._MAX_KEYS:
             self._data.clear()
-        self._data[(user_id, provider, model)] = time.monotonic() + self._TTL_S
-
-    def is_dead(self, user_id: int, provider: str, model: str) -> bool:
         key = (user_id, provider, model)
-        until = self._data.get(key)
-        if until is None:
-            return False
-        if until <= time.monotonic():
+        until = time.monotonic() + max(1.0, seconds)
+        prev = self._data.get(key)
+        if prev is None or prev[0] < until:
+            self._data[key] = (until, reason)
+
+    def reason(self, user_id: int, provider: str, model: str) -> Optional[str]:
+        """Why the model is cooling, or None if it's usable."""
+        key = (user_id, provider, model)
+        entry = self._data.get(key)
+        if entry is None:
+            return None
+        if entry[0] <= time.monotonic():
             self._data.pop(key, None)
-            return False
-        return True
+            return None
+        return entry[1]
 
 
 class _StrategyCache:
@@ -197,7 +219,7 @@ class Orchestrator:
         self._in_flight: dict[tuple[int, str], int] = {}
         # In-memory rate counters — avoids COUNT over rate_events on hot path
         self._counter_store = RateCounterStore()
-        self._dead_models = _DeadModels()
+        self._cooldowns = _ModelCooldowns()
 
     _IN_FLIGHT_MAX_KEYS = 10_000
     # Upstream CLIENT_ERRORs are usually provider-specific (context window,
@@ -378,6 +400,11 @@ class Orchestrator:
                 if unhealthy is not None:
                     unhealthy.append(dto.name)
                 continue
+            if dto.tpd_limit and snap.tokens_today >= dto.tpd_limit:
+                # Daily token budget spent: calling would only earn a 429.
+                if unhealthy is not None:
+                    unhealthy.append(dto.name)
+                continue
             provider = self._build_provider(dto)
             if not provider:
                 continue
@@ -456,31 +483,96 @@ class Orchestrator:
     def _models_for(
         self, user_id: int, cand: _Candidate, provider_model: Optional[str],
     ) -> list[Optional[str]]:
-        """Models to try, in order, for one candidate.
+        """Models to try, in order, for one candidate. Empty -> skip provider.
 
-        An explicit model from the client is passed through untouched — we
+        An explicit model from the client is passed through untouched -- we
         never silently swap what the caller asked for. Otherwise: configured
-        default, then the catalog's fallback chain, minus models known dead.
+        default, then the catalog's fallback chain, minus cooling models.
         """
+        if self._cooldowns.reason(user_id, cand.name, _PROVIDER_WIDE):
+            return []
         if provider_model is not None:
             return [provider_model]
         chain = catalog.model_chain(cand.name, cand.config.default_model)
         if not chain:
             return [None]  # unknown provider: adapter picks its own default
-        alive = [m for m in chain if not self._dead_models.is_dead(user_id, cand.name, m)]
-        # All known-dead: probe the first one anyway so the memory self-heals.
-        return alive or chain[:1]
+        reasons = {m: self._cooldowns.reason(user_id, cand.name, m) for m in chain}
+        alive = [m for m in chain if reasons[m] is None]
+        if alive:
+            return alive
+        # Everything cooling. Quota cool-downs end on their own; a stale
+        # "unavailable" memory is worth one probe so it can self-heal.
+        if all(r == "unavailable" for r in reasons.values()):
+            return chain[:1]
+        return []
 
-    def _mark_model_dead(
-        self, user_id: int, provider: str, model: Optional[str], nxt: Optional[str],
+    @staticmethod
+    def _model_skip(provider: str, err: Optional[ProviderError]) -> Optional[tuple[float, str]]:
+        """(cooldown_s, reason) when ``err`` belongs to the model just tried --
+        so the provider's next model is worth trying -- else None."""
+        if err is None:
+            return None
+        if err.kind == ErrorKind.MODEL_UNAVAILABLE:
+            return _UNAVAILABLE_COOLDOWN_S, "unavailable"
+        if (
+            err.kind in (ErrorKind.RATE_LIMITED, ErrorKind.QUOTA_EXHAUSTED)
+            and err.status != 402  # credits are per account, never per model
+            and catalog.quota_scope(provider) == "model"
+        ):
+            seconds = quarantine_seconds_for(err) or RATE_LIMIT_DEFAULT_QUARANTINE_S
+            reason = "rate_limited" if err.kind == ErrorKind.RATE_LIMITED else "quota"
+            return seconds, reason
+        return None
+
+    def _cool_model(
+        self,
+        user_id: int,
+        provider: str,
+        model: Optional[str],
+        skip: tuple[float, str],
+        nxt: Optional[str],
     ) -> None:
         if model is None:
             return
-        self._dead_models.mark(user_id, provider, model)
-        provider_model_unavailable_total.labels(provider=provider, model=model).inc()
-        log.warning(
-            "model unavailable — update app/providers/catalog.py",
-            provider=provider, model=model, trying_next=nxt,
+        seconds, reason = skip
+        self._cooldowns.cool(user_id, provider, model, seconds, reason)
+        provider_model_cooldowns_total.labels(provider=provider, reason=reason).inc()
+        if reason == "unavailable":
+            provider_model_unavailable_total.labels(provider=provider, model=model).inc()
+            log.warning(
+                "model unavailable — update app/providers/catalog.py",
+                provider=provider, model=model, trying_next=nxt,
+            )
+        else:
+            log.info(
+                "model cooling down", provider=provider, model=model,
+                reason=reason, seconds=round(seconds, 1), trying_next=nxt,
+            )
+
+    def _note_rate_limit(
+        self,
+        user_id: int,
+        provider: str,
+        model: Optional[str],
+        info: Optional[RateLimitInfo],
+    ) -> None:
+        """Proactively cool a model / provider whose quota a successful
+        response reported as exhausted, so the *next* request goes elsewhere
+        instead of earning a 429."""
+        if info is None:
+            return
+        wait = info.exhausted_for()
+        if not wait:
+            return
+        per_model = catalog.quota_scope(provider) == "model" and model
+        target = model if per_model else _PROVIDER_WIDE
+        self._cooldowns.cool(user_id, provider, target, wait, "headers")
+        provider_model_cooldowns_total.labels(provider=provider, reason="headers").inc()
+        log.info(
+            "quota exhausted per response headers",
+            provider=provider, model=target, seconds=round(wait, 1),
+            remaining_requests=info.remaining_requests,
+            remaining_tokens=info.remaining_tokens,
         )
 
     async def _try_models(
@@ -493,15 +585,23 @@ class Orchestrator:
         explicit_model: bool = False,
     ) -> _AttemptResult:
         """Run _try_with_retry over the candidate's model chain, moving on to
-        the next model only when the current one is MODEL_UNAVAILABLE."""
+        the next model when the error belongs to the model (retired, or its
+        own rate-limit bucket is empty) rather than to the provider."""
         started = time.perf_counter()
         result: Optional[_AttemptResult] = None
         for i, model in enumerate(models):
             result = await self._try_with_retry(cand, req, model, max_retries)
-            if result.error is None or result.error.kind != ErrorKind.MODEL_UNAVAILABLE:
+            if result.response is not None:
+                self._note_rate_limit(
+                    user_id, cand.name, model or result.response.model,
+                    result.response.rate_limit,
+                )
+                break
+            skip = self._model_skip(cand.name, result.error)
+            if skip is None:
                 break
             nxt = models[i + 1] if i + 1 < len(models) else None
-            self._mark_model_dead(user_id, cand.name, model, nxt)
+            self._cool_model(user_id, cand.name, model, skip, nxt)
         assert result is not None
         result.latency_ms = int((time.perf_counter() - started) * 1000)
         result.all_models_unavailable = (
@@ -706,6 +806,11 @@ class Orchestrator:
         started_total = time.perf_counter()
 
         for cand in attempts:
+            models = self._models_for(user_id, cand, provider_model)
+            if not models:
+                log.info("provider cooling down, skipping", provider=cand.name)
+                skipped.append(cand.name)
+                continue
             reservation = await rate_repo.try_reserve(
                 user_id, cand.name, cand.config.rpm_limit, cand.config.rpd_limit
             )
@@ -737,7 +842,7 @@ class Orchestrator:
             result: Optional[_AttemptResult] = None
             try:
                 result = await self._try_models(
-                    user_id, cand, req, self._models_for(user_id, cand, provider_model), max_retries,
+                    user_id, cand, req, models, max_retries,
                     explicit_model=provider_model is not None,
                 )
                 await self._commit_attempt(
@@ -866,6 +971,10 @@ class Orchestrator:
         for cand in attempts:
             if not cand.provider.supports_streaming:
                 continue
+            models = self._models_for(user_id, cand, provider_model)
+            if not models:
+                skipped.append(cand.name)
+                continue
             reservation = await rate_repo.try_reserve(
                 user_id, cand.name, cand.config.rpm_limit, cand.config.rpd_limit
             )
@@ -885,7 +994,6 @@ class Orchestrator:
             reservation_settled = False
             stream_iter = None
             idle_timeout = getattr(app_cfg, "stream_idle_timeout_s", 45.0)
-            models = self._models_for(user_id, cand, provider_model)
             all_models_unavailable = False
             try:
                 try:
@@ -902,6 +1010,10 @@ class Orchestrator:
                                 if not first_chunk_sent:
                                     first_chunk_sent = True
                                     ttfb_ms = int((time.perf_counter() - started) * 1000)
+                                if chunk.rate_limit is not None:
+                                    self._note_rate_limit(
+                                        user_id, cand.name, model or chunk.model, chunk.rate_limit,
+                                    )
                                 model_seen = chunk.model
                                 if chunk.prompt_tokens:
                                     prompt_tokens = chunk.prompt_tokens
@@ -920,12 +1032,15 @@ class Orchestrator:
                                 yield self._format_sse_chunk(chunk, completion_id, created, strategy)
                             break
                         except ProviderError as e:
-                            if e.kind != ErrorKind.MODEL_UNAVAILABLE or first_chunk_sent:
+                            skip = self._model_skip(cand.name, e)
+                            if skip is None or first_chunk_sent:
                                 raise
                             nxt = models[model_idx + 1] if model_idx + 1 < len(models) else None
-                            self._mark_model_dead(user_id, cand.name, model, nxt)
+                            self._cool_model(user_id, cand.name, model, skip, nxt)
                             if nxt is None:
-                                all_models_unavailable = not explicit_model
+                                all_models_unavailable = (
+                                    e.kind == ErrorKind.MODEL_UNAVAILABLE and not explicit_model
+                                )
                                 raise
                             await self._aclose_quietly(stream_iter)
                             stream_iter = None

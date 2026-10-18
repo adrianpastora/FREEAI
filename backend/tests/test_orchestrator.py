@@ -387,3 +387,32 @@ async def test_fallback_writes_two_usage_events(session):
     assert events[1].provider_name == "secondary"
     assert events[1].outcome == "success"
     assert events[1].fallback_position == 2
+
+
+@pytest.mark.asyncio
+async def test_tpd_limit_is_a_hard_skip(session):
+    """Once a provider has used its daily token budget it's skipped without
+    a call, instead of merely being ranked lower."""
+    from app.repositories.user_provider_repo import UserProviderRepository
+
+    big = ProviderResponse(
+        content="ok", model="m", provider="primary", prompt_tokens=40, completion_tokens=40,
+    )
+    primary = FakeProvider(name="primary", response=big)
+    secondary = FakeProvider(name="secondary", response=_make_response("secondary"))
+    orch = await _setup_two_providers(session, primary, secondary)
+    await UserProviderRepository(session).upsert(1, "primary", tpd_limit=50)
+    await session.commit()
+
+    first = await _run_chat(
+        orch, session, ChatCompletionRequest(messages=[ChatMessage(role="user", content="hi")]),
+    )
+    await session.commit()
+    assert first.provider == "primary"  # 80 tokens used, budget 50
+
+    second = await _run_chat(
+        orch, session, ChatCompletionRequest(messages=[ChatMessage(role="user", content="again")]),
+    )
+    await session.commit()
+    assert second.fallback_chain == ["secondary"]
+    assert primary.calls == 1

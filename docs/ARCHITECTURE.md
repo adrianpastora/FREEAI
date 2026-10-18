@@ -210,6 +210,22 @@ each provider has an ordered model chain, retired models are skipped, and a
 model that answers `MODEL_UNAVAILABLE` is remembered as dead for 6h. See
 [providers/CATALOG.md](providers/CATALOG.md) for how to keep it current.
 
+### Rate limits, quotas and model cool-downs
+
+Limits are handled before they cost a request:
+
+- `freeai_try_reserve` enforces `rpm_limit` / `rpd_limit` atomically, and
+  `_rank` skips providers past their `tpd_limit`.
+- `x-ratelimit-remaining-*` headers on successful responses
+  (`providers.base.parse_rate_limit_headers`) cool a model, or the whole
+  provider key, as soon as the provider reports it exhausted.
+- On providers whose quotas are per model (`catalog.quota_scope == "model"`),
+  a 429 or daily quota moves to the provider's next model instead of
+  parking the provider.
+
+All cool-downs live in `Orchestrator._cooldowns`. See
+[providers/CATALOG.md](providers/CATALOG.md#how-rate-limits-and-quotas-are-handled).
+
 ### Circuit breaker and retry budget
 
 `rate_repo.commit()` implements a sliding-window circuit breaker per

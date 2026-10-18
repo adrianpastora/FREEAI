@@ -53,6 +53,12 @@ class CatalogProvider:
     weight: float = 1.0
     tags: tuple[str, ...] = ()
     free_tier: str = ""
+    # Where the provider enforces rate limits / quotas:
+    #   "model" — each model has its own bucket (Groq, Gemini, Cerebras,
+    #             NVIDIA): a 429 on one model means try the next model.
+    #   "key"   — one bucket per account (OpenRouter free-models-per-day,
+    #             HF credits, Mistral, Cohere): a 429 parks the provider.
+    quota_scope: str = "key"
     # Models the provider no longer serves. Skipped even if a user pinned
     # them as default_model, and cleared from user overrides on sync.
     retired_models: tuple[str, ...] = ()
@@ -67,6 +73,7 @@ class CatalogProvider:
 CATALOG: dict[str, CatalogProvider] = {
     "cerebras": CatalogProvider(
         name="cerebras",
+        quota_scope="model",
         models=(
             CatalogModel("gpt-oss-120b", 131_000, ("chat", "reasoning")),
         ),
@@ -79,6 +86,7 @@ CATALOG: dict[str, CatalogProvider] = {
     ),
     "groq": CatalogProvider(
         name="groq",
+        quota_scope="model",
         models=(
             CatalogModel("openai/gpt-oss-120b", 131_072, ("chat", "reasoning", "tools")),
             CatalogModel("openai/gpt-oss-20b", 131_072, ("chat", "reasoning", "tools"), note="fastest"),
@@ -97,6 +105,7 @@ CATALOG: dict[str, CatalogProvider] = {
     ),
     "gemini": CatalogProvider(
         name="gemini",
+        quota_scope="model",
         models=(
             CatalogModel("gemini-3.5-flash", 1_048_576, ("chat", "vision", "tools", "long_context", "reasoning")),
             CatalogModel("gemini-3.5-flash-lite", 1_048_576, ("chat", "vision", "long_context")),
@@ -184,6 +193,7 @@ CATALOG: dict[str, CatalogProvider] = {
     ),
     "nvidia": CatalogProvider(
         name="nvidia",
+        quota_scope="model",
         models=(
             CatalogModel("nvidia/nemotron-3-super-120b-a12b", 262_144, ("chat", "reasoning"), price=(0.0, 0.0)),
             CatalogModel("deepseek-ai/deepseek-v4.1-flash", 131_072, ("chat", "reasoning", "coding"), price=(0.0, 0.0)),
@@ -199,6 +209,13 @@ CATALOG: dict[str, CatalogProvider] = {
 
 def get(provider: str) -> Optional[CatalogProvider]:
     return CATALOG.get(provider)
+
+
+def quota_scope(provider: str) -> str:
+    """"model" or "key" — see CatalogProvider.quota_scope. Unknown providers
+    are treated as per-key, the conservative choice."""
+    entry = CATALOG.get(provider)
+    return entry.quota_scope if entry else "key"
 
 
 def is_retired(provider: str, model: Optional[str]) -> bool:

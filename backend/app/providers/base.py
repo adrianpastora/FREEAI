@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import AsyncIterator, Optional
@@ -270,6 +271,130 @@ def parse_retry_after(headers: httpx.Headers) -> Optional[float]:
         return None
 
 
+# ─── provider rate-limit headers ───
+# Groq:      x-ratelimit-remaining-requests (per day) / -tokens (per minute),
+#            resets as durations like "2m59.56s", "7.66s", "120ms".
+# Cerebras:  x-ratelimit-remaining-requests-day / -tokens-minute, resets as
+#            float seconds ("26.284").
+# OpenRouter (only on its own 429s): x-ratelimit-remaining + x-ratelimit-reset
+#            as a Unix timestamp (s or ms).
+_REQUEST_HEADER_PAIRS = (
+    ("x-ratelimit-remaining-requests", "x-ratelimit-reset-requests"),
+    ("x-ratelimit-remaining-requests-day", "x-ratelimit-reset-requests-day"),
+    ("x-ratelimit-remaining-requests-minute", "x-ratelimit-reset-requests-minute"),
+    ("x-ratelimit-remaining", "x-ratelimit-reset"),
+)
+_TOKEN_HEADER_PAIRS = (
+    ("x-ratelimit-remaining-tokens", "x-ratelimit-reset-tokens"),
+    ("x-ratelimit-remaining-tokens-day", "x-ratelimit-reset-tokens-day"),
+    ("x-ratelimit-remaining-tokens-minute", "x-ratelimit-reset-tokens-minute"),
+)
+_DURATION_PART_RE = re.compile(r"(\d+(?:\.\d+)?)(ms|h|m|s)")
+# Gemini puts the wait in the error body: "retryDelay": "37s".
+_RETRY_DELAY_RE = re.compile(r'"retryDelay"\s*:\s*"(\d+(?:\.\d+)?)s"')
+# Without a reset hint, assume the window clears within a minute.
+DEFAULT_RESET_S = 60.0
+
+
+def parse_reset(value: Optional[str], *, now: Optional[float] = None) -> Optional[float]:
+    """Seconds until a rate-limit window resets, from any header format.
+
+    Accepts plain seconds ("26.28"), Go-style durations ("2m59.56s",
+    "120ms", "1h2m") and Unix timestamps in seconds or milliseconds.
+    Returns None when the value can't be understood.
+    """
+    if not value:
+        return None
+    value = value.strip()
+    try:
+        num = float(value)
+    except ValueError:
+        parts = _DURATION_PART_RE.findall(value)
+        if not parts or "".join(n + u for n, u in parts) != value.replace(" ", ""):
+            return None
+        scale = {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0}
+        return sum(float(n) * scale[u] for n, u in parts)
+    if num > 1e12:  # epoch milliseconds
+        num /= 1000.0
+    if num > 1e9:   # epoch seconds
+        current = time.time() if now is None else now
+        return max(0.0, num - current)
+    return max(0.0, num)
+
+
+def _int_header(headers: httpx.Headers, name: str) -> Optional[int]:
+    val = headers.get(name)
+    if val is None:
+        return None
+    try:
+        return int(float(val))
+    except ValueError:
+        return None
+
+
+@dataclass
+class RateLimitInfo:
+    """Remaining quota as reported by the provider on a response."""
+    remaining_requests: Optional[int] = None
+    reset_requests_s: Optional[float] = None
+    remaining_tokens: Optional[int] = None
+    reset_tokens_s: Optional[float] = None
+
+    def exhausted_for(self) -> Optional[float]:
+        """Seconds to stop sending traffic, or None while quota remains.
+
+        Only an explicit zero counts as exhausted — low-but-positive values
+        are left to the normal flow so we never starve a working provider.
+        """
+        waits = []
+        if self.remaining_requests is not None and self.remaining_requests <= 0:
+            waits.append(self.reset_requests_s or DEFAULT_RESET_S)
+        if self.remaining_tokens is not None and self.remaining_tokens <= 0:
+            waits.append(self.reset_tokens_s or DEFAULT_RESET_S)
+        return max(waits) if waits else None
+
+
+def _tightest(headers: httpx.Headers, pairs) -> tuple[Optional[int], Optional[float]]:
+    """Pick the bucket with the fewest remaining units across header pairs."""
+    best: tuple[Optional[int], Optional[float]] = (None, None)
+    for rem_name, reset_name in pairs:
+        remaining = _int_header(headers, rem_name)
+        if remaining is None:
+            continue
+        if best[0] is None or remaining < best[0]:
+            best = (remaining, parse_reset(headers.get(reset_name)))
+    return best
+
+
+def parse_rate_limit_headers(headers: httpx.Headers) -> Optional[RateLimitInfo]:
+    """Read ``x-ratelimit-*`` headers into a RateLimitInfo (None if absent)."""
+    rem_req, reset_req = _tightest(headers, _REQUEST_HEADER_PAIRS)
+    rem_tok, reset_tok = _tightest(headers, _TOKEN_HEADER_PAIRS)
+    if rem_req is None and rem_tok is None:
+        return None
+    return RateLimitInfo(
+        remaining_requests=rem_req, reset_requests_s=reset_req,
+        remaining_tokens=rem_tok, reset_tokens_s=reset_tok,
+    )
+
+
+def retry_after_from_response(headers: httpx.Headers, body: str) -> Optional[float]:
+    """Best wait hint for a 429: Retry-After, then x-ratelimit reset headers,
+    then Gemini's ``retryDelay`` in the body."""
+    retry_after = parse_retry_after(headers)
+    if retry_after:
+        return retry_after
+    info = parse_rate_limit_headers(headers)
+    if info is not None:
+        wait = info.exhausted_for()
+        if wait:
+            return wait
+    m = _RETRY_DELAY_RE.search(body or "")
+    if m:
+        return float(m.group(1))
+    return None
+
+
 @dataclass
 class ProviderResponse:
     content: str
@@ -278,6 +403,8 @@ class ProviderResponse:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     raw: dict = field(default_factory=dict)
+    # Quota left after this call, when the provider reports it in headers.
+    rate_limit: Optional[RateLimitInfo] = None
 
     @property
     def total_tokens(self) -> int:
@@ -293,6 +420,8 @@ class StreamChunk:
     finish_reason: Optional[str] = None
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    # Set on the first chunk only, from the HTTP response headers.
+    rate_limit: Optional[RateLimitInfo] = None
 
 
 @dataclass
@@ -457,7 +586,6 @@ class BaseProvider:
         """Translate an httpx Response into a typed ProviderError."""
         if resp.status_code < 400:
             return
-        retry_after = parse_retry_after(resp.headers)
         # Try to extract a useful message from the body. Some providers
         # return HTML or malformed JSON on errors; fall back to the raw
         # text in that case.
@@ -477,6 +605,9 @@ class BaseProvider:
         # Classify on the full raw text too: the extracted message can drop
         # the machine-readable code (e.g. {"code": "model_not_found"}).
         kind = classify_status(resp.status_code, f"{body} {resp.text[:2000]}")
+        retry_after = parse_retry_after(resp.headers)
+        if retry_after is None and kind in (ErrorKind.RATE_LIMITED, ErrorKind.QUOTA_EXHAUSTED):
+            retry_after = retry_after_from_response(resp.headers, resp.text[:4000])
         raise ProviderError(
             self.name,
             _sanitize_error_message(body),

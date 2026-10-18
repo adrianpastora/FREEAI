@@ -10,7 +10,16 @@ from typing import AsyncIterator, Optional
 import httpx
 
 from ..schemas import ChatMessage
-from .base import BaseProvider, ErrorKind, ProviderError, ProviderResponse, StreamChunk, estimate_tokens
+from .base import (
+    BaseProvider,
+    ErrorKind,
+    ProviderError,
+    ProviderResponse,
+    StreamChunk,
+    classify_status,
+    estimate_tokens,
+    parse_rate_limit_headers,
+)
 
 # Tolerate a few malformed SSE frames before bailing out — providers occasionally
 # emit truncated lines under network pressure. Reset the counter on every
@@ -134,6 +143,7 @@ class OpenAICompatibleProvider(BaseProvider):
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             raw=data,
+            rate_limit=parse_rate_limit_headers(resp.headers),
         )
 
     async def stream(
@@ -167,6 +177,8 @@ class OpenAICompatibleProvider(BaseProvider):
                     self._raise_for_status(fake)
                 parse_errors = 0
                 saw_content = False
+                # Handed to the orchestrator on the first chunk only.
+                rate_limit = parse_rate_limit_headers(resp.headers)
                 async for line in resp.aiter_lines():
                     if not line or not line.startswith("data:"):
                         continue
@@ -184,6 +196,17 @@ class OpenAICompatibleProvider(BaseProvider):
                                 kind=ErrorKind.PARSING,
                             )
                         continue
+                    # OpenRouter reports upstream throttling / failures mid-stream
+                    # as an error object after an initial HTTP 200.
+                    err = chunk.get("error") if isinstance(chunk, dict) else None
+                    if err and not saw_content:
+                        msg = err.get("message", "") if isinstance(err, dict) else str(err)
+                        code = err.get("code") if isinstance(err, dict) else None
+                        status = code if isinstance(code, int) else 502
+                        raise ProviderError(
+                            self.name, f"mid-stream error: {msg}"[:500],
+                            kind=classify_status(status, msg), status=status,
+                        )
                     try:
                         choice = chunk["choices"][0]
                     except (KeyError, IndexError):
@@ -211,7 +234,9 @@ class OpenAICompatibleProvider(BaseProvider):
                             finish_reason=finish,
                             prompt_tokens=usage.get("prompt_tokens", 0),
                             completion_tokens=usage.get("completion_tokens", 0),
+                            rate_limit=rate_limit,
                         )
+                        rate_limit = None
         except httpx.TimeoutException as e:
             raise ProviderError(self.name, f"timeout: {e}", kind=ErrorKind.NETWORK) from e
         except httpx.HTTPError as e:

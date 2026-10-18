@@ -37,6 +37,34 @@ free-tier note from the catalog too (`GET /api/me/providers/catalog`).
    Prometheus counter `freeai_provider_model_unavailable_total{provider,model}`.
    A non-zero rate means the catalog needs an update.
 
+## How rate limits and quotas are handled
+
+FreeAI keeps every request going by moving to the next model or provider
+before a limit turns into a failed request:
+
+| Layer | Where | What happens |
+|---|---|---|
+| Local RPM / RPD | `freeai_try_reserve` (Postgres, atomic) | Provider at its `rpm_limit` / `rpd_limit` is skipped without a call. |
+| Daily tokens | `tpd_limit` vs `tokens_today` | Provider over its daily token budget is skipped without a call. |
+| Response headers | `x-ratelimit-remaining-*` on successful calls | `remaining = 0` cools the model (or the whole key) until the reported reset, so the *next* request goes elsewhere instead of earning a 429. |
+| Upstream 429 / quota | error classification | Wait time comes from `Retry-After`, the `x-ratelimit-reset-*` headers or Gemini's `retryDelay`. |
+
+Every catalog provider declares a `quota_scope`:
+
+- `"model"` (Groq, Gemini, Cerebras, NVIDIA). Each model has its own bucket.
+  A 429 or daily quota on one model cools **that model** and the provider's
+  next model is tried. The provider is only parked once all its models are
+  cooling.
+- `"key"` (OpenRouter, HuggingFace, Mistral, Cohere). One bucket per account.
+  A 429 parks the whole provider and the next provider is tried. A 402 is
+  always treated as per key.
+
+Cool-downs are kept in memory per `(user, provider, model)`. Watch
+`freeai_provider_model_cooldowns_total{provider,reason}`, where `reason` is
+one of `unavailable`, `rate_limited`, `quota` or `headers`. When you add a
+provider, set `quota_scope` from its rate-limit docs; if you are unsure,
+leave the default `"key"`, which is the conservative choice.
+
 ## Update procedure
 
 1. Check the catalog against the live model lists:
@@ -77,7 +105,8 @@ than 60 days old.
    implement `complete()` / `stream()` and raise errors through
    `_raise_for_status`, so they are classified the same way as every other
    provider.
-2. Register it in `providers/__init__.py`, add a `CatalogProvider` entry,
+2. Register it in `providers/__init__.py`, add a `CatalogProvider` entry
+   (with the right `quota_scope`),
    and add a fetcher in `scripts/check_catalog.py`.
 3. Add a `PROVIDER_GUIDES` entry and a slot in `_pwProviderOrder` in
    `frontend/app.js`.

@@ -13,6 +13,30 @@ pre-1.0 versions — follow the Unreleased section if you track `main`.
 <!-- Add entries here as they land. Categories used in this changelog:
      Added, Changed, Fixed, Security, Removed, Deprecated. -->
 
+### Added
+- Per-model rate-limit handling. Catalog providers declare `quota_scope`:
+  `model` for Groq, Gemini, Cerebras and NVIDIA, `key` for the rest. On
+  per-model providers, a 429 or daily quota cools only that model and the
+  provider's next model is tried, instead of parking the whole provider.
+- Proactive skipping from `x-ratelimit-remaining-*` response headers (Groq,
+  Cerebras and other OpenAI-compatible providers). A response that reports
+  0 remaining cools the model or key until the reported reset, so the next
+  request goes elsewhere without first earning a 429.
+- 429 wait times now come from `Retry-After`, then the `x-ratelimit-reset-*`
+  headers (durations, seconds or epoch timestamps), then Gemini's
+  `retryDelay`.
+- Prometheus counter
+  `freeai_provider_model_cooldowns_total{provider,reason}`.
+
+### Changed
+- `tpd_limit` is now a hard skip: a provider past its daily token budget is
+  no longer called. Before, it was only ranked lower.
+
+### Fixed
+- OpenRouter error chunks sent mid-stream after an HTTP 200 are now
+  classified (for example a 429 becomes `rate_limited`) and fall back,
+  instead of ending the stream with no content.
+
 ## [0.8.0] — 2026-10-08
 
 Reliable fallback and a self-maintaining provider catalog. Between May and
