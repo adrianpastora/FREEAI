@@ -47,7 +47,7 @@ log = get_logger("freeai")
 app = FastAPI(
     title="FreeAI Orchestrator",
     description="Unified API that orchestrates multiple free AI provider tiers.",
-    version="0.8.0",
+    version="0.9.0",
     lifespan=lifespan,
 )
 
@@ -185,6 +185,23 @@ app.include_router(strategies.tags_router)
 app.include_router(analytics.router)
 app.include_router(clients.router)
 app.include_router(health.router)
+
+
+@app.api_route(
+    "/v1/{path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+    include_in_schema=False,
+)
+async def v1_not_implemented(path: str):
+    """Unknown OpenAI-style route. Without this, the static mount below
+    answers POSTs with a bare 405 that tells clients nothing."""
+    return JSONResponse(status_code=404, content={"error": {
+        "message": f"/v1/{path} is not implemented by FreeAI. Supported: "
+                   "/v1/models, /v1/chat/completions, /v1/responses, "
+                   "/v1/embeddings, /v1/audio/transcriptions",
+        "type": "invalid_request_error",
+        "code": "unknown_url",
+    }})
 
 
 # ──────────────────────────── static frontend ────────────────────────────

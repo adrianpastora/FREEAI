@@ -13,6 +13,23 @@ pre-1.0 versions — follow the Unreleased section if you track `main`.
 <!-- Add entries here as they land. Categories used in this changelog:
      Added, Changed, Fixed, Security, Removed, Deprecated. -->
 
+## [0.9.0] — 2026-10-18
+
+Smarter limit handling and OpenAI Responses API support. Requests now move
+to another model of the same provider before they hit a per-model limit,
+and clients built on `client.responses.create(...)` work out of the box.
+
+### Upgrade notes
+- No migration and no configuration change is needed.
+- Point OpenAI-compatible clients at `https://<host>/v1` (with `/v1`).
+  Requests to `/models` without `/v1` are not API routes.
+- `tpd_limit` is now enforced as a hard limit. If you set a low value per
+  provider, that provider will stop receiving traffic once the budget is
+  spent, instead of only being ranked lower.
+- `/v1/responses` keeps `previous_response_id` history in memory. With
+  several replicas, or after a restart, an unknown id returns 400 and the
+  client should resend the full conversation.
+
 ### Added
 - Per-model rate-limit handling. Catalog providers declare `quota_scope`:
   `model` for Groq, Gemini, Cerebras and NVIDIA, `key` for the rest. On
@@ -27,6 +44,15 @@ pre-1.0 versions — follow the Unreleased section if you track `main`.
   `retryDelay`.
 - Prometheus counter
   `freeai_provider_model_cooldowns_total{provider,reason}`.
+- OpenAI **Responses API**: `POST /v1/responses`, including streaming events,
+  `instructions`, image input and `previous_response_id` (in-memory per user,
+  6 h). It is translated onto the chat orchestrator, so it gets the same
+  fallback and limit handling. Tools, file inputs and background mode
+  return a clear 400. Verified against the official `openai` SDK.
+- `GET /v1/models/{id}`.
+- Unknown `/v1/*` routes return a JSON 404 (`code: unknown_url`) listing the
+  supported routes, instead of a bare `405 Method Not Allowed` from the
+  static-file mount.
 
 ### Changed
 - `tpd_limit` is now a hard skip: a provider past its daily token budget is
@@ -440,7 +466,8 @@ infrastructure.
 - Drop the legacy "Sprint N shipped" changelog section from README —
   replaced with a themed Status section.
 
-[Unreleased]: https://github.com/adrianpastora/FREEAI/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/adrianpastora/FREEAI/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/adrianpastora/FREEAI/releases/tag/v0.9.0
 [0.8.0]: https://github.com/adrianpastora/FREEAI/releases/tag/v0.8.0
 [0.7.3]: https://github.com/adrianpastora/FREEAI/releases/tag/v0.7.3
 [0.7.2]: https://github.com/adrianpastora/FREEAI/releases/tag/v0.7.2

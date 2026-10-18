@@ -343,19 +343,67 @@ print(resp.choices[0].message.content)
 
 **Auth:** client key.
 
-OpenAI-compatible model catalog. Lists the virtual models above and the
-per-provider real models discovered from `KNOWN_MODELS`. Useful for OpenAI
-SDKs that probe `/models` at startup.
+OpenAI-compatible model catalog. Lists the virtual models above
+(`freeai-auto`, `freeai-fast`, …). Useful for OpenAI SDKs and chat apps that
+probe `/models` at startup. Per-provider real models are listed by
+`GET /api/providers/{name}/models`.
 
 ```json
 {
   "object": "list",
   "data": [
-    {"id": "freeai-auto", "object": "model", "owned_by": "freeai"},
-    {"id": "gpt-oss-120b", "object": "model", "owned_by": "cerebras"},
+    {"id": "freeai-auto", "object": "model", "created": 0, "owned_by": "freeai", "description": "..."},
     "..."
   ]
 }
+```
+
+### `GET /v1/models/{id}`
+
+**Auth:** none. Returns one virtual model in the same shape, or a 404 for
+unknown ids.
+
+> **Base URL.** Point clients at `https://<host>/v1`, not the bare host. A
+> request to `/models` (without `/v1`) is not an API route. Unknown `/v1/*`
+> routes return a 404 with `"code": "unknown_url"` and the list of supported
+> routes.
+
+## Responses API
+
+### `POST /v1/responses`
+
+**Auth:** client key.
+
+OpenAI's newer Responses API, for clients and SDKs that use
+`client.responses.create(...)` instead of chat completions. Requests are
+translated onto the same orchestrator, so routing, fallback, per-model
+cool-downs and usage analytics behave exactly like `/v1/chat/completions`.
+Compatibility is tested against the official `openai` Python SDK.
+
+| Request field | Support |
+|---|---|
+| `model` | virtual model (`freeai-auto`, …) or a real model id (passed through) |
+| `input` | string, or a list of `message` items with `input_text` / `output_text` / `input_image` (data URI) parts; `developer` maps to `system`; `reasoning` items are dropped |
+| `instructions` | sent as the system message |
+| `max_output_tokens`, `temperature` | mapped (`max_output_tokens` is clamped to 32 000) |
+| `stream` | full event sequence: `response.created` → `response.output_text.delta` … → `response.completed` (`response.failed` on error) |
+| `previous_response_id` | supported. Turns are kept in memory per user for 6 h; an unknown or expired id returns 400, and the client should then send the full conversation |
+| `store` | `false` skips keeping the turn for `previous_response_id` |
+| `strategy`, `preferred_provider` | FreeAI extensions, same as chat |
+| `tools`, function-call items, `input_file`, `background` | **not supported** → 400 with a clear message |
+
+The response is a standard `response` object with one assistant `message`
+output item, `output_text`, and `usage` (`input_tokens` / `output_tokens`).
+FreeAI adds `x_freeai` with `provider`, `real_model`, `fallback_chain` and
+`latency_ms`.
+
+```python
+from openai import OpenAI
+client = OpenAI(base_url="https://<host>/v1", api_key="fai_…")
+r = client.responses.create(model="freeai-auto", input="Hola")
+print(r.output_text)
+r2 = client.responses.create(model="freeai-auto", input="¿Y en inglés?",
+                             previous_response_id=r.id)
 ```
 
 ## Audio

@@ -6,3 +6,5 @@ pytest-asyncio==0.24.0
 pytest-cov==5.0.0
 respx==0.21.1
 testcontainers[postgres]==4.8.2
+# Official SDK used as a compatibility oracle for /v1/responses and /v1/models
+openai>=2.0
