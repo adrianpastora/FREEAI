@@ -10,7 +10,9 @@ import base64
 import json
 import re
 import time
-from typing import AsyncIterator, Optional
+import uuid
+from collections import OrderedDict
+from typing import Any, AsyncIterator, Optional
 
 import httpx
 
@@ -54,6 +56,27 @@ _TRANSCRIPTION_PROMPT = (
     "no commentary."
 )
 _DEFAULT_TRANSCRIPTION_MODEL = "gemini-3.5-flash"
+
+# Gemini 3 attaches an opaque thoughtSignature to functionCall parts and
+# rejects a follow-up turn (400) if it isn't sent back. OpenAI-format
+# clients never round-trip it, so we remember it per tool-call id. When it's
+# unknown (restart, or the call came from another provider) Google's
+# documented sentinel tells the API to skip validation for that part.
+_SKIP_SIGNATURE = "skip_thought_signature_validator"
+_SIGNATURE_CACHE_MAX = 5_000
+_signatures: "OrderedDict[str, str]" = OrderedDict()
+
+
+def _remember_signature(call_id: str, signature: Optional[str]) -> None:
+    if not signature:
+        return
+    _signatures[call_id] = signature
+    _signatures.move_to_end(call_id)
+    while len(_signatures) > _SIGNATURE_CACHE_MAX:
+        _signatures.popitem(last=False)
+
+
+_TOOL_CHOICE_MODES = {"auto": "AUTO", "required": "ANY", "none": "NONE"}
 _TRANSCRIPTION_TIMEOUT = 120.0
 
 
@@ -66,6 +89,7 @@ class GeminiProvider(BaseProvider):
     supports_vision = True
     supports_embeddings = True
     supports_transcription = True
+    supports_tools = True
     request_timeout = 60.0
 
     def _content_to_parts(self, content) -> list[dict]:
@@ -116,15 +140,85 @@ class GeminiProvider(BaseProvider):
 
     def _to_gemini_contents(self, messages: list[ChatMessage]) -> tuple[list[dict], Optional[str]]:
         # Gemini uses "user"/"model" roles and a separate systemInstruction.
+        # OpenAI tool turns map to functionCall (model) / functionResponse
+        # (user) parts; consecutive tool results share one user turn, as
+        # Gemini expects one response part per call of the preceding turn.
         system_text: Optional[str] = None
         contents: list[dict] = []
+        call_names: dict[str, str] = {}
         for m in messages:
             if m.role == "system":
                 system_text = (system_text + "\n" if system_text else "") + m.text_content
                 continue
+            if m.role == "assistant" and m.tool_calls:
+                parts: list[dict] = []
+                if m.text_content:
+                    parts.append({"text": m.text_content})
+                for i, tc in enumerate(m.tool_calls):
+                    fn = tc.get("function") or {}
+                    name = fn.get("name", "")
+                    call_names[tc.get("id", "")] = name
+                    try:
+                        args = json.loads(fn.get("arguments") or "{}")
+                    except (TypeError, ValueError):
+                        args = {}
+                    part: dict = {"functionCall": {"name": name, "args": args}}
+                    signature = _signatures.get(tc.get("id", ""))
+                    if signature:
+                        part["thoughtSignature"] = signature
+                    elif i == 0:
+                        part["thoughtSignature"] = _SKIP_SIGNATURE
+                    parts.append(part)
+                contents.append({"role": "model", "parts": parts})
+                continue
+            if m.role == "tool":
+                name = call_names.get(m.tool_call_id or "", m.name or "tool")
+                response_part = {"functionResponse": {
+                    "name": name, "response": {"content": m.text_content},
+                }}
+                last = contents[-1] if contents else None
+                if last and last["role"] == "user" and all(
+                    "functionResponse" in p for p in last["parts"]
+                ):
+                    last["parts"].append(response_part)
+                else:
+                    contents.append({"role": "user", "parts": [response_part]})
+                continue
             role = "model" if m.role == "assistant" else "user"
             contents.append({"role": role, "parts": self._content_to_parts(m.content)})
         return contents, system_text
+
+    @staticmethod
+    def _tools_payload(tools: Optional[list[dict]], tool_choice: Any) -> dict:
+        """OpenAI tools / tool_choice → Gemini tools + toolConfig."""
+        if not tools:
+            return {}
+        declarations = []
+        for tool in tools:
+            fn = tool.get("function") if isinstance(tool, dict) else None
+            if not fn or not fn.get("name"):
+                continue
+            decl: dict = {"name": fn["name"]}
+            if fn.get("description"):
+                decl["description"] = fn["description"]
+            if fn.get("parameters"):
+                # Full JSON Schema, so OpenAI-style schemas (additionalProperties,
+                # $defs, …) work without lossy conversion to Gemini's subset.
+                decl["parametersJsonSchema"] = fn["parameters"]
+            declarations.append(decl)
+        if not declarations:
+            return {}
+        out: dict = {"tools": [{"functionDeclarations": declarations}]}
+        config: dict = {}
+        if isinstance(tool_choice, str) and tool_choice in _TOOL_CHOICE_MODES:
+            config = {"mode": _TOOL_CHOICE_MODES[tool_choice]}
+        elif isinstance(tool_choice, dict):
+            name = (tool_choice.get("function") or {}).get("name")
+            if name:
+                config = {"mode": "ANY", "allowedFunctionNames": [name]}
+        if config:
+            out["toolConfig"] = {"functionCallingConfig": config}
+        return out
 
     def _build_payload(
         self,
@@ -154,11 +248,15 @@ class GeminiProvider(BaseProvider):
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
         client: httpx.AsyncClient,
+        tools: Optional[list[dict]] = None,
+        tool_choice: Any = None,
+        parallel_tool_calls: Optional[bool] = None,
     ) -> ProviderResponse:
         if not self.api_key:
             raise ProviderError(self.name, "missing API key", kind=ErrorKind.AUTH)
         chosen = self._resolve_model(model)
         payload = self._build_payload(messages, temperature, max_tokens)
+        payload.update(self._tools_payload(tools, tool_choice))
         url = f"{self.BASE_URL}/{chosen}:generateContent?key={self.api_key}"
         try:
             resp = await client.post(url, json=payload, timeout=_phase_timeout(self.request_timeout))
@@ -183,12 +281,27 @@ class GeminiProvider(BaseProvider):
             )
         try:
             parts = candidate["content"]["parts"]
-            text = "".join(p.get("text", "") for p in parts)
+            text = "".join(p.get("text", "") for p in parts if not p.get("thought"))
         except (KeyError, IndexError, TypeError) as e:
             raise ProviderError(
                 self.name, f"unexpected response shape: {e}", kind=ErrorKind.PARSING
             ) from e
-        if not text or not text.strip():
+        tool_calls = []
+        for p in parts:
+            call = p.get("functionCall")
+            if not call:
+                continue
+            call_id = f"call_{uuid.uuid4().hex[:24]}"
+            _remember_signature(call_id, p.get("thoughtSignature"))
+            tool_calls.append({
+                "id": call_id,
+                "type": "function",
+                "function": {
+                    "name": call.get("name", ""),
+                    "arguments": json.dumps(call.get("args") or {}),
+                },
+            })
+        if (not text or not text.strip()) and not tool_calls:
             raise ProviderError(
                 self.name,
                 f"empty response (finishReason={finish_reason or 'unspecified'})",
@@ -211,6 +324,7 @@ class GeminiProvider(BaseProvider):
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             raw=data,
+            tool_calls=tool_calls or None,
         )
 
     async def stream(

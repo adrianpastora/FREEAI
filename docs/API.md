@@ -273,10 +273,20 @@ unchanged. A typical multi-turn flow looks like this:
   `tool_calls[].id`. Required by the OpenAI spec and preserved here.
 - `tools`, `tool_choice` and `parallel_tool_calls` are forwarded to the
   OpenAI-compatible providers (Groq, Mistral, OpenRouter, NVIDIA, HuggingFace,
-  Cerebras). When `tools` is set, providers whose adapter has no tool support
-  (Gemini, Cohere) are **skipped**, so the definitions are never silently
-  dropped. If none of your providers support tools, the request fails with
-  `client_error`. `tool_choice: "none"` disables this filter.
+  Cerebras) and translated for **Gemini**:
+  - tools become `functionDeclarations` with the full JSON Schema
+    (`parametersJsonSchema`);
+  - `tool_choice` becomes `toolConfig`;
+  - Gemini 3's `thoughtSignature` is remembered per call id and re-sent, or
+    replaced by Google's skip sentinel when it is unknown.
+
+  Cohere has no tool support in FreeAI yet. When `tools` is set it is
+  **skipped**, so the definitions are never silently dropped.
+- If no active provider can serve tools, the error says why: either which
+  configured providers lack tool support, plus the list of providers that
+  would work (`client_error`), or which tool-capable providers are
+  temporarily quarantined (`rate_limited`). `tool_choice: "none"` disables
+  this filter.
 - When the model calls a tool, the response has `finish_reason: "tool_calls"`,
   `message.content: null` and `message.tool_calls` in the standard shape
   (`arguments` is always a JSON string).

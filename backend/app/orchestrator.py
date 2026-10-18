@@ -440,7 +440,9 @@ class Orchestrator:
 
     @staticmethod
     def _filter_capabilities(
-        req: ChatCompletionRequest, candidates: list[_Candidate],
+        req: ChatCompletionRequest,
+        candidates: list[_Candidate],
+        unhealthy: Optional[list[str]] = None,
     ) -> list[_Candidate]:
         """Drop candidates that can't serve this request (images, tools)."""
         if any(m.has_images for m in req.messages):
@@ -454,13 +456,27 @@ class Orchestrator:
                     kind=ErrorKind.CLIENT_ERROR,
                 )
         if req.wants_tools:
+            skipped = [c.name for c in candidates if not getattr(c.provider, "supports_tools", False)]
             candidates = [c for c in candidates if getattr(c.provider, "supports_tools", False)]
             if not candidates:
+                parked = [
+                    n for n in (unhealthy or [])
+                    if getattr(PROVIDER_REGISTRY.get(n), "supports_tools", False)
+                ]
+                if parked:
+                    raise ProviderError(
+                        "orchestrator",
+                        "this request uses tools; the tool-capable providers you configured "
+                        f"are temporarily quarantined (bad key, spent quota or failures): "
+                        f"{', '.join(parked)} — check the providers panel",
+                        kind=ErrorKind.RATE_LIMITED,
+                    )
+                capable = sorted(n for n, cls in PROVIDER_REGISTRY.items() if cls.supports_tools)
                 raise ProviderError(
                     "orchestrator",
-                    "this request uses tools but no tool-capable provider is available. "
-                    "Configure an API key for Groq, Mistral, OpenRouter, NVIDIA, "
-                    "HuggingFace or Cerebras.",
+                    "this request uses tools but none of your active providers support them"
+                    + (f" ({', '.join(skipped)} don't)" if skipped else "")
+                    + f". Add an API key for one of: {', '.join(capable)}.",
                     kind=ErrorKind.CLIENT_ERROR,
                 )
         return candidates
@@ -819,7 +835,7 @@ class Orchestrator:
             raise self._no_candidates_error(unhealthy)
 
         # Drop providers that can't serve images / tools for this request.
-        candidates = self._filter_capabilities(req, candidates)
+        candidates = self._filter_capabilities(req, candidates, unhealthy)
 
         fallback_chain: list[str] = []
         skipped: list[str] = []
@@ -975,7 +991,7 @@ class Orchestrator:
             raise self._no_candidates_error(unhealthy)
 
         # Drop providers that can't serve images / tools for this request.
-        candidates = self._filter_capabilities(req, candidates)
+        candidates = self._filter_capabilities(req, candidates, unhealthy)
 
         use_fallback = req.fallback and app_cfg.enable_fallback
         attempts = candidates if use_fallback else candidates[:1]

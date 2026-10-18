@@ -409,25 +409,25 @@ async def test_responses_stream_with_tools_emits_function_call_events(client):
 
 @pytest.mark.asyncio
 async def test_tools_skip_providers_without_tool_support(client, seeded_session):
-    """Gemini's adapter has no tool support, so a tool request must route
+    """Cohere's adapter has no tool support, so a tool request must route
     around it instead of silently dropping the tools."""
     from app.repositories.user_provider_repo import UserProviderRepository
     from app.repositories.user_repo import UserRepository
 
     user = await UserRepository(seeded_session).find_by_username("testadmin")
-    await UserProviderRepository(seeded_session).upsert(user.id, "gemini", api_key="g", enabled=True)
+    await UserProviderRepository(seeded_session).upsert(user.id, "cohere", api_key="c", enabled=True)
     await seeded_session.commit()
     called = []
 
-    async def gemini_complete(self, *a, **k):
-        called.append("gemini")
-        raise AssertionError("gemini must not receive tool requests")
+    async def cohere_complete(self, *a, **k):
+        called.append("cohere")
+        raise AssertionError("cohere must not receive tool requests")
 
     captured: dict = {}
-    with patch.object(PROVIDER_REGISTRY["gemini"], "complete", gemini_complete), \
+    with patch.object(PROVIDER_REGISTRY["cohere"], "complete", cohere_complete), \
          patch.object(PROVIDER_REGISTRY["groq"], "complete", _tool_call_complete(captured)):
         r = await client.post("/v1/responses", json={
-            "input": "weather?", "tools": [WEATHER_TOOL], "preferred_provider": "gemini",
+            "input": "weather?", "tools": [WEATHER_TOOL], "preferred_provider": "cohere",
         })
     assert r.status_code == 200, r.text
     assert called == []
@@ -466,3 +466,38 @@ async def test_official_sdk_function_calling(client):
             if event.type == "response.completed":
                 final = event.response
         assert final.output[0].type == "function_call"
+
+
+
+@pytest.mark.asyncio
+async def test_no_tool_provider_error_names_the_problem(client, seeded_session):
+    """Only a tool-less provider configured: the error says which one and
+    lists the providers that would work."""
+    from app.repositories.user_provider_repo import UserProviderRepository
+    from app.repositories.user_repo import UserRepository
+
+    user = await UserRepository(seeded_session).find_by_username("testadmin")
+    repo = UserProviderRepository(seeded_session)
+    await repo.upsert(user.id, "groq", enabled=False)
+    await repo.upsert(user.id, "cohere", api_key="c", enabled=True)
+    await seeded_session.commit()
+    r = await client.post("/v1/responses", json={"input": "x", "tools": [WEATHER_TOOL]})
+    assert r.status_code == 400
+    msg = r.json()["error"]["message"]
+    assert "cohere don't" in msg and "gemini" in msg and "groq" in msg
+
+
+@pytest.mark.asyncio
+async def test_quarantined_tool_provider_is_reported(client, seeded_session):
+    from app.repositories import RateRepository
+    from app.repositories.user_repo import UserRepository
+
+    user = await UserRepository(seeded_session).find_by_username("testadmin")
+    rate = RateRepository(seeded_session)
+    token = await rate.try_reserve(user.id, "groq", None, None)
+    await rate.commit(token, 10, ok=False, error="bad key", error_kind="auth",
+                      quarantine_seconds=3600)
+    await seeded_session.commit()
+    r = await client.post("/v1/responses", json={"input": "x", "tools": [WEATHER_TOOL]})
+    body = r.json()["error"]["message"]
+    assert "quarantined" in body and "groq" in body

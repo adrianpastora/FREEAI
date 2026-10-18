@@ -13,6 +13,23 @@ pre-1.0 versions — follow the Unreleased section if you track `main`.
 <!-- Add entries here as they land. Categories used in this changelog:
      Added, Changed, Fixed, Security, Removed, Deprecated. -->
 
+## [0.10.1] — 2026-10-18
+
+### Fixed
+- Tool requests failed with "no tool-capable provider" for users whose
+  active providers were only Gemini (and/or Cohere). The Gemini adapter now
+  supports function calling:
+  - OpenAI tools → `functionDeclarations` with the full JSON Schema
+    (`parametersJsonSchema`), and `tool_choice` → `toolConfig`;
+  - `functionCall` parts → `tool_calls`; tool results → grouped
+    `functionResponse` parts.
+  - Gemini 3 `thoughtSignature` values are cached per call id and re-sent,
+    falling back to Google's `skip_thought_signature_validator` sentinel, so
+    multi-turn tool loops don't fail with a 400.
+- The "no tool-capable provider" error now explains itself. It says which
+  configured providers lack tool support and which providers would work,
+  or which tool-capable providers are temporarily quarantined.
+
 ## [0.10.0] — 2026-10-18
 
 Function calling end to end, so agent-style clients (anything that sends
@@ -504,7 +521,8 @@ infrastructure.
 - Drop the legacy "Sprint N shipped" changelog section from README —
   replaced with a themed Status section.
 
-[Unreleased]: https://github.com/adrianpastora/FREEAI/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/adrianpastora/FREEAI/compare/v0.10.1...HEAD
+[0.10.1]: https://github.com/adrianpastora/FREEAI/releases/tag/v0.10.1
 [0.10.0]: https://github.com/adrianpastora/FREEAI/releases/tag/v0.10.0
 [0.9.0]: https://github.com/adrianpastora/FREEAI/releases/tag/v0.9.0
 [0.8.0]: https://github.com/adrianpastora/FREEAI/releases/tag/v0.8.0
