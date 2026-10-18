@@ -61,8 +61,7 @@ def test_image_part_maps_to_image_url():
 
 
 @pytest.mark.parametrize("body,needle", [
-    ({"input": "x", "tools": [{"type": "function", "name": "f"}]}, "tools"),
-    ({"input": [{"type": "function_call_output", "call_id": "c", "output": "1"}]}, "tool"),
+    ({"input": [{"type": "computer_call", "call_id": "c"}]}, "computer_call"),
     ({"input": [{"role": "user", "content": [{"type": "input_file", "file_id": "f"}]}]}, "input_file"),
     ({"input": []}, "input"),
     ({"input": "x", "background": True}, "background"),
@@ -194,10 +193,12 @@ async def test_unknown_previous_response_id_is_400(client):
 
 
 @pytest.mark.asyncio
-async def test_tools_rejected_with_400(client):
-    r = await client.post("/v1/responses", json={"input": "x", "tools": [{"type": "function"}]})
+async def test_errors_use_openai_shape(client):
+    r = await client.post("/v1/responses", json={"input": "x", "previous_response_id": "resp_nope"})
     assert r.status_code == 400
-    assert "tools" in r.text
+    err = r.json()["error"]  # top-level "error", not FastAPI's "detail"
+    assert err["code"] == "previous_response_not_found"
+    assert err["param"] == "previous_response_id"
 
 
 @pytest.mark.asyncio
@@ -268,3 +269,200 @@ async def test_official_openai_sdk_parses_our_responses(client):
 
         models = await sdk.models.list()
         assert "freeai-auto" in [m.id for m in models.data]
+
+
+# ──────────────── function calling ────────────────
+
+WEATHER_TOOL = {
+    "type": "function", "name": "get_weather", "description": "Weather for a city",
+    "parameters": {"type": "object", "properties": {"city": {"type": "string"}}},
+}
+
+
+def test_function_tools_translate_and_builtins_are_dropped():
+    req, _ = responses_api.to_chat_request({
+        "input": "weather in Madrid?",
+        "tools": [WEATHER_TOOL, {"type": "web_search"}],
+        "tool_choice": {"type": "function", "name": "get_weather"},
+        "parallel_tool_calls": False,
+    })
+    assert req.tools == [{"type": "function", "function": {
+        "name": "get_weather", "description": "Weather for a city",
+        "parameters": WEATHER_TOOL["parameters"],
+    }}]
+    assert req.tool_choice == {"type": "function", "function": {"name": "get_weather"}}
+    assert req.parallel_tool_calls is False
+
+
+def test_only_builtin_tools_means_no_tools():
+    req, _ = responses_api.to_chat_request({"input": "x", "tools": [{"type": "web_search"}]})
+    assert req.tools is None and not req.wants_tools
+
+
+def test_function_call_items_become_assistant_and_tool_messages():
+    req, conv = responses_api.to_chat_request({"input": [
+        {"role": "user", "content": "weather in Madrid and Paris?"},
+        {"type": "function_call", "call_id": "c1", "name": "get_weather", "arguments": '{"city":"Madrid"}'},
+        {"type": "function_call", "call_id": "c2", "name": "get_weather", "arguments": '{"city":"Paris"}'},
+        {"type": "function_call_output", "call_id": "c1", "output": "22C"},
+        {"type": "function_call_output", "call_id": "c2", "output": [{"type": "input_text", "text": "18C"}]},
+    ], "tools": [WEATHER_TOOL]})
+    roles = [m.role for m in req.messages]
+    assert roles == ["user", "assistant", "tool", "tool"]
+    assistant = req.messages[1]
+    assert assistant.content is None
+    assert [tc["id"] for tc in assistant.tool_calls] == ["c1", "c2"]  # merged into one turn
+    assert req.messages[2].tool_call_id == "c1" and req.messages[2].content == "22C"
+    assert req.messages[3].content == "18C"
+
+
+def _tool_call_complete(captured):
+    async def _complete(self, messages, *, model=None, tools=None, tool_choice=None, **kwargs):
+        captured.update(tools=tools, tool_choice=tool_choice, messages=messages)
+        if messages[-1].role == "tool":
+            return ProviderResponse(content="It is 22C in Madrid.", model=model or "m",
+                                    provider="groq", prompt_tokens=5, completion_tokens=5)
+        return ProviderResponse(
+            content="", model=model or "m", provider="groq", prompt_tokens=5, completion_tokens=2,
+            tool_calls=[{"id": "call_abc", "type": "function",
+                         "function": {"name": "get_weather", "arguments": '{"city":"Madrid"}'}}],
+        )
+    return _complete
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_tool_call_round_trip(client):
+    captured: dict = {}
+    chat_tool = {"type": "function", "function": {
+        "name": "get_weather", "parameters": WEATHER_TOOL["parameters"]}}
+    with patch.object(PROVIDER_REGISTRY["groq"], "complete", _tool_call_complete(captured)):
+        r = await client.post("/v1/chat/completions", json={
+            "messages": [{"role": "user", "content": "weather in Madrid?"}],
+            "tools": [chat_tool], "tool_choice": "auto",
+        })
+    assert r.status_code == 200, r.text
+    choice = r.json()["choices"][0]
+    assert captured["tools"] == [chat_tool]          # forwarded upstream
+    assert captured["tool_choice"] == "auto"
+    assert choice["finish_reason"] == "tool_calls"
+    assert choice["message"]["content"] is None
+    assert choice["message"]["tool_calls"][0]["function"]["name"] == "get_weather"
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_stream_with_tools_is_replayed(client):
+    captured: dict = {}
+    with patch.object(PROVIDER_REGISTRY["groq"], "complete", _tool_call_complete(captured)):
+        r = await client.post("/v1/chat/completions", json={
+            "messages": [{"role": "user", "content": "weather?"}],
+            "tools": [{"type": "function", "function": {"name": "get_weather"}}],
+            "stream": True,
+        })
+    lines = [l[6:] for l in r.text.splitlines() if l.startswith("data: ")]
+    assert lines[-1] == "[DONE]"
+    first, final = json.loads(lines[0]), json.loads(lines[1])
+    tc = first["choices"][0]["delta"]["tool_calls"][0]
+    assert tc["index"] == 0 and tc["function"]["name"] == "get_weather"
+    assert final["choices"][0]["finish_reason"] == "tool_calls"
+
+
+@pytest.mark.asyncio
+async def test_responses_function_call_loop(client):
+    """Full agent loop: model asks for a tool, client answers with
+    function_call_output via previous_response_id, model replies."""
+    captured: dict = {}
+    with patch.object(PROVIDER_REGISTRY["groq"], "complete", _tool_call_complete(captured)):
+        first = (await client.post("/v1/responses", json={
+            "input": "weather in Madrid?", "tools": [WEATHER_TOOL],
+        })).json()
+        call = first["output"][0]
+        assert call["type"] == "function_call"
+        assert call["name"] == "get_weather" and call["call_id"] == "call_abc"
+        assert json.loads(call["arguments"]) == {"city": "Madrid"}
+        assert first["tools"][0]["name"] == "get_weather"
+
+        second = (await client.post("/v1/responses", json={
+            "previous_response_id": first["id"], "tools": [WEATHER_TOOL],
+            "input": [{"type": "function_call_output", "call_id": "call_abc", "output": "22C"}],
+        })).json()
+    assert second["output_text"] == "It is 22C in Madrid."
+    sent = captured["messages"]
+    assert [m.role for m in sent] == ["user", "assistant", "tool"]
+    assert sent[1].tool_calls[0]["id"] == "call_abc"
+
+
+@pytest.mark.asyncio
+async def test_responses_stream_with_tools_emits_function_call_events(client):
+    captured: dict = {}
+    with patch.object(PROVIDER_REGISTRY["groq"], "complete", _tool_call_complete(captured)):
+        r = await client.post("/v1/responses", json={
+            "input": "weather?", "tools": [WEATHER_TOOL], "stream": True,
+        })
+    events = [json.loads(l[6:]) for l in r.text.splitlines() if l.startswith("data: ")]
+    types = [e["type"] for e in events]
+    assert types[:2] == ["response.created", "response.in_progress"]
+    assert "response.function_call_arguments.delta" in types
+    assert "response.function_call_arguments.done" in types
+    assert types[-1] == "response.completed"
+    assert [e["sequence_number"] for e in events] == list(range(1, len(events) + 1))
+
+
+@pytest.mark.asyncio
+async def test_tools_skip_providers_without_tool_support(client, seeded_session):
+    """Gemini's adapter has no tool support, so a tool request must route
+    around it instead of silently dropping the tools."""
+    from app.repositories.user_provider_repo import UserProviderRepository
+    from app.repositories.user_repo import UserRepository
+
+    user = await UserRepository(seeded_session).find_by_username("testadmin")
+    await UserProviderRepository(seeded_session).upsert(user.id, "gemini", api_key="g", enabled=True)
+    await seeded_session.commit()
+    called = []
+
+    async def gemini_complete(self, *a, **k):
+        called.append("gemini")
+        raise AssertionError("gemini must not receive tool requests")
+
+    captured: dict = {}
+    with patch.object(PROVIDER_REGISTRY["gemini"], "complete", gemini_complete), \
+         patch.object(PROVIDER_REGISTRY["groq"], "complete", _tool_call_complete(captured)):
+        r = await client.post("/v1/responses", json={
+            "input": "weather?", "tools": [WEATHER_TOOL], "preferred_provider": "gemini",
+        })
+    assert r.status_code == 200, r.text
+    assert called == []
+    assert r.json()["x_freeai"]["provider"] == "groq"
+
+
+@pytest.mark.asyncio
+async def test_official_sdk_function_calling(client):
+    openai = pytest.importorskip("openai")
+    jwt = client.headers["Authorization"].removeprefix("Bearer ")
+    sdk = openai.AsyncOpenAI(api_key=jwt, base_url="http://test/v1", http_client=client)
+    captured: dict = {}
+    with patch.object(PROVIDER_REGISTRY["groq"], "complete", _tool_call_complete(captured)):
+        resp = await sdk.responses.create(model="freeai-auto", input="weather?", tools=[WEATHER_TOOL])
+        call = resp.output[0]
+        assert call.type == "function_call" and call.name == "get_weather"
+        done = await sdk.responses.create(
+            model="freeai-auto", previous_response_id=resp.id, tools=[WEATHER_TOOL],
+            input=[{"type": "function_call_output", "call_id": call.call_id, "output": "22C"}],
+        )
+        assert done.output_text == "It is 22C in Madrid."
+
+        chat = await sdk.chat.completions.create(
+            model="freeai-auto", messages=[{"role": "user", "content": "weather?"}],
+            tools=[{"type": "function", "function": {"name": "get_weather",
+                                                     "parameters": WEATHER_TOOL["parameters"]}}],
+        )
+        assert chat.choices[0].finish_reason == "tool_calls"
+        assert chat.choices[0].message.tool_calls[0].function.name == "get_weather"
+
+        stream = await sdk.responses.create(
+            model="freeai-auto", input="weather?", tools=[WEATHER_TOOL], stream=True,
+        )
+        final = None
+        async for event in stream:
+            if event.type == "response.completed":
+                final = event.response
+        assert final.output[0].type == "function_call"

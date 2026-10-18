@@ -32,6 +32,26 @@ _MAX_PARSE_ERRORS = 5
 _CONNECT_TIMEOUT = 5.0
 
 
+def _normalize_tool_calls(raw) -> list[dict]:
+    """Coerce provider tool_calls into the strict OpenAI shape clients parse:
+    ``{"id", "type": "function", "function": {"name", "arguments": str}}``.
+    Some gateways return arguments as an object or omit the id."""
+    out: list[dict] = []
+    for i, tc in enumerate(raw or []):
+        if not isinstance(tc, dict):
+            continue
+        fn = tc.get("function") or {}
+        args = fn.get("arguments", "")
+        if not isinstance(args, str):
+            args = json.dumps(args)
+        out.append({
+            "id": tc.get("id") or f"call_{i}",
+            "type": "function",
+            "function": {"name": fn.get("name", ""), "arguments": args or "{}"},
+        })
+    return out
+
+
 def _phase_timeout(read: float) -> httpx.Timeout:
     """Build a per-phase Timeout: short connect, long read, sane write/pool."""
     return httpx.Timeout(connect=_CONNECT_TIMEOUT, read=read, write=30.0, pool=_CONNECT_TIMEOUT)
@@ -43,6 +63,7 @@ class OpenAICompatibleProvider(BaseProvider):
 
     BASE_URL: str = ""
     supports_streaming = True
+    supports_tools = True
     request_timeout: float = 60.0
 
     def _auth_headers(self) -> dict[str, str]:
@@ -85,11 +106,20 @@ class OpenAICompatibleProvider(BaseProvider):
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
         client: httpx.AsyncClient,
+        tools: Optional[list[dict]] = None,
+        tool_choice=None,
+        parallel_tool_calls: Optional[bool] = None,
     ) -> ProviderResponse:
         if not self.api_key:
             raise ProviderError(self.name, "missing API key", kind=ErrorKind.AUTH)
         chosen = self._resolve_model(model)
         payload = self._build_payload(messages, chosen, temperature, max_tokens, stream=False)
+        if tools:
+            payload["tools"] = tools
+            if tool_choice is not None:
+                payload["tool_choice"] = tool_choice
+            if parallel_tool_calls is not None:
+                payload["parallel_tool_calls"] = parallel_tool_calls
         headers = {**self._auth_headers(), **self._extra_headers()}
         try:
             resp = await client.post(
@@ -119,7 +149,8 @@ class OpenAICompatibleProvider(BaseProvider):
             )
         # content may be legitimately empty when the model chose to emit
         # tool_calls instead — only treat as failure when there are none.
-        has_tool_calls = bool(message.get("tool_calls"))
+        tool_calls = _normalize_tool_calls(message.get("tool_calls"))
+        has_tool_calls = bool(tool_calls)
         if (not content or not content.strip()) and not has_tool_calls:
             raise ProviderError(
                 self.name,
@@ -144,6 +175,7 @@ class OpenAICompatibleProvider(BaseProvider):
             completion_tokens=completion_tokens,
             raw=data,
             rate_limit=parse_rate_limit_headers(resp.headers),
+            tool_calls=tool_calls or None,
         )
 
     async def stream(

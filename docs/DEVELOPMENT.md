@@ -31,7 +31,7 @@ and refresh the browser. No build step, no watcher.
 
 ### 2.1 Layout
 
-360 tests total in [backend/tests/](../backend/tests/). This list
+369 tests total in [backend/tests/](../backend/tests/). This list
 highlights the main buckets rather than every file:
 
 - **Pure** (no DB, no Docker): `test_auto_strategy.py`, `test_crypto.py`,

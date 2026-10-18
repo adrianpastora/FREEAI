@@ -13,6 +13,44 @@ pre-1.0 versions — follow the Unreleased section if you track `main`.
 <!-- Add entries here as they land. Categories used in this changelog:
      Added, Changed, Fixed, Security, Removed, Deprecated. -->
 
+## [0.10.0] — 2026-10-18
+
+Function calling end to end, so agent-style clients (anything that sends
+`tools`) work on both `/v1/chat/completions` and `/v1/responses`.
+
+### Upgrade notes
+- No migration and no configuration change is needed.
+- Requests with `tools` now skip Gemini and Cohere (their adapters have no
+  tool support), instead of silently ignoring the tool definitions. Keep at
+  least one of Groq, Mistral, OpenRouter, NVIDIA, HuggingFace or Cerebras
+  configured if your clients use tools.
+- `/v1/responses` errors now use OpenAI's `{"error": {...}}` shape at the top
+  level, instead of FastAPI's `{"detail": ...}`.
+
+### Fixed
+- Tool calling was documented but not wired. `tools` / `tool_choice` were
+  never sent upstream, and `tool_calls` in provider responses were
+  discarded. Both now round-trip: `finish_reason: "tool_calls"`,
+  `message.content: null` and normalised `tool_calls`, where `arguments`
+  is always a string and a missing id is filled in.
+
+### Added
+- `/v1/responses` function calling:
+  - `function` tools, `tool_choice`, `parallel_tool_calls`;
+  - `function_call` / `function_call_output` input items;
+  - `function_call` output items;
+  - `previous_response_id` keeps tool turns.
+
+  Built-in OpenAI tools (web_search, …) are dropped instead of failing the
+  request.
+- Streaming together with `tools` (chat and responses). The upstream call
+  runs without streaming and is replayed as a well-formed SSE stream, so
+  tool calls arrive whole from any provider.
+- Tool-capability filtering in the orchestrator (`supports_tools`), next to
+  the existing vision filter.
+- Compatibility tests with the official `openai` SDK cover the full
+  function-calling loop.
+
 ## [0.9.0] — 2026-10-18
 
 Smarter limit handling and OpenAI Responses API support. Requests now move
@@ -466,7 +504,8 @@ infrastructure.
 - Drop the legacy "Sprint N shipped" changelog section from README —
   replaced with a themed Status section.
 
-[Unreleased]: https://github.com/adrianpastora/FREEAI/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/adrianpastora/FREEAI/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/adrianpastora/FREEAI/releases/tag/v0.10.0
 [0.9.0]: https://github.com/adrianpastora/FREEAI/releases/tag/v0.9.0
 [0.8.0]: https://github.com/adrianpastora/FREEAI/releases/tag/v0.8.0
 [0.7.3]: https://github.com/adrianpastora/FREEAI/releases/tag/v0.7.3

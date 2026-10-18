@@ -84,7 +84,7 @@ curl -N -X POST http://localhost:8000/v1/chat/completions \
 Any OpenAI-compatible client works — point its base URL at
 `http://localhost:8000/v1` (with `/v1`). Both Chat Completions
 (`/v1/chat/completions`) and the newer Responses API (`/v1/responses`) are
-supported.
+supported, including function calling (`tools`).
 
 ### Useful commands
 
@@ -249,7 +249,7 @@ Releases are tracked in [CHANGELOG.md](CHANGELOG.md).
 
 ## Status
 
-FreeAI is pre-1.0 (`0.9.0`) but actively maintained and used in
+FreeAI is pre-1.0 (`0.10.0`) but actively maintained and used in
 production by its author. Breaking changes land on `main` between minor
 versions — see [CHANGELOG.md](CHANGELOG.md) before upgrading. Highlights
 of what's in the box today:

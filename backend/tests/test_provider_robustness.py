@@ -395,3 +395,36 @@ async def test_openai_compat_estimates_tokens_when_usage_missing():
     assert resp.completion_tokens > 0
     assert resp.completion_tokens == estimate_tokens(payload_text)
     assert resp.prompt_tokens == 0
+
+
+# ──────────────── tool calling in the OpenAI-compatible adapter ────────────────
+
+
+@pytest.mark.asyncio
+async def test_openai_adapter_forwards_tools_and_normalizes_tool_calls():
+    import json as _json
+    seen = {}
+
+    def handler(req):
+        seen.update(_json.loads(req.content))
+        body = _openai_response()
+        body["choices"][0]["message"] = {
+            "content": None,
+            # Some gateways send arguments as an object and omit the id.
+            "tool_calls": [{"type": "function",
+                            "function": {"name": "get_weather", "arguments": {"city": "Madrid"}}}],
+        }
+        body["choices"][0]["finish_reason"] = "tool_calls"
+        return httpx.Response(200, json=body)
+
+    tools = [{"type": "function", "function": {"name": "get_weather"}}]
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        prov = _OAIStub(api_key="sk-test", default_model="stub-model")
+        resp = await prov.complete([], client=client, tools=tools, tool_choice="required")
+    assert seen["tools"] == tools and seen["tool_choice"] == "required"
+    assert resp.tool_calls == [{
+        "id": "call_0", "type": "function",
+        "function": {"name": "get_weather", "arguments": '{"city": "Madrid"}'},
+    }]
+    assert resp.content == ""  # no EMPTY_RESPONSE when the model called a tool

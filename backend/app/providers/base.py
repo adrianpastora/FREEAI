@@ -405,6 +405,8 @@ class ProviderResponse:
     raw: dict = field(default_factory=dict)
     # Quota left after this call, when the provider reports it in headers.
     rate_limit: Optional[RateLimitInfo] = None
+    # OpenAI-format tool calls when the model chose to call functions.
+    tool_calls: Optional[list[dict]] = None
 
     @property
     def total_tokens(self) -> int:
@@ -466,6 +468,8 @@ class BaseProvider:
     supports_vision: bool = False
     supports_embeddings: bool = False
     supports_transcription: bool = False
+    # Accepts tools / tool_choice in complete() and returns tool_calls.
+    supports_tools: bool = False
 
     def __init__(self, api_key: Optional[str], default_model: Optional[str] = None):
         self.api_key = api_key

@@ -271,10 +271,22 @@ unchanged. A typical multi-turn flow looks like this:
   `tool_calls`. FreeAI preserves it.
 - `tool_call_id` ties a `role: tool` message back to the originating
   `tool_calls[].id`. Required by the OpenAI spec and preserved here.
-- `tools` / `tool_choice` at the top level are forwarded to OpenAI-compatible
-  providers (Groq, Mistral, OpenRouter, HuggingFace). The Gemini adapter
-  does not implement tool calling yet — requests with `tools` set still
-  succeed when routed through Gemini, but the tool definitions are ignored.
+- `tools`, `tool_choice` and `parallel_tool_calls` are forwarded to the
+  OpenAI-compatible providers (Groq, Mistral, OpenRouter, NVIDIA, HuggingFace,
+  Cerebras). When `tools` is set, providers whose adapter has no tool support
+  (Gemini, Cohere) are **skipped**, so the definitions are never silently
+  dropped. If none of your providers support tools, the request fails with
+  `client_error`. `tool_choice: "none"` disables this filter.
+- When the model calls a tool, the response has `finish_reason: "tool_calls"`,
+  `message.content: null` and `message.tool_calls` in the standard shape
+  (`arguments` is always a JSON string).
+- With `stream: true` **and** `tools`, FreeAI makes the upstream call without
+  streaming and replays the result as `chat.completion.chunk` events. Tool
+  calls therefore arrive whole, with `index`, from any provider. Streaming
+  without tools is unchanged.
+- If a model in the chain can't do tools (for example "no endpoints found that
+  support tool use" on OpenRouter), it is treated as `model_unavailable` and
+  the provider's next model is tried.
 
 If you don't use tool calling, this section doesn't apply — plain
 `{role, content}` messages work as before.
@@ -390,10 +402,18 @@ Compatibility is tested against the official `openai` Python SDK.
 | `previous_response_id` | supported. Turns are kept in memory per user for 6 h; an unknown or expired id returns 400, and the client should then send the full conversation |
 | `store` | `false` skips keeping the turn for `previous_response_id` |
 | `strategy`, `preferred_provider` | FreeAI extensions, same as chat |
-| `tools`, function-call items, `input_file`, `background` | **not supported** → 400 with a clear message |
+| `tools` (type `function`), `tool_choice`, `parallel_tool_calls` | supported. The tools are routed to tool-capable providers, see [Tool calling](#tool-calling) |
+| `function_call` / `function_call_output` input items | supported. Consecutive calls are merged into one assistant turn, and outputs become `tool` messages |
+| built-in tools (`web_search`, `file_search`, `code_interpreter`, `mcp`, …) | dropped: no free provider offers them, so the request runs without them |
+| `input_file`, `computer_call`, `background` | **not supported** → 400 with a clear message |
 
-The response is a standard `response` object with one assistant `message`
-output item, `output_text`, and `usage` (`input_tokens` / `output_tokens`).
+The response is a standard `response` object. Its `output` has an assistant
+`message` item and/or one `function_call` item per tool call (`call_id`,
+`name`, `arguments`). It also has `output_text` and `usage`
+(`input_tokens` / `output_tokens`). Errors use OpenAI's shape:
+`{"error": {"message", "type", "param", "code"}}`. Streaming with tools
+replays the complete result as the normal event sequence, including
+`response.function_call_arguments.delta` / `.done`.
 FreeAI adds `x_freeai` with `provider`, `real_model`, `fallback_chain` and
 `latency_ms`.
 
@@ -404,6 +424,16 @@ r = client.responses.create(model="freeai-auto", input="Hola")
 print(r.output_text)
 r2 = client.responses.create(model="freeai-auto", input="¿Y en inglés?",
                              previous_response_id=r.id)
+
+# function calling
+tools = [{"type": "function", "name": "get_weather",
+          "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}}]
+r = client.responses.create(model="freeai-auto", input="Weather in Madrid?", tools=tools)
+call = next(o for o in r.output if o.type == "function_call")
+r = client.responses.create(model="freeai-auto", tools=tools, previous_response_id=r.id,
+                            input=[{"type": "function_call_output",
+                                    "call_id": call.call_id, "output": "22°C"}])
+print(r.output_text)
 ```
 
 ## Audio

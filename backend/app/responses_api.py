@@ -11,8 +11,10 @@ the same routing, fallback and rate-limit handling as ``/v1/chat/completions``:
              response.output_text.delta … response.completed)
 
 Supported: text and image input, ``instructions``, ``previous_response_id``
-(kept in an in-process store), streaming. Not supported: tools / function
-calling, file inputs, background mode — those return a clear 400.
+(kept in an in-process store), streaming, and function calling (``tools`` of
+type ``function``, ``function_call`` / ``function_call_output`` items).
+Built-in OpenAI tools (web_search, file_search, …) can't be emulated and are
+dropped. Not supported: file inputs, background mode — those return a 400.
 """
 from __future__ import annotations
 
@@ -39,6 +41,58 @@ def new_response_id() -> str:
 
 def new_message_id() -> str:
     return f"msg_{uuid.uuid4().hex}"
+
+
+def new_function_call_id() -> str:
+    return f"fc_{uuid.uuid4().hex}"
+
+
+def _tool_output_text(output: Any) -> str:
+    """function_call_output.output may be a string or a list of parts."""
+    if isinstance(output, str):
+        return output
+    if isinstance(output, list):
+        return "\n".join(
+            p.get("text", "") for p in output if isinstance(p, dict)
+        ) or json.dumps(output)
+    return json.dumps(output)
+
+
+def tools_to_chat(tools: Any) -> Optional[list[dict]]:
+    """Responses ``tools`` → chat-completions ``tools``.
+
+    Only ``function`` tools can be served by other providers; built-in
+    OpenAI tools (web_search, file_search, code_interpreter, mcp, …) are
+    dropped so the request still works, just without them.
+    """
+    if not tools:
+        return None
+    if not isinstance(tools, list):
+        raise ResponsesRequestError("'tools' must be a list")
+    out: list[dict] = []
+    for tool in tools:
+        if not isinstance(tool, dict) or tool.get("type") != "function":
+            continue
+        if "function" in tool:  # already chat-shaped
+            out.append({"type": "function", "function": tool["function"]})
+            continue
+        fn: dict = {"name": tool.get("name", "")}
+        if tool.get("description"):
+            fn["description"] = tool["description"]
+        fn["parameters"] = tool.get("parameters") or {"type": "object", "properties": {}}
+        if tool.get("strict") is not None:
+            fn["strict"] = tool["strict"]
+        out.append({"type": "function", "function": fn})
+    return out or None
+
+
+def tool_choice_to_chat(choice: Any) -> Any:
+    if choice is None or isinstance(choice, str):
+        return choice  # "auto" | "none" | "required"
+    if isinstance(choice, dict) and choice.get("type") == "function":
+        name = choice.get("name") or (choice.get("function") or {}).get("name")
+        return {"type": "function", "function": {"name": name}}
+    return "auto"  # built-in tool choices: nothing equivalent, let the model decide
 
 
 # ──────────────── previous_response_id store ────────────────
@@ -128,11 +182,32 @@ def input_to_messages(input_value: Any) -> list[ChatMessage]:
         itype = item.get("type", "message")
         if itype == "reasoning":
             continue  # opaque reasoning items from other models: safe to drop
-        if itype in ("function_call", "function_call_output", "custom_tool_call",
-                     "custom_tool_call_output", "computer_call", "computer_call_output"):
-            raise ResponsesRequestError(
-                "tool / function calling is not supported by FreeAI's /v1/responses"
-            )
+        if itype == "function_call":
+            call = {
+                "id": item.get("call_id") or item.get("id") or new_function_call_id(),
+                "type": "function",
+                "function": {
+                    "name": item.get("name", ""),
+                    "arguments": item.get("arguments") or "{}",
+                },
+            }
+            # Consecutive calls belong to one assistant turn.
+            last = messages[-1] if messages else None
+            if last is not None and last.role == "assistant" and last.tool_calls:
+                last.tool_calls.append(call)
+            else:
+                messages.append(ChatMessage(role="assistant", content=None, tool_calls=[call]))
+            continue
+        if itype == "function_call_output":
+            messages.append(ChatMessage(
+                role="tool",
+                tool_call_id=item.get("call_id"),
+                content=_tool_output_text(item.get("output")),
+            ))
+            continue
+        if itype in ("custom_tool_call", "custom_tool_call_output",
+                     "computer_call", "computer_call_output"):
+            raise ResponsesRequestError(f"input item type '{itype}' is not supported")
         if itype != "message":
             raise ResponsesRequestError(f"unsupported input item type '{itype}'")
         role = _ROLE_MAP.get(item.get("role", "user"))
@@ -147,10 +222,6 @@ def to_chat_request(
 ) -> tuple[ChatCompletionRequest, list[ChatMessage]]:
     """Build the chat request. Returns it plus the conversation (without the
     system instructions) to store for ``previous_response_id`` chaining."""
-    if body.get("tools"):
-        raise ResponsesRequestError(
-            "tools are not supported by FreeAI's /v1/responses — send the request without 'tools'"
-        )
     if body.get("background"):
         raise ResponsesRequestError("background mode is not supported")
 
@@ -167,12 +238,21 @@ def to_chat_request(
     if max_out is not None:
         max_out = max(1, min(int(max_out), _MAX_OUTPUT_TOKENS))
 
+    tools = tools_to_chat(body.get("tools"))
+    extra: dict = {}
+    if tools:
+        extra["tools"] = tools
+        extra["tool_choice"] = tool_choice_to_chat(body.get("tool_choice"))
+        if body.get("parallel_tool_calls") is not None:
+            extra["parallel_tool_calls"] = bool(body["parallel_tool_calls"])
+
     req = ChatCompletionRequest(
         messages=messages,
         model=body.get("model") or None,
         temperature=body["temperature"] if body.get("temperature") is not None else 0.7,
         max_tokens=max_out,
         stream=bool(body.get("stream")),
+        **extra,
         **({"strategy": body["strategy"]} if body.get("strategy") else {}),
         **({"preferred_provider": body["preferred_provider"]} if body.get("preferred_provider") else {}),
     )
@@ -180,6 +260,35 @@ def to_chat_request(
 
 
 # ──────────────── response objects ────────────────
+
+
+def _function_call_item(tool_call: dict, item_id: Optional[str] = None) -> dict:
+    fn = tool_call.get("function") or {}
+    return {
+        "type": "function_call",
+        "id": item_id or new_function_call_id(),
+        "call_id": tool_call.get("id") or new_function_call_id(),
+        "name": fn.get("name", ""),
+        "arguments": fn.get("arguments") or "{}",
+        "status": "completed",
+    }
+
+
+def output_items(text: Optional[str], tool_calls: Optional[list[dict]]) -> list[dict]:
+    """Assistant text (if any) as a message item, then one item per call."""
+    items: list[dict] = []
+    if text or not tool_calls:
+        items.append(_message_item(new_message_id(), text or ""))
+    for tc in tool_calls or []:
+        items.append(_function_call_item(tc))
+    return items
+
+
+def assistant_turn(text: Optional[str], tool_calls: Optional[list[dict]]) -> ChatMessage:
+    """The assistant message to keep in history for previous_response_id."""
+    if tool_calls:
+        return ChatMessage(role="assistant", content=text or None, tool_calls=tool_calls)
+    return ChatMessage(role="assistant", content=text or "")
 
 
 def _message_item(item_id: str, text: str, status: str = "completed") -> dict:
@@ -205,6 +314,7 @@ def response_object(
     error: Optional[dict] = None,
     extra: Optional[dict] = None,
 ) -> dict:
+    tools_out = [t for t in (body.get("tools") or []) if isinstance(t, dict) and t.get("type") == "function"]
     obj = {
         "id": response_id,
         "object": "response",
@@ -222,8 +332,8 @@ def response_object(
         "store": body.get("store", True),
         "temperature": body.get("temperature", 0.7),
         "text": {"format": {"type": "text"}},
-        "tool_choice": "auto",
-        "tools": [],
+        "tool_choice": body.get("tool_choice") or "auto",
+        "tools": tools_out,
         "top_p": body.get("top_p", 1.0),
         "truncation": "disabled",
         "usage": {
@@ -251,14 +361,16 @@ def response_object(
 def from_chat_response(
     chat: ChatCompletionResponse, *, response_id: str, body: dict,
 ) -> dict:
-    text = chat.choices[0].message.content if chat.choices else ""
+    msg = chat.choices[0].message if chat.choices else None
+    text = (msg.content if msg else "") or ""
+    tool_calls = msg.tool_calls if msg else None
     return response_object(
         response_id=response_id,
         body=body,
         created_at=chat.created,
         model=chat.model,
         status="completed",
-        output=[_message_item(new_message_id(), text)],
+        output=output_items(text, tool_calls),
         input_tokens=chat.usage.prompt_tokens,
         output_tokens=chat.usage.completion_tokens,
         extra={
@@ -352,6 +464,50 @@ async def stream_events(
         input_tokens=input_tokens, output_tokens=estimate_tokens(text),
         extra={"provider": provider},
     ))
+
+
+async def replay_events(response: dict) -> AsyncIterator[str]:
+    """Emit the streaming event sequence for an already-complete response.
+
+    Used when the request has tools: the upstream call runs non-streaming
+    (so tool calls arrive whole, from any provider) and the client still
+    gets a well-formed Responses stream.
+    """
+    seq = 0
+
+    def ev(event_type: str, **payload) -> str:
+        nonlocal seq
+        seq += 1
+        return sse_event(event_type, {"type": event_type, "sequence_number": seq, **payload})
+
+    pending = {**response, "status": "in_progress", "output": []}
+    pending.pop("output_text", None)
+    yield ev("response.created", response=pending)
+    yield ev("response.in_progress", response=pending)
+    for idx, item in enumerate(response.get("output", [])):
+        if item["type"] == "message":
+            text = "".join(p.get("text", "") for p in item.get("content", []))
+            yield ev("response.output_item.added", output_index=idx,
+                     item={**item, "status": "in_progress", "content": []})
+            part = {"type": "output_text", "text": "", "annotations": []}
+            yield ev("response.content_part.added", item_id=item["id"], output_index=idx,
+                     content_index=0, part=part)
+            if text:
+                yield ev("response.output_text.delta", item_id=item["id"], output_index=idx,
+                         content_index=0, delta=text)
+            yield ev("response.output_text.done", item_id=item["id"], output_index=idx,
+                     content_index=0, text=text)
+            yield ev("response.content_part.done", item_id=item["id"], output_index=idx,
+                     content_index=0, part={**part, "text": text})
+        elif item["type"] == "function_call":
+            yield ev("response.output_item.added", output_index=idx,
+                     item={**item, "status": "in_progress", "arguments": ""})
+            yield ev("response.function_call_arguments.delta", item_id=item["id"],
+                     output_index=idx, delta=item["arguments"])
+            yield ev("response.function_call_arguments.done", item_id=item["id"],
+                     output_index=idx, arguments=item["arguments"])
+        yield ev("response.output_item.done", output_index=idx, item=item)
+    yield ev("response.completed", response=response)
 
 
 def failed_event(response_id: str, body: dict, model: str, error: dict, seq: int = 0) -> str:

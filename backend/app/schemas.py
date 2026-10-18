@@ -140,14 +140,24 @@ class ChatCompletionRequest(BaseModel):
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     max_tokens: Optional[int] = Field(default=None, ge=1, le=32_000)
     stream: bool = False
+    # Function calling (OpenAI format). Forwarded to providers that support
+    # it; providers that don't are filtered out of the candidate list.
+    tools: Optional[list[dict[str, Any]]] = Field(default=None, max_length=128)
+    tool_choice: Optional[Union[str, dict[str, Any]]] = None
+    parallel_tool_calls: Optional[bool] = None
     # advanced
     preferred_provider: Optional[str] = None
     fallback: bool = True
 
+    @property
+    def wants_tools(self) -> bool:
+        return bool(self.tools) and self.tool_choice != "none"
+
 
 class ChoiceMessage(BaseModel):
     role: str = "assistant"
-    content: str
+    content: Optional[str] = None
+    tool_calls: Optional[list[dict[str, Any]]] = None
 
 
 class Choice(BaseModel):

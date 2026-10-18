@@ -422,13 +422,48 @@ class Orchestrator:
     async def _attempt(
         self, provider: BaseProvider, req: ChatCompletionRequest, provider_model: Optional[str],
     ) -> ProviderResponse:
+        extra: dict = {}
+        if req.wants_tools:
+            # Only passed when present so adapters without tool support (and
+            # test doubles) keep their narrower signature.
+            extra = {"tools": req.tools, "tool_choice": req.tool_choice}
+            if req.parallel_tool_calls is not None:
+                extra["parallel_tool_calls"] = req.parallel_tool_calls
         return await provider.complete(
             req.messages,
             model=provider_model,
             temperature=req.temperature,
             max_tokens=req.max_tokens,
             client=self._client,
+            **extra,
         )
+
+    @staticmethod
+    def _filter_capabilities(
+        req: ChatCompletionRequest, candidates: list[_Candidate],
+    ) -> list[_Candidate]:
+        """Drop candidates that can't serve this request (images, tools)."""
+        if any(m.has_images for m in req.messages):
+            candidates = [c for c in candidates if c.provider.supports_vision]
+            if not candidates:
+                raise ProviderError(
+                    "orchestrator",
+                    "this request contains images but no vision-capable provider is "
+                    "available. Configure a provider with vision support (Gemini, "
+                    "OpenRouter) and ensure it has an API key and the 'vision' tag.",
+                    kind=ErrorKind.CLIENT_ERROR,
+                )
+        if req.wants_tools:
+            candidates = [c for c in candidates if getattr(c.provider, "supports_tools", False)]
+            if not candidates:
+                raise ProviderError(
+                    "orchestrator",
+                    "this request uses tools but no tool-capable provider is available. "
+                    "Configure an API key for Groq, Mistral, OpenRouter, NVIDIA, "
+                    "HuggingFace or Cerebras.",
+                    kind=ErrorKind.CLIENT_ERROR,
+                )
+        return candidates
 
     @classmethod
     def _retry_delay(cls, err: ProviderError, attempt: int) -> float:
@@ -783,19 +818,8 @@ class Orchestrator:
         if not candidates:
             raise self._no_candidates_error(unhealthy)
 
-        # Filter to vision-capable providers when the request contains images
-        request_has_images = any(m.has_images for m in req.messages)
-        if request_has_images:
-            vision_candidates = [c for c in candidates if c.provider.supports_vision]
-            if not vision_candidates:
-                raise ProviderError(
-                    "orchestrator",
-                    "this request contains images but no vision-capable provider is "
-                    "available. Configure a provider with vision support (Gemini, "
-                    "OpenRouter) and ensure it has an API key and the 'vision' tag.",
-                    kind=ErrorKind.CLIENT_ERROR,
-                )
-            candidates = vision_candidates
+        # Drop providers that can't serve images / tools for this request.
+        candidates = self._filter_capabilities(req, candidates)
 
         fallback_chain: list[str] = []
         skipped: list[str] = []
@@ -896,7 +920,13 @@ class Orchestrator:
                     model=response_model,
                     provider=resp.provider,
                     strategy_used=strategy,
-                    choices=[Choice(message=ChoiceMessage(content=resp.content))],
+                    choices=[Choice(
+                        message=ChoiceMessage(
+                            content=resp.content or (None if resp.tool_calls else ""),
+                            tool_calls=resp.tool_calls,
+                        ),
+                        finish_reason="tool_calls" if resp.tool_calls else "stop",
+                    )],
                     usage=Usage(
                         prompt_tokens=resp.prompt_tokens,
                         completion_tokens=resp.completion_tokens,
@@ -944,19 +974,8 @@ class Orchestrator:
         if not candidates:
             raise self._no_candidates_error(unhealthy)
 
-        # Filter to vision-capable providers when the request contains images
-        request_has_images = any(m.has_images for m in req.messages)
-        if request_has_images:
-            vision_candidates = [c for c in candidates if c.provider.supports_vision]
-            if not vision_candidates:
-                raise ProviderError(
-                    "orchestrator",
-                    "this request contains images but no vision-capable provider is "
-                    "available. Configure a provider with vision support (Gemini, "
-                    "OpenRouter) and ensure it has an API key and the 'vision' tag.",
-                    kind=ErrorKind.CLIENT_ERROR,
-                )
-            candidates = vision_candidates
+        # Drop providers that can't serve images / tools for this request.
+        candidates = self._filter_capabilities(req, candidates)
 
         use_fallback = req.fallback and app_cfg.enable_fallback
         attempts = candidates if use_fallback else candidates[:1]
