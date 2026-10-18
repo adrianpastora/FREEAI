@@ -239,6 +239,21 @@ class RefreshTokenRow(Base):
     created_at: Mapped[float] = mapped_column(Float, default=time.time, nullable=False)
 
 
+class ResponseStoreRow(Base):
+    """Responses API state: conversation history per response id (kind
+    "history") and individual items for item_reference (kind "item").
+    Expires after 24 h; see repositories/response_store_repo.py."""
+    __tablename__ = "response_store"
+
+    user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True,
+    )
+    kind: Mapped[str] = mapped_column(String(16), primary_key=True)
+    key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    expires_at: Mapped[float] = mapped_column(Float, nullable=False)
+
+
 class UserProviderRow(Base):
     """Per-user provider credentials. Overrides catalog defaults."""
     __tablename__ = "user_providers"

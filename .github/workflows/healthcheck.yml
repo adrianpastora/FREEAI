@@ -1,0 +1,36 @@
+name: Uptime check
+
+# Probes the public deployment every 30 minutes. A failed run makes GitHub
+# email the repo owner, which is the whole alerting stack: no extra service.
+# Free on public repositories. Set the target with:
+#   gh variable set HEALTHCHECK_URL --body https://your-freeai.example.com
+# (no variable -> the job is skipped).
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+jobs:
+  probe:
+    if: ${{ vars.HEALTHCHECK_URL != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check /api/health and /v1/models
+        env:
+          BASE: ${{ vars.HEALTHCHECK_URL }}
+        run: |
+          set -e
+          for attempt in 1 2 3; do
+            if curl -fsS --max-time 20 "$BASE/api/health" | grep -q '"ok"' \
+               && curl -fsS --max-time 20 -o /dev/null "$BASE/v1/models"; then
+              version=$(curl -fsS --max-time 20 "$BASE/openapi.json" | python3 -c 'import sys,json;print(json.load(sys.stdin)["info"]["version"])' || echo "?")
+              echo "FreeAI up, version $version" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "attempt $attempt failed, retrying in 30s"
+            sleep 30
+          done
+          echo "::error::FreeAI at $BASE is not responding (3 attempts)"
+          exit 1

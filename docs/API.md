@@ -317,9 +317,20 @@ in the `model` field as a shortcut:
 | `freeai-vision` | `vision` | Image-capable providers only |
 | `freeai-long` | `long_context` | Large context windows |
 
-When a virtual model is used, the provider picks its own `default_model`
-(e.g. Groq uses `llama-3.3-70b-versatile`). The response shows the virtual
-model name in `model` and the real provider model in `real_model`.
+When a virtual model is used, each provider picks its own default model
+(for example, Groq uses `openai/gpt-oss-120b`) and moves through its
+catalog chain if needed. The response shows the virtual model name in
+`model` and the real provider model in `real_model`.
+
+**Model names FreeAI doesn't serve.** Clients often send OpenAI or
+Anthropic model names by default.
+- Proprietary names (`gpt-4o`, `gpt-5*`, `o1`/`o3`/`o4*`, `chatgpt-*`,
+  `codex*`, `claude-*`, …) are routed as `freeai-auto` straight away, because
+  no free provider serves them. `openai/gpt-oss-*` is open-weight and is
+  passed through as a real model.
+- Any other model name is passed through to the providers. If none of them
+  recognise it (every attempt is `model_unavailable`), the request is
+  retried once as `freeai-auto` instead of failing.
 
 ### Drop-in OpenAI SDK example
 
@@ -409,13 +420,13 @@ Compatibility is tested against the official `openai` Python SDK.
 | `instructions` | sent as the system message |
 | `max_output_tokens`, `temperature` | mapped (`max_output_tokens` is clamped to 32 000) |
 | `stream` | full event sequence: `response.created` → `response.output_text.delta` … → `response.completed` (`response.failed` on error) |
-| `previous_response_id` | supported. Turns are kept in memory per user for 6 h; an unknown or expired id returns 400, and the client should then send the full conversation |
+| `previous_response_id` | supported. Turns are stored in Postgres (`response_store`) per user for 24 h, so they survive restarts and redeploys. An unknown or expired id returns 400, and the client should then send the full conversation |
 | `store` | `false` skips keeping the turn for `previous_response_id` |
 | `strategy`, `preferred_provider` | FreeAI extensions, same as chat |
 | `tools` (type `function`), `tool_choice`, `parallel_tool_calls` | supported. The tools are routed to tool-capable providers, see [Tool calling](#tool-calling) |
 | `function_call` / `function_call_output` input items | supported. Consecutive calls are merged into one assistant turn, and outputs become `tool` messages |
 | built-in tools (`web_search`, `file_search`, `code_interpreter`, `mcp`, …) | dropped: no free provider offers them, so the request runs without them |
-| `item_reference` input items | resolved against items FreeAI returned or received earlier (in memory per user, 6 h). Unknown references are dropped; a tool result left without its call is then sent as plain text so providers don't reject the history |
+| `item_reference` input items | resolved against items FreeAI returned or received earlier (Postgres, per user, 24 h). Unknown references are dropped; a tool result left without its call is then sent as plain text so providers don't reject the history |
 | other item types (`web_search_call`, `computer_call`, …) | dropped (logged), the rest of the request proceeds |
 | `input_file`, `background` | **not supported** → 400 with a clear message |
 

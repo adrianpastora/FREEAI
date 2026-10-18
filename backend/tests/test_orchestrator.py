@@ -416,3 +416,63 @@ async def test_tpd_limit_is_a_hard_skip(session):
     await session.commit()
     assert second.fallback_chain == ["secondary"]
     assert primary.calls == 1
+
+
+class _ModelRecordingProvider:
+    """Records the model it was asked for; fails for models in ``unknown``."""
+    supports_streaming = True
+
+    def __init__(self, name, unknown=()):
+        self.name = name
+        self.unknown = set(unknown)
+        self.models: list = []
+
+    async def complete(self, messages, *, model, temperature, max_tokens, client):
+        self.models.append(model)
+        if model in self.unknown:
+            raise ProviderError(self.name, f"model {model} not found", kind=ErrorKind.MODEL_UNAVAILABLE)
+        return ProviderResponse(content="ok", model=model or "default", provider=self.name)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["gpt-4o", "gpt-5-codex", "o3-mini", "claude-sonnet-4", "chatgpt-4o-latest"])
+async def test_proprietary_model_names_route_as_auto(session, name):
+    """Clients that default to OpenAI/Anthropic model names must not fail:
+    no free provider serves them, so they're treated as freeai-auto."""
+    primary = _ModelRecordingProvider("primary")
+    secondary = _ModelRecordingProvider("secondary")
+    orch = await _setup_two_providers(session, primary, secondary)
+    res = await _run_chat(orch, session, ChatCompletionRequest(
+        model=name, messages=[ChatMessage(role="user", content="hi")],
+    ))
+    await session.commit()
+    assert res.model == "freeai-auto"
+    assert primary.models == [None]  # provider default, not "gpt-4o"
+
+
+@pytest.mark.asyncio
+async def test_open_weight_gpt_oss_is_not_aliased(session):
+    primary = _ModelRecordingProvider("primary")
+    secondary = _ModelRecordingProvider("secondary")
+    orch = await _setup_two_providers(session, primary, secondary)
+    await _run_chat(orch, session, ChatCompletionRequest(
+        model="openai/gpt-oss-120b", messages=[ChatMessage(role="user", content="hi")],
+    ))
+    await session.commit()
+    assert primary.models == ["openai/gpt-oss-120b"]
+
+
+@pytest.mark.asyncio
+async def test_unknown_real_model_retries_as_auto(session):
+    """A real-looking model name no provider serves gets one retry as
+    freeai-auto instead of failing the request."""
+    primary = _ModelRecordingProvider("primary", unknown={"acme/unknown-1"})
+    secondary = _ModelRecordingProvider("secondary", unknown={"acme/unknown-1"})
+    orch = await _setup_two_providers(session, primary, secondary)
+    res = await _run_chat(orch, session, ChatCompletionRequest(
+        model="acme/unknown-1", messages=[ChatMessage(role="user", content="hi")],
+    ))
+    await session.commit()
+    assert res.choices[0].message.content == "ok"
+    assert primary.models == ["acme/unknown-1", None]
+    assert res.model == "freeai-auto"

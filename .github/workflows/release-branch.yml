@@ -1,0 +1,27 @@
+name: Move release branch
+
+# Pull-based deploys: on every pushed v* tag, point the `release` branch at
+# that tag. A deployer that polls the repo (Portainer stack -> GitOps updates
+# on refs/heads/release, Watchtower, a cron `git pull`) then redeploys on its
+# own, without GitHub needing network access to the server. Keeps the
+# "tag = deploy, push to main != deploy" rule from RELEASING.md.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  move:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Point release at ${{ github.ref_name }}
+        run: |
+          git push --force origin "${GITHUB_SHA}:refs/heads/release"
+          echo "release -> ${GITHUB_REF_NAME} (${GITHUB_SHA})" >> "$GITHUB_STEP_SUMMARY"

@@ -47,7 +47,7 @@ log = get_logger("freeai")
 app = FastAPI(
     title="FreeAI Orchestrator",
     description="Unified API that orchestrates multiple free AI provider tiers.",
-    version="0.10.2",
+    version="0.11.0",
     lifespan=lifespan,
 )
 

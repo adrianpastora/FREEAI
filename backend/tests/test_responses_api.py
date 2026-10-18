@@ -78,19 +78,6 @@ def test_history_is_prepended():
     assert len(conv) == 3
 
 
-def test_store_is_per_user_and_expires():
-    store = responses_api.ResponseStore(max_items=2, ttl_s=60)
-    store.put(1, "resp_a", [ChatMessage(role="user", content="a")])
-    assert store.get(1, "resp_a")[0].content == "a"
-    assert store.get(2, "resp_a") is None
-    store.put(1, "resp_b", [])
-    store.put(1, "resp_c", [])
-    assert store.get(1, "resp_a") is None  # evicted (LRU, max 2)
-    short = responses_api.ResponseStore(ttl_s=-1)
-    short.put(1, "r", [])
-    assert short.get(1, "r") is None
-
-
 @pytest.mark.asyncio
 async def test_stream_event_sequence():
     async def chunks():
@@ -552,3 +539,60 @@ async def test_item_reference_to_previous_output_end_to_end(client):
             {"role": "user", "content": "dos"},
         ]})).json()
     assert second["output_text"] == "echo:dos|turns:3"
+
+
+
+@pytest.mark.asyncio
+async def test_response_state_survives_a_new_orchestrator(client):
+    """previous_response_id and item_reference now live in Postgres, so a
+    restart (simulated with a fresh orchestrator) doesn't break chains."""
+    from app.orchestrator import Orchestrator
+
+    with patch.object(PROVIDER_REGISTRY["groq"], "complete", _complete):
+        first = (await client.post("/v1/responses", json={"input": "uno"})).json()
+        await app.state.orchestrator.aclose()
+        app.state.orchestrator = Orchestrator()
+        chained = (await client.post("/v1/responses", json={
+            "input": "dos", "previous_response_id": first["id"],
+        })).json()
+        referenced = (await client.post("/v1/responses", json={"input": [
+            {"role": "user", "content": "uno"},
+            {"type": "item_reference", "id": first["output"][0]["id"]},
+            {"role": "user", "content": "tres"},
+        ]})).json()
+    assert chained["output_text"] == "echo:dos|turns:3"
+    assert referenced["output_text"] == "echo:tres|turns:3"
+
+
+@pytest.mark.asyncio
+async def test_store_false_keeps_nothing(client):
+    with patch.object(PROVIDER_REGISTRY["groq"], "complete", _complete):
+        first = (await client.post("/v1/responses", json={"input": "x", "store": False})).json()
+        r = await client.post("/v1/responses", json={"input": "y", "previous_response_id": first["id"]})
+    assert r.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_response_store_repo_is_per_user_and_expires(seeded_session):
+    import time as _time
+    from app.db.models import ResponseStoreRow
+    from app.repositories.response_store_repo import ResponseStoreRepository
+    from app.repositories.user_repo import UserRepository
+
+    users = UserRepository(seeded_session)
+    me = await users.find_by_username("testadmin")
+    other = await users.create("other", "x", role="user")
+    repo = ResponseStoreRepository(seeded_session)
+    await repo.put_history(me.id, "resp_1", [ChatMessage(role="user", content="hi")])
+    await repo.put_items(me.id, [{"type": "message", "id": "msg_1", "role": "assistant", "content": []},
+                                 {"type": "item_reference", "id": "msg_x"}])
+    await seeded_session.commit()
+    assert (await repo.get_history(me.id, "resp_1"))[0].content == "hi"
+    assert await repo.get_history(other.id, "resp_1") is None
+    assert set(await repo.get_items(me.id, ["msg_1", "msg_x"])) == {"msg_1"}
+
+    row = await seeded_session.get(ResponseStoreRow, (me.id, "history", "resp_1"))
+    row.expires_at = _time.time() - 1
+    await seeded_session.commit()
+    assert await repo.get_history(me.id, "resp_1") is None
+    assert await repo.purge_expired() == 1

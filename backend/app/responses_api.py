@@ -11,7 +11,7 @@ the same routing, fallback and rate-limit handling as ``/v1/chat/completions``:
              response.output_text.delta … response.completed)
 
 Supported: text and image input, ``instructions``, ``previous_response_id``
-(kept in an in-process store), streaming, and function calling (``tools`` of
+and ``item_reference`` (state in Postgres, see response_store_repo), streaming, and function calling (``tools`` of
 type ``function``, ``function_call`` / ``function_call_output`` items).
 Built-in OpenAI tools (web_search, file_search, …) can't be emulated and are
 dropped. Not supported: file inputs, background mode — those return a 400.
@@ -96,66 +96,6 @@ def tool_choice_to_chat(choice: Any) -> Any:
         name = choice.get("name") or (choice.get("function") or {}).get("name")
         return {"type": "function", "function": {"name": name}}
     return "auto"  # built-in tool choices: nothing equivalent, let the model decide
-
-
-# ──────────────── previous_response_id store ────────────────
-
-
-class ResponseStore:
-    """In-process LRU of conversation histories keyed by (user, response id).
-
-    Lets clients chain turns with ``previous_response_id`` instead of
-    re-sending the whole conversation. Process-local and bounded: after a
-    restart (or on another replica) the id is unknown and the client gets a
-    400 asking it to send the full input — same as an expired id on OpenAI.
-    """
-
-    def __init__(self, max_items: int = 2_000, ttl_s: float = 6 * 3600):
-        self._data: OrderedDict[tuple[int, str], tuple[float, list[ChatMessage]]] = OrderedDict()
-        self._max = max_items
-        self._ttl = ttl_s
-
-    def put(self, user_id: int, response_id: str, history: list[ChatMessage]) -> None:
-        key = (user_id, response_id)
-        self._data[key] = (time.monotonic() + self._ttl, history)
-        self._data.move_to_end(key)
-        while len(self._data) > self._max:
-            self._data.popitem(last=False)
-
-    def get(self, user_id: int, response_id: str) -> Optional[list[ChatMessage]]:
-        entry = self._data.get((user_id, response_id))
-        if entry is None:
-            return None
-        if entry[0] <= time.monotonic():
-            self._data.pop((user_id, response_id), None)
-            return None
-        return list(entry[1])
-
-    # Individual items (msg_…, fc_…) for ``item_reference`` input items,
-    # which point at items from earlier responses / requests by id.
-    _ITEMS_MAX = 20_000
-
-    def put_items(self, user_id: int, items: list[dict]) -> None:
-        store = self.__dict__.setdefault("_items", OrderedDict())
-        expires = time.monotonic() + self._ttl
-        for item in items:
-            item_id = item.get("id") if isinstance(item, dict) else None
-            if not item_id or item.get("type") == "item_reference":
-                continue
-            store[(user_id, item_id)] = (expires, item)
-            store.move_to_end((user_id, item_id))
-        while len(store) > self._ITEMS_MAX:
-            store.popitem(last=False)
-
-    def get_item(self, user_id: int, item_id: str) -> Optional[dict]:
-        store = self.__dict__.get("_items")
-        entry = store.get((user_id, item_id)) if store else None
-        if entry is None:
-            return None
-        if entry[0] <= time.monotonic():
-            store.pop((user_id, item_id), None)
-            return None
-        return entry[1]
 
 
 # ──────────────── request translation ────────────────

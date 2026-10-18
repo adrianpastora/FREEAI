@@ -86,16 +86,18 @@ async def test_non_transient_error_does_not_retry():
 
 
 @pytest.mark.asyncio
-async def test_empty_response_is_retried_as_transient():
-    """EMPTY_RESPONSE is transient — it should consume the retry budget."""
+async def test_empty_response_is_not_retried_on_the_same_model():
+    """EMPTY_RESPONSE is usually deterministic for a model + prompt (reasoning
+    models spending max_tokens on thinking): don't burn the retry budget on
+    the same model — the orchestrator moves to the next model instead."""
     prov = _CountingProvider(failures_before_success=1, kind=ErrorKind.EMPTY_RESPONSE)
     orch = Orchestrator()
     try:
         result = await orch._try_with_retry(_cand(prov), _req(), None, max_retries=1)
     finally:
         await orch.aclose()
-    assert prov.calls == 2  # retried once, then succeeded
-    assert result.response is not None
+    assert prov.calls == 1
+    assert result.error is not None and result.error.try_next_model
 
 
 @pytest.mark.asyncio

@@ -85,14 +85,19 @@ class ProviderError(Exception):
 
     @property
     def is_transient(self) -> bool:
-        # EMPTY_RESPONSE and CONTENT_FILTERED also trigger fallback but — see
-        # is_benign — the orchestrator must NOT count them as health failures.
+        """Worth retrying on the *same* model. EMPTY_RESPONSE and
+        CONTENT_FILTERED are usually deterministic for a given model + prompt
+        (e.g. a reasoning model spending max_tokens on thinking), so they move
+        on to the next model / provider instead of repeating the call."""
         return self.kind in {
             ErrorKind.SERVER_ERROR,
             ErrorKind.NETWORK,
-            ErrorKind.EMPTY_RESPONSE,
-            ErrorKind.CONTENT_FILTERED,
         }
+
+    @property
+    def try_next_model(self) -> bool:
+        """Another model of the same provider may well succeed."""
+        return self.kind in {ErrorKind.EMPTY_RESPONSE, ErrorKind.CONTENT_FILTERED}
 
     @property
     def is_benign(self) -> bool:

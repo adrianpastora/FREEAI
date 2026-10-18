@@ -38,6 +38,7 @@ from .repositories import (
     UsageRepository,
     UserRepository,
 )
+from .repositories.response_store_repo import ResponseStoreRepository
 from .routers._common import is_placeholder
 from .settings import get_settings
 
@@ -234,6 +235,7 @@ async def _periodic_purge(sessionmaker) -> None:
                     "client_rate_events": await ClientRateRepository(session).purge_older_than(86400 * 2),
                     "usage_events": await usage_repo.purge_older_than(86400 * 90),
                     "usage_daily_rollup": await usage_repo.purge_rollups_older_than(730),
+                    "response_store": await ResponseStoreRepository(session).purge_expired(),
                 }
                 await session.commit()
                 if any(purged.values()):

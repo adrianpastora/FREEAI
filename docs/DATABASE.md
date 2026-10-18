@@ -309,6 +309,8 @@ you never need to put it in `alembic.ini`.
        (frozen at write time); usage_daily_rollup.sum_cost_usd.
 0021 — app_config.catalog_version: last provider catalog applied by
        sync_catalog() at startup (see docs/providers/CATALOG.md).
+0022 — response_store: /v1/responses history (previous_response_id) and
+       items (item_reference), per user, 24 h TTL, purged hourly.
 ```
 
 ### Running migrations

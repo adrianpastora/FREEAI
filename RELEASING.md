@@ -42,6 +42,45 @@ Or the **Run workflow** button on the Actions tab.
 
 ---
 
+## Pull-based deploy (recommended): Portainer GitOps
+
+GitHub can't always reach the server (the SSH route depends on a public
+hostname). With a pull-based deploy, nothing has to reach in:
+
+1. Every pushed `v*` tag runs `release-branch.yml`, which points the
+   **`release`** branch at that tag.
+2. In Portainer, open the FreeAI stack, then **Editor / Git** settings:
+   - Repository reference: `refs/heads/release`
+   - **GitOps updates**: on, mechanism **Polling**, interval `5m`
+   - Enable **Re-pull image and redeploy** / **Force redeployment** so the
+     image is rebuilt.
+
+   Keep the stack environment variables as they are, in particular
+   `FREEAI_MASTER_KEY` and `POSTGRES_PASSWORD`.
+3. Release as usual (`git tag -a vX.Y.Z … && git push origin vX.Y.Z`). Within
+   about 5 minutes Portainer notices that `release` moved and redeploys.
+   Migrations run on boot.
+
+`deploy-personal.yml` (SSH) is still there as an optional path. When
+`DEPLOY_SSH_HOST` doesn't resolve, it skips with a warning instead of
+failing.
+
+## Monitoring
+
+`healthcheck.yml` probes `$HEALTHCHECK_URL/api/health` and `/v1/models`
+every 30 minutes (3 attempts). A failure fails the run, and GitHub emails
+the repo owner. Set or change the target with
+`gh variable set HEALTHCHECK_URL --body https://…`. It's free on a public
+repo.
+
+After a deploy, run the real-provider smoke test:
+
+```bash
+FREEAI_URL=https://… FREEAI_KEY=fai_… python scripts/smoke_test.py
+```
+
+---
+
 ## Picking the version number
 
 | Change since the last tag | Bump |

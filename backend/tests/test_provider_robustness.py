@@ -293,18 +293,21 @@ async def test_gemini_normal_finish_is_success():
 # ──────────────── ErrorKind classification — is_transient/is_benign ────────────────
 
 
-def test_empty_response_is_transient_not_benign():
-    """EMPTY_RESPONSE should trigger fallback AND count as health failure."""
+def test_empty_response_moves_on_and_counts_as_failure():
+    """EMPTY_RESPONSE tries the next model (not the same one again) and still
+    counts as a health failure."""
     err = ProviderError("p", "empty", kind=ErrorKind.EMPTY_RESPONSE)
-    assert err.is_transient is True
+    assert err.is_transient is False
+    assert err.try_next_model is True
     assert err.is_benign is False
 
 
-def test_content_filtered_is_transient_and_benign():
-    """CONTENT_FILTERED triggers fallback but must NOT count as health failure
-    (the provider is working fine; it just blocked this specific request)."""
+def test_content_filtered_moves_on_and_is_benign():
+    """CONTENT_FILTERED tries the next model / provider (repeating the same
+    call would be filtered again) and must NOT count as health failure."""
     err = ProviderError("p", "filtered", kind=ErrorKind.CONTENT_FILTERED)
-    assert err.is_transient is True
+    assert err.is_transient is False
+    assert err.try_next_model is True
     assert err.is_benign is True
 
 

@@ -13,6 +13,43 @@ pre-1.0 versions — follow the Unreleased section if you track `main`.
 <!-- Add entries here as they land. Categories used in this changelog:
      Added, Changed, Fixed, Security, Removed, Deprecated. -->
 
+## [0.11.0] — 2026-10-18
+
+Robustness pass: requests no longer fail on model names FreeAI doesn't
+serve, chained Responses conversations survive redeploys, and deploys and
+uptime no longer depend on GitHub reaching the server.
+
+### Upgrade notes
+- Migration **0022** creates `response_store`. It runs automatically on boot.
+- To get automatic deploys without SSH, point the Portainer stack at
+  `refs/heads/release` with GitOps polling (see RELEASING.md). The `release`
+  branch is created by the first tag pushed after this version.
+- `HEALTHCHECK_URL` (repository variable) enables the 30-minute uptime check.
+
+### Added
+- Proprietary model names (`gpt-4o`, `gpt-5*`, `o3`, `claude-*`, `codex*`, …)
+  are routed as `freeai-auto` instead of being passed to providers that
+  can't serve them. Any other model that no provider recognises is retried
+  once as `freeai-auto`, for both chat and streaming.
+- `/v1/responses` state (`previous_response_id` history and `item_reference`
+  items) is stored in Postgres for 24 h instead of process memory, so it
+  survives restarts, redeploys and multiple replicas. It is purged hourly.
+  Saving never fails a request.
+- `scripts/smoke_test.py` runs an end-to-end check against a live FreeAI
+  with real providers: chat, streaming, alias, Responses chaining, the
+  tool-call loop, and per-provider chat and tools via `preferred_provider`.
+- `release-branch.yml`: every `v*` tag moves the `release` branch, for
+  pull-based deploys (Portainer GitOps polling).
+- `healthcheck.yml`: 30-minute uptime probe of the public deployment, with
+  GitHub email alerts on failure.
+
+### Changed
+- `EMPTY_RESPONSE` and `CONTENT_FILTERED` are no longer retried on the same
+  model, where they nearly always repeat. They move on to the provider's next
+  model, then to the next provider.
+- `deploy-personal.yml` skips with a warning when `DEPLOY_SSH_HOST` doesn't
+  resolve, instead of failing every release.
+
 ## [0.10.2] — 2026-10-18
 
 ### Fixed
@@ -535,7 +572,8 @@ infrastructure.
 - Drop the legacy "Sprint N shipped" changelog section from README —
   replaced with a themed Status section.
 
-[Unreleased]: https://github.com/adrianpastora/FREEAI/compare/v0.10.2...HEAD
+[Unreleased]: https://github.com/adrianpastora/FREEAI/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/adrianpastora/FREEAI/releases/tag/v0.11.0
 [0.10.2]: https://github.com/adrianpastora/FREEAI/releases/tag/v0.10.2
 [0.10.1]: https://github.com/adrianpastora/FREEAI/releases/tag/v0.10.1
 [0.10.0]: https://github.com/adrianpastora/FREEAI/releases/tag/v0.10.0

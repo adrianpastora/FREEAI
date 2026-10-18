@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -69,6 +70,19 @@ from .schemas import (
 )
 
 log = get_logger("freeai.orchestrator")
+
+# Proprietary model names no free provider serves. OpenAI SDK samples,
+# Codex-style agents and chat apps send these by default; passing them
+# through would fail on every provider, so they route as freeai-auto.
+# (openai/gpt-oss-* is open-weight and served for real, hence the guard.)
+_FOREIGN_MODEL_RE = re.compile(
+    r"^(gpt-(?!oss)|chatgpt|o[1-9](-|$)|codex|claude|text-davinci|davinci|babbage|computer-use)",
+    re.IGNORECASE,
+)
+
+
+def is_foreign_model(name: Optional[str]) -> bool:
+    return bool(name) and bool(_FOREIGN_MODEL_RE.match(name))
 
 
 @dataclass
@@ -348,6 +362,11 @@ class Orchestrator:
             strategy_name = vm.strategy
             provider_model = None  # provider picks its default
         elif req.model is None and req.strategy == "auto":
+            virtual_model_id = DEFAULT_VIRTUAL_MODEL
+            strategy_name = "auto"
+            provider_model = None
+        elif is_foreign_model(req.model):
+            log.info("aliasing proprietary model to auto", requested_model=req.model)
             virtual_model_id = DEFAULT_VIRTUAL_MODEL
             strategy_name = "auto"
             provider_model = None
@@ -650,6 +669,12 @@ class Orchestrator:
                 break
             skip = self._model_skip(cand.name, result.error)
             if skip is None:
+                if result.error is not None and result.error.try_next_model and i + 1 < len(models):
+                    log.info(
+                        "trying next model", provider=cand.name, model=model,
+                        reason=result.error.kind.value, next=models[i + 1],
+                    )
+                    continue  # request-specific: no cool-down
                 break
             nxt = models[i + 1] if i + 1 < len(models) else None
             self._cool_model(user_id, cand.name, model, skip, nxt)
@@ -799,9 +824,69 @@ class Orchestrator:
             )
         )
 
-    # ──────────────── public: chat completion ────────────────
+    # ──────────────── public: chat / stream ────────────────
+
+    @staticmethod
+    def _retry_as_auto(req: ChatCompletionRequest, err: ProviderError) -> Optional[ChatCompletionRequest]:
+        """A real model name that no provider recognises gets one more try as
+        freeai-auto instead of failing the request. Returns the retry request,
+        or None when the error isn't about the model."""
+        if not req.model or is_virtual_model(req.model) or err.kind != ErrorKind.MODEL_UNAVAILABLE:
+            return None
+        log.warning("no provider serves model, retrying as auto", requested_model=req.model)
+        return req.model_copy(update={"model": None, "strategy": "auto"})
 
     async def chat(
+        self,
+        req: ChatCompletionRequest,
+        user_id: int,
+        user_provider_repo: UserProviderRepository,
+        config_repo: ConfigRepository,
+        rate_repo: RateRepository,
+        usage_repo: UsageRepository,
+        strategy_repo: StrategyRepository,
+        client_hash: Optional[str] = None,
+        pricing_repo: Optional[PricingRepository] = None,
+    ) -> ChatCompletionResponse:
+        args = (user_id, user_provider_repo, config_repo, rate_repo, usage_repo, strategy_repo)
+        kwargs = {"client_hash": client_hash, "pricing_repo": pricing_repo}
+        try:
+            return await self._chat_once(req, *args, **kwargs)
+        except ProviderError as e:
+            retry = self._retry_as_auto(req, e)
+            if retry is None:
+                raise
+            return await self._chat_once(retry, *args, **kwargs)
+
+    async def stream(
+        self,
+        req: ChatCompletionRequest,
+        user_id: int,
+        user_provider_repo: UserProviderRepository,
+        config_repo: ConfigRepository,
+        rate_repo: RateRepository,
+        usage_repo: UsageRepository,
+        strategy_repo: StrategyRepository,
+        client_hash: Optional[str] = None,
+        pricing_repo: Optional[PricingRepository] = None,
+    ) -> AsyncIterator[dict]:
+        args = (user_id, user_provider_repo, config_repo, rate_repo, usage_repo, strategy_repo)
+        kwargs = {"client_hash": client_hash, "pricing_repo": pricing_repo}
+        yielded = False
+        try:
+            async for chunk in self._stream_once(req, *args, **kwargs):
+                yielded = True
+                yield chunk
+        except ProviderError as e:
+            retry = None if yielded else self._retry_as_auto(req, e)
+            if retry is None:
+                raise
+            async for chunk in self._stream_once(retry, *args, **kwargs):
+                yield chunk
+
+    # ──────────────── public: chat completion ────────────────
+
+    async def _chat_once(
         self,
         req: ChatCompletionRequest,
         user_id: int,
@@ -968,7 +1053,7 @@ class Orchestrator:
 
     # ──────────────── public: streaming ────────────────
 
-    async def stream(
+    async def _stream_once(
         self,
         req: ChatCompletionRequest,
         user_id: int,

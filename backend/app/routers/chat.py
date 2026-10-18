@@ -23,6 +23,8 @@ from ..repositories import (
     StrategyRepository,
     UsageRepository,
 )
+from ..logging_config import get_logger
+from ..repositories.response_store_repo import ResponseStoreRepository
 from ..repositories.user_provider_repo import UserProviderRepository
 from .. import responses_api
 from ..schemas import ChatCompletionRequest, ChatCompletionResponse, ChatMessage
@@ -36,6 +38,7 @@ from ._common import (
 )
 
 router = APIRouter(tags=["chat"])
+log = get_logger("freeai.chat")
 
 
 @router.get("/v1/models")
@@ -186,8 +189,39 @@ def _openai_error(status: int, message: str, *, code=None, param=None,
     }})
 
 
-# Conversation histories for previous_response_id chaining (process-local).
-_RESPONSE_STORE = responses_api.ResponseStore()
+def _referenced_item_ids(body: dict) -> list[str]:
+    items = body.get("input") if isinstance(body.get("input"), list) else []
+    return [
+        i["id"] for i in items
+        if isinstance(i, dict) and i.get("type") == "item_reference" and i.get("id")
+    ]
+
+
+async def _load_response_state(request: Request, user_id: int, body: dict):
+    """(history for previous_response_id or None, {item_id: item})."""
+    async with request.app.state.sessionmaker() as session:
+        repo = ResponseStoreRepository(session)
+        history = None
+        if body.get("previous_response_id"):
+            history = await repo.get_history(user_id, body["previous_response_id"])
+        items = await repo.get_items(user_id, _referenced_item_ids(body))
+    return history, items
+
+
+async def _save_response_state(
+    request: Request, user_id: int, response_id: str,
+    history: list[ChatMessage], items: list[dict],
+) -> None:
+    """Persist the turn. Never fails the request: worst case the client gets
+    an explicit 'not found' on its next chained call."""
+    try:
+        async with request.app.state.sessionmaker() as session:
+            repo = ResponseStoreRepository(session)
+            await repo.put_history(user_id, response_id, history)
+            await repo.put_items(user_id, items)
+            await session.commit()
+    except Exception:  # noqa: BLE001
+        log.warning("response_store_save_failed", response_id=response_id, exc_info=True)
 
 
 @router.post("/v1/responses")
@@ -198,7 +232,9 @@ async def create_response(
     user_id: int = Depends(require_user_id),
 ):
     """OpenAI Responses API, translated onto the chat orchestrator so it gets
-    the same routing, fallback and rate-limit handling as chat completions."""
+    the same routing, fallback and rate-limit handling as chat completions.
+    Conversation state for previous_response_id / item_reference is kept in
+    Postgres (response_store, 24 h)."""
     client_hash = client.key_hash if client else None
     try:
         body = await request.json()
@@ -207,35 +243,34 @@ async def create_response(
     if not isinstance(body, dict):
         return _openai_error(400, "request body must be a JSON object")
 
-    history = None
+    history, referenced = await _load_response_state(request, user_id, body)
     prev_id = body.get("previous_response_id")
-    if prev_id:
-        history = _RESPONSE_STORE.get(user_id, prev_id)
-        if history is None:
-            return _openai_error(
-                400,
-                f"previous response '{prev_id}' not found (expired or created on another "
-                "server) — send the full conversation in 'input'",
-                param="previous_response_id", code="previous_response_not_found",
-            )
-    try:
-        req, conversation = responses_api.to_chat_request(
-            body, history, resolve=lambda item_id: _RESPONSE_STORE.get_item(user_id, item_id),
+    if prev_id and history is None:
+        return _openai_error(
+            400,
+            f"previous response '{prev_id}' not found (expired after 24 h, or not "
+            "stored) — send the full conversation in 'input'",
+            param="previous_response_id", code="previous_response_not_found",
         )
+    try:
+        req, conversation = responses_api.to_chat_request(body, history, resolve=referenced.get)
     except (responses_api.ResponsesRequestError, ValidationError, TypeError, ValueError) as e:
         return _openai_error(400, str(e))
 
     response_id = responses_api.new_response_id()
     store = body.get("store", True) is not False
+    inputs = [i for i in (body.get("input") if isinstance(body.get("input"), list) else [])
+              if isinstance(i, dict)]
 
-    def remember(turn: ChatMessage, output: list[dict]) -> None:
+    async def remember(turn: ChatMessage, output: list[dict]) -> None:
         if store:
-            _RESPONSE_STORE.put(user_id, response_id, conversation + [turn])
-            inputs = body.get("input") if isinstance(body.get("input"), list) else []
-            _RESPONSE_STORE.put_items(user_id, [i for i in inputs if isinstance(i, dict)] + output)
+            await _save_response_state(
+                request, user_id, response_id, conversation + [turn], inputs + output,
+            )
 
     if req.stream and not req.wants_tools:
         requested_model = req.model or DEFAULT_VIRTUAL_MODEL
+        finished: dict = {}
 
         async def event_stream():
             try:
@@ -243,15 +278,18 @@ async def create_response(
                     _orchestrator_stream(request, orch, req, user_id, client_hash),
                     response_id=response_id, body=body,
                     requested_model=requested_model, input_messages=req.messages,
-                    on_complete=lambda text, item: remember(
-                        responses_api.assistant_turn(text, None), [item],
-                    ),
+                    on_complete=lambda text, item: finished.update(text=text, item=item),
                 ):
                     yield event
             except ProviderError as e:
                 yield responses_api.failed_event(
                     response_id, body, requested_model,
                     {"code": e.kind.value, "message": e.message},
+                )
+                return
+            if finished:
+                await remember(
+                    responses_api.assistant_turn(finished["text"], None), [finished["item"]],
                 )
 
         return _sse(event_stream())
@@ -265,7 +303,7 @@ async def create_response(
         )
     obj = responses_api.from_chat_response(result, response_id=response_id, body=body)
     msg = result.choices[0].message
-    remember(responses_api.assistant_turn(msg.content, msg.tool_calls), obj["output"])
+    await remember(responses_api.assistant_turn(msg.content, msg.tool_calls), obj["output"])
     if req.stream:
         return _sse(responses_api.replay_events(obj))
     return obj
